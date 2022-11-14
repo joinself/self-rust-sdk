@@ -2,10 +2,8 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use chrono::prelude::*;
 
-static mut NTP_OFFSET: AtomicPtr<chrono::Duration> =
-    AtomicPtr::new(std::ptr::null_mut());
-static mut LAST_CHECK: AtomicPtr<DateTime<Utc>> =
-    AtomicPtr::new(std::ptr::null_mut());
+static mut NTP_OFFSET: AtomicPtr<chrono::Duration> = AtomicPtr::new(std::ptr::null_mut());
+static mut LAST_CHECK: AtomicPtr<DateTime<Utc>> = AtomicPtr::new(std::ptr::null_mut());
 
 pub fn rfc3339() -> String {
     return now().to_rfc3339();
@@ -15,13 +13,13 @@ pub fn unix() -> i64 {
     return now().timestamp();
 }
 
-fn now() -> DateTime<Utc> {
+pub fn now() -> DateTime<Utc> {
     let ts = Utc::now();
 
     unsafe {
         let last_check = LAST_CHECK.load(Ordering::SeqCst);
 
-        if last_check == std::ptr::null_mut() || (*last_check).time() < ts.time()  {
+        if last_check == std::ptr::null_mut() || (*last_check).time() < ts.time() {
             if update_last_checked(last_check, ts) {
                 update_ntp_offset();
             }
@@ -72,10 +70,7 @@ fn ntp_offset() -> chrono::Duration {
     }
 }
 
-fn update_last_checked(
-    checked: *mut DateTime<Utc>,
-    current_timestamp: DateTime<Utc>,
-) -> bool {
+fn update_last_checked(checked: *mut DateTime<Utc>, current_timestamp: DateTime<Utc>) -> bool {
     unsafe {
         return match LAST_CHECK.compare_exchange(
             checked,
