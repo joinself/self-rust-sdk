@@ -43,8 +43,8 @@ impl KeyPair {
         }
     }
 
-    pub fn decode(encoded_keypair: Vec<u8>) -> Result<KeyPair, SelfError> {
-        return match serde_cbor::from_slice(&encoded_keypair) {
+    pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
+        return match serde_cbor::from_slice(encoded_keypair) {
             Ok(keypair) => Ok(keypair),
             Err(_) => Err(SelfError::KeyPairDecodeInvalidData),
         };
@@ -197,7 +197,7 @@ mod tests {
 
         // encode and decode the keypair
         let encoded_skp = skp.encode();
-        let decoded_skp = KeyPair::decode(encoded_skp).unwrap();
+        let decoded_skp = KeyPair::decode(&encoded_skp).unwrap();
 
         // verify the signature
         assert!(decoded_skp.verify(message, &signature));
