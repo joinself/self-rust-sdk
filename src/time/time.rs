@@ -32,29 +32,32 @@ pub fn now() -> DateTime<Utc> {
 }
 
 fn update_ntp_offset() {
-    let stime = chrono::Utc::now();
+    loop {
+        let stime = chrono::Utc::now();
 
-    match ntp::request("time.google.com:123") {
-        Ok(response) => {
-            // calculate the ntp offset
-            let dtime = chrono::Utc::now() - stime;
-            let rtime = chrono::Duration::seconds(response.recv_time.sec as i64)
-                + chrono::Duration::nanoseconds(response.recv_time.frac as i64);
-            let otime = chrono::Duration::seconds(response.orig_time.sec as i64)
-                + chrono::Duration::nanoseconds(response.orig_time.frac as i64);
+        match ntp::request("time.google.com:123") {
+            Ok(response) => {
+                // calculate the ntp offset
+                let dtime = chrono::Utc::now() - stime;
+                let rtime = chrono::Duration::seconds(response.recv_time.sec as i64)
+                    + chrono::Duration::nanoseconds(response.recv_time.frac as i64);
+                let otime = chrono::Duration::seconds(response.orig_time.sec as i64)
+                    + chrono::Duration::nanoseconds(response.orig_time.frac as i64);
 
-            let a = rtime - otime;
+                let offset = ((rtime - otime) + dtime) / 2;
 
-            let offset = (a + dtime) / 2;
+                unsafe {
+                    NTP_OFFSET.store(Box::into_raw(Box::new(offset)), Ordering::SeqCst);
+                }
 
-            unsafe {
-                NTP_OFFSET.store(Box::into_raw(Box::new(offset)), Ordering::SeqCst);
+                return;
             }
-        }
-        Err(err) => {
-            println!("ntp lookup failed with: {}", err);
-        }
-    };
+            Err(err) => {
+                println!("ntp lookup failed with: {}", err);
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        };
+    }
 }
 
 fn ntp_offset() -> chrono::Duration {
@@ -89,7 +92,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rfc3339() {
+    fn get_rfc3339() {
         println!("utc: {} - rfc: {}", chrono::Utc::now(), rfc3339());
     }
 }

@@ -77,10 +77,10 @@ impl KeyPair {
 
     pub fn id(&self) -> String {
         if self.id.is_some() {
-            return self.id.unwrap()
+            return self.id.as_ref().unwrap().clone();
         }
 
-        return hex::encode(self.public_key);
+        return hex::encode(&self.public_key);
     }
 
     pub fn keypair_type(&self) -> KeyPairType {
@@ -149,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keypar_new() {
+    fn new() {
         let skp = KeyPair::new(KeyPairType::Ed25519);
         assert_eq!(skp.public().len(), 32);
 
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn keypair_sign_verify() {
+    fn sign_verify() {
         let skp = KeyPair::new(KeyPairType::Ed25519);
         assert_eq!(skp.public().len(), 32);
 
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn keypair_encode_decode() {
+    fn encode_decode() {
         let skp = KeyPair::new(KeyPairType::Ed25519);
         assert_eq!(skp.public().len(), 32);
 
