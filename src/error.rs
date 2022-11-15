@@ -11,6 +11,12 @@ pub enum SelfError {
     MessageDecodingInvalid,
     MessageSigningKeyInvalid,
     MessageUnsupportedSignatureAlgorithm,
+    RestRequestURLInvalid,
+    RestRequestUnknown,
+    RestRequestInvalid,
+    RestRequestRedirected,
+    RestRequestConnectionFailed,
+    RestRequestConnectionTimeout,
 }
 
 impl std::error::Error for SelfError {}
@@ -40,6 +46,14 @@ impl fmt::Display for SelfError {
             SelfError::MessageUnsupportedSignatureAlgorithm => {
                 write!(f, "Message signature algorithm not supported")
             }
+            SelfError::RestRequestUnknown => write!(f, "HTTP request failed with unknown error"),
+            SelfError::RestRequestInvalid => write!(f, "HTTP request invalid"),
+            SelfError::RestRequestRedirected => {
+                write!(f, "HTTP request was redirected too many times")
+            }
+            SelfError::RestRequestURLInvalid => write!(f, "URL is invalid"),
+            SelfError::RestRequestConnectionFailed => write!(f, "HTTP request connection failed"),
+            SelfError::RestRequestConnectionTimeout => write!(f, "HTTP request connection timeout"),
         }
     }
 }

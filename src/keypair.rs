@@ -5,6 +5,7 @@ use crate::error::SelfError;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct KeyPair {
+    id: Option<String>,
     keypair_type: KeyPairType,
     public_key: Vec<u8>,
     secret_key: Vec<u8>,
@@ -23,6 +24,7 @@ impl KeyPair {
                 let kp = dryoc::sign::SigningKeyPair::gen_with_defaults();
 
                 return KeyPair {
+                    id: None,
                     keypair_type: KeyPairType::Ed25519,
                     public_key: kp.public_key.to_vec(),
                     secret_key: kp.secret_key.to_vec(),
@@ -32,6 +34,7 @@ impl KeyPair {
                 let kp = dryoc::keypair::KeyPair::gen_with_defaults();
 
                 return KeyPair {
+                    id: None,
                     keypair_type: KeyPairType::Curve25519,
                     public_key: kp.public_key.to_vec(),
                     secret_key: kp.secret_key.to_vec(),
@@ -49,6 +52,35 @@ impl KeyPair {
 
     pub fn encode(&self) -> Vec<u8> {
         return serde_cbor::to_vec(self).unwrap();
+    }
+
+    pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {
+        let (key_id, encoded_seed) = match legacy_keypair.split_once(':') {
+            Some((first, last)) => (first, last),
+            None => return Err(SelfError::KeyPairDecodeInvalidData),
+        };
+
+        let seed = match base64::decode(encoded_seed) {
+            Ok(seed) => seed,
+            Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
+        };
+
+        let kp = dryoc::sign::SigningKeyPair::<PublicKey, SecretKey>::from_seed(&seed);
+
+        return Ok(KeyPair {
+            id: Some(String::from(key_id)),
+            keypair_type: KeyPairType::Ed25519,
+            public_key: kp.public_key.to_vec(),
+            secret_key: kp.secret_key.to_vec(),
+        });
+    }
+
+    pub fn id(&self) -> String {
+        if self.id.is_some() {
+            return self.id.as_ref().unwrap().clone();
+        }
+
+        return hex::encode(&self.public_key);
     }
 
     pub fn keypair_type(&self) -> KeyPairType {
@@ -117,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keypar_new() {
+    fn new() {
         let skp = KeyPair::new(KeyPairType::Ed25519);
         assert_eq!(skp.public().len(), 32);
 
@@ -126,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn keypair_sign_verify() {
+    fn sign_verify() {
         let skp = KeyPair::new(KeyPairType::Ed25519);
         assert_eq!(skp.public().len(), 32);
 
@@ -154,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn keypair_encode_decode() {
+    fn encode_decode() {
         let skp = KeyPair::new(KeyPairType::Ed25519);
         assert_eq!(skp.public().len(), 32);
 

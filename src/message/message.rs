@@ -3,7 +3,6 @@ use crate::keypair::{KeyPair, KeyPairType};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Builder;
 
@@ -88,13 +87,13 @@ impl Message {
         self.payload.insert(String::from(key), value);
     }
 
-    pub fn sign(&mut self, kid: &str, signing_key: KeyPair) -> Result<(), SelfError> {
+    pub fn sign(&mut self, signing_key: &KeyPair) -> Result<(), SelfError> {
         if signing_key.keypair_type() != KeyPairType::Ed25519 {
             return Err(SelfError::MessageSigningKeyInvalid);
         }
 
         let protected = json!({
-            "kid": String::from(kid),
+            "kid": signing_key.id(),
             "alg": "EdDSA",
         })
         .to_string();
@@ -186,7 +185,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn message_to_jws() {
+    fn to_jws() {
         let mut m = Message::new("auth.token", "me", "me", None, true);
 
         // try to encode with no signatures
@@ -194,11 +193,11 @@ mod tests {
 
         // attempt to sign with an encryption key
         let kp = KeyPair::new(KeyPairType::Curve25519);
-        assert!(m.sign("12345", kp).is_err());
+        assert!(m.sign(&kp).is_err());
 
         // add a valid signature
         let kp = KeyPair::new(KeyPairType::Ed25519);
-        assert!(m.sign("12345", kp).is_ok());
+        assert!(m.sign(&kp).is_ok());
 
         // encode to jws
         let jws = m.to_jws();
@@ -208,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn message_to_jwt() {
+    fn to_jwt() {
         let mut m = Message::new("auth.token", "me", "me", None, true);
 
         // try to encode with no signatures
@@ -216,11 +215,11 @@ mod tests {
 
         // attempt to sign with an encryption key
         let kp = KeyPair::new(KeyPairType::Curve25519);
-        assert!(m.sign("12345", kp).is_err());
+        assert!(m.sign(&kp).is_err());
 
         // add a valid signature
         let kp = KeyPair::new(KeyPairType::Ed25519);
-        assert!(m.sign("12345", kp).is_ok());
+        assert!(m.sign(&kp).is_ok());
 
         // encode to jwt
         let jwt = m.to_jws();
