@@ -3,23 +3,83 @@ use crate::keypair::{KeyPair, KeyPairType};
 use std::collections::HashMap;
 use std::time::Duration;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use uuid::Builder;
 
+#[derive(Serialize, Deserialize)]
 pub struct Message {
+    #[serde(serialize_with = "as_base64", deserialize_with = "from_base64")]
     payload: HashMap<String, serde_json::Value>,
+    #[serde(
+        serialize_with = "as_base64",
+        deserialize_with = "protected_from_base64"
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protected: Option<HashMap<String, serde_json::Value>>,
+    #[serde(
+        serialize_with = "as_base64",
+        deserialize_with = "signature_from_base64"
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<Vec<u8>>,
     signatures: Vec<Signature>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Signature {
-    hdr: String,
-    sig: String,
+    protected: String,
+    signature: String,
+}
+
+fn as_base64<T, S>(buffer: &T, serializer: S) -> Result<S::Ok, S::Error>
+where
+    T: Serialize,
+    S: Serializer,
+{
+    let json = serde_json::to_string(buffer).unwrap();
+    let encoded_json = base64::encode_config(&json, base64::URL_SAFE_NO_PAD);
+    serializer.serialize_str(&encoded_json)
+}
+
+fn from_base64<'de, D>(deserializer: D) -> Result<HashMap<String, serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    String::deserialize(deserializer).and_then(|string| {
+        serde_json::from_str(&string).map_err(|err| Error::custom(err.to_string()))
+    })
+}
+
+fn protected_from_base64<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, serde_json::Value>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    String::deserialize(deserializer).and_then(|string| {
+        serde_json::from_str(&string).map_err(|err| Error::custom(err.to_string()))
+    })
+}
+
+fn signature_from_base64<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    String::deserialize(deserializer).and_then(|string| {
+        serde_json::from_str(&string).map_err(|err| Error::custom(err.to_string()))
+    })
 }
 
 impl Message {
     pub fn new(typ: &str, iss: &str, sub: &str, exp: Option<Duration>, unix: bool) -> Message {
         let mut m = Message {
             payload: HashMap::new(),
+            protected: None,
+            signature: None,
             signatures: Vec::new(),
         };
 
@@ -63,13 +123,20 @@ impl Message {
         return m;
     }
 
-    pub fn from_bytes(data: &[u8]) -> Result<Message, SelfError> {
-        let m = Message {
+    pub fn new_without_defaults() -> Message {
+        return Message {
             payload: HashMap::new(),
+            protected: None,
+            signature: None,
             signatures: Vec::new(),
         };
+    }
 
-        // TODO  implement this
+    pub fn from_bytes(data: &[u8]) -> Result<Message, SelfError> {
+        let m: Message = match serde_json::from_slice(data) {
+            Ok(m) => m,
+            Err(_) => return Err(SelfError::MessageEncodingInvalid),
+        };
 
         return Ok(m);
     }
@@ -116,11 +183,26 @@ impl Message {
         let encoded_signature = base64::encode_config(signature, base64::URL_SAFE_NO_PAD);
 
         self.signatures.push(Signature {
-            hdr: encoded_protected,
-            sig: encoded_signature,
+            protected: encoded_protected,
+            signature: encoded_signature,
         });
 
         return Ok(());
+    }
+
+    pub fn verify(&self, signing_key: KeyPair) -> Result<(), SelfError> {
+        if signing_key.keypair_type() != KeyPairType::Ed25519 {
+            return Err(SelfError::MessageSigningKeyInvalid);
+        }
+
+        if self.protected.is_some() {
+            let protected = self.protected.as_ref().unwrap();
+            if protected["kid"] != signing_key.id() {
+                return Err(SelfError::MessageSignatureKeypairMismatch);
+            }
+        }
+
+        return Ok(()); 
     }
 
     pub fn to_jws(&mut self) -> Result<String, SelfError> {
@@ -128,38 +210,12 @@ impl Message {
             return Err(SelfError::MessageNoSignature);
         }
 
-        let payload = match serde_json::to_string(&self.payload) {
-            Ok(payload) => payload,
+        let json = match serde_json::to_string(self) {
+            Ok(json) => json,
             Err(_) => return Err(SelfError::MessageEncodingInvalid),
         };
 
-        let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
-
-        if self.signatures.len() == 1 {
-            let jws = json!({
-                "payload": encoded_payload,
-                "protected": self.signatures[0].hdr,
-                "signature": self.signatures[0].sig,
-            });
-
-            return Ok(jws.to_string());
-        }
-
-        let mut signatures: Vec<Value> = Vec::new();
-
-        for signature in self.signatures.iter_mut() {
-            signatures.push(json!({
-                "signature": signature.sig,
-                "protected": signature.hdr,
-            }))
-        }
-
-        let jws = json!({
-            "payload": encoded_payload,
-            "signatures": signatures,
-        });
-
-        return Ok(jws.to_string());
+        return Ok(json);
     }
 
     pub fn to_jwt(&self) -> Result<String, SelfError> {
@@ -175,7 +231,7 @@ impl Message {
         let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
         return Ok(format!(
             "{}.{}.{}",
-            self.signatures[0].hdr, encoded_payload, self.signatures[0].sig
+            self.signatures[0].protected, encoded_payload, self.signatures[0].signature
         ));
     }
 }
