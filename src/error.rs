@@ -6,10 +6,13 @@ pub enum SelfError {
     KeyPairSignFailure,
     KeyPairSignMissingSingingKey,
     KeyPairSignWrongKeypairType,
+    MessageNoProtected,
     MessageNoSignature,
     MessageEncodingInvalid,
     MessageDecodingInvalid,
     MessageSigningKeyInvalid,
+    MessageSignatureInvalid,
+    MessageSignatureEncodingInvalid,
     MessageSignatureKeypairMismatch,
     MessageUnsupportedSignatureAlgorithm,
     RestRequestURLInvalid,
@@ -38,8 +41,8 @@ impl std::error::Error for SelfError {}
 impl fmt::Display for SelfError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            SelfError::KeyPairDecodeInvalidData => write!(f, "Could not decode keypair"),
-            SelfError::KeyPairSignFailure => write!(f, "Signing failed"),
+            SelfError::KeyPairDecodeInvalidData => write!(f, "Keypair could not be decoded"),
+            SelfError::KeyPairSignFailure => write!(f, "Keypair signing failed"),
             SelfError::KeyPairSignWrongKeypairType => {
                 write!(f, "Keypair cannot be used to sign messages")
             }
@@ -47,6 +50,7 @@ impl fmt::Display for SelfError {
                 f,
                 "Keypair cannot be used to sign as its missing it's secret key component"
             ),
+            SelfError::MessageNoProtected => write!(f, "Message has no protected header"),
             SelfError::MessageNoSignature => write!(f, "Message has no signature"),
             SelfError::MessageEncodingInvalid => {
                 write!(f, "Message could not be encoded to valid json")
@@ -56,6 +60,12 @@ impl fmt::Display for SelfError {
             }
             SelfError::MessageSigningKeyInvalid => {
                 write!(f, "Message can only be signed with an ed25519 keypair")
+            }
+            SelfError::MessageSignatureInvalid => {
+                write!(f, "Message signature invalid")
+            }
+            SelfError::MessageSignatureEncodingInvalid => {
+                write!(f, "Message signature is not valid base64")
             }
             SelfError::MessageSignatureKeypairMismatch => write!(f, "Message signature was not signed with the provided key"),
             SelfError::MessageUnsupportedSignatureAlgorithm => {

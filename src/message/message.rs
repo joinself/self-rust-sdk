@@ -1,23 +1,23 @@
 use crate::error::SelfError;
 use crate::keypair::{KeyPair, KeyPairType};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json, Value};
+use serde_json::Value;
 use uuid::Builder;
 
 #[derive(Serialize, Deserialize)]
 pub struct Message {
     #[serde(serialize_with = "as_base64", deserialize_with = "from_base64")]
-    payload: HashMap<String, serde_json::Value>,
+    payload: BTreeMap<String, serde_json::Value>,
     #[serde(
         default,
         serialize_with = "as_base64",
-        deserialize_with = "protected_from_base64",
+        deserialize_with = "protected_optional_from_base64",
         skip_serializing_if = "Option::is_none"
     )]
-    protected: Option<HashMap<String, serde_json::Value>>,
+    protected: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
     signatures: Vec<Signature>,
@@ -25,7 +25,12 @@ pub struct Message {
 
 #[derive(Serialize, Deserialize)]
 struct Signature {
-    protected: String,
+    #[serde(
+        default,
+        serialize_with = "as_base64",
+        deserialize_with = "protected_from_base64"
+    )]
+    protected: BTreeMap<String, serde_json::Value>,
     signature: String,
 }
 
@@ -39,13 +44,13 @@ where
     serializer.serialize_str(&encoded_json)
 }
 
-fn from_base64<'de, D>(deserializer: D) -> Result<HashMap<String, serde_json::Value>, D::Error>
+fn from_base64<'de, D>(deserializer: D) -> Result<BTreeMap<String, serde_json::Value>, D::Error>
 where
     D: Deserializer<'de>,
 {
     use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| {
-        let decoded_json = match base64::decode(string) {
+        let decoded_json = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_json) => decoded_json,
             Err(err) => return Err(Error::custom(err.to_string())),
         };
@@ -55,13 +60,29 @@ where
 
 fn protected_from_base64<'de, D>(
     deserializer: D,
-) -> Result<Option<HashMap<String, serde_json::Value>>, D::Error>
+) -> Result<BTreeMap<String, serde_json::Value>, D::Error>
 where
     D: Deserializer<'de>,
 {
     use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| {
-        let decoded_json = match base64::decode(string) {
+        let decoded_json = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
+            Ok(decoded_json) => decoded_json,
+            Err(err) => return Err(Error::custom(err.to_string())),
+        };
+        serde_json::from_slice(&decoded_json).map_err(|err| Error::custom(err.to_string()))
+    })
+}
+
+fn protected_optional_from_base64<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, serde_json::Value>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    String::deserialize(deserializer).and_then(|string| {
+        let decoded_json = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_json) => decoded_json,
             Err(err) => return Err(Error::custom(err.to_string())),
         };
@@ -72,7 +93,7 @@ where
 impl Message {
     pub fn new(typ: &str, iss: &str, sub: &str, exp: Option<Duration>, unix: bool) -> Message {
         let mut m = Message {
-            payload: HashMap::new(),
+            payload: BTreeMap::new(),
             protected: None,
             signature: None,
             signatures: Vec::new(),
@@ -120,7 +141,7 @@ impl Message {
 
     pub fn new_without_defaults() -> Message {
         return Message {
-            payload: HashMap::new(),
+            payload: BTreeMap::new(),
             protected: None,
             signature: None,
             signatures: Vec::new(),
@@ -135,6 +156,16 @@ impl Message {
                 return Err(SelfError::MessageDecodingInvalid);
             }
         };
+
+        if m.signatures.len() < 1 {
+            if m.protected.is_none() {
+                return Err(SelfError::MessageNoProtected);
+            }
+
+            if m.signature.is_none() {
+                return Err(SelfError::MessageNoSignature);
+            }
+        }
 
         return Ok(m);
     }
@@ -157,11 +188,9 @@ impl Message {
             return Err(SelfError::MessageSigningKeyInvalid);
         }
 
-        let protected = json!({
-            "kid": signing_key.id(),
-            "alg": "EdDSA",
-        })
-        .to_string();
+        let mut protected = BTreeMap::new();
+        protected.insert(String::from("kid"), Value::String(signing_key.id()));
+        protected.insert(String::from("alg"), Value::String(String::from("EdDSA")));
 
         let payload = match serde_json::to_string(&self.payload) {
             Ok(payload) => payload,
@@ -169,11 +198,14 @@ impl Message {
         };
 
         let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
-        let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
+        let encoded_protected = base64::encode_config(
+            serde_json::to_vec(&protected).unwrap(),
+            base64::URL_SAFE_NO_PAD,
+        );
 
-        let signed_data = format!("{}.{}", encoded_protected, encoded_payload);
+        let message = format!("{}.{}", encoded_protected, encoded_payload);
 
-        let signature = match signing_key.sign(signed_data.as_bytes()) {
+        let signature = match signing_key.sign(message.as_bytes()) {
             Ok(signature) => signature,
             Err(err) => return Err(err),
         };
@@ -181,7 +213,7 @@ impl Message {
         let encoded_signature = base64::encode_config(signature, base64::URL_SAFE_NO_PAD);
 
         self.signatures.push(Signature {
-            protected: encoded_protected,
+            protected: protected,
             signature: encoded_signature,
         });
 
@@ -198,9 +230,57 @@ impl Message {
             if protected["kid"] != signing_key.id() {
                 return Err(SelfError::MessageSignatureKeypairMismatch);
             }
+
+            let encoded_signature = self.signature.as_ref().unwrap();
+
+            let decoded_signature =
+                match base64::decode_config(encoded_signature, base64::URL_SAFE_NO_PAD) {
+                    Ok(decoded_signature) => decoded_signature,
+                    Err(_) => return Err(SelfError::MessageSignatureEncodingInvalid),
+                };
+
+            let payload = serde_json::to_string(&self.payload).unwrap();
+            let protected = serde_json::to_string(&self.protected).unwrap();
+
+            let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
+            let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
+
+            let message = format!("{}.{}", encoded_protected, encoded_payload);
+
+            if !signing_key.verify(message.as_bytes(), &decoded_signature) {
+                return Err(SelfError::MessageSignatureInvalid);
+            }
+
+            return Ok(());
         }
 
-        return Ok(());
+        for s in &self.signatures {
+            if s.protected["kid"] != signing_key.id() {
+                continue;
+            }
+
+            let decoded_signature =
+                match base64::decode_config(&s.signature, base64::URL_SAFE_NO_PAD) {
+                    Ok(decoded_signature) => decoded_signature,
+                    Err(_) => return Err(SelfError::MessageSignatureEncodingInvalid),
+                };
+
+            let payload = serde_json::to_string(&self.payload).unwrap();
+            let protected = serde_json::to_string(&s.protected).unwrap();
+
+            let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
+            let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
+
+            let message = format!("{}.{}", encoded_protected, encoded_payload);
+
+            if !signing_key.verify(message.as_bytes(), &decoded_signature) {
+                return Err(SelfError::MessageSignatureInvalid);
+            }
+
+            return Ok(());
+        }
+
+        return Err(SelfError::MessageSignatureKeypairMismatch);
     }
 
     pub fn to_jws(&mut self) -> Result<String, SelfError> {
@@ -226,10 +306,14 @@ impl Message {
             Err(_) => return Err(SelfError::MessageEncodingInvalid),
         };
 
+        let protected = serde_json::to_vec(&self.signatures[0].protected).unwrap();
+
         let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
+        let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
+
         return Ok(format!(
             "{}.{}.{}",
-            self.signatures[0].protected, encoded_payload, self.signatures[0].signature
+            encoded_protected, encoded_payload, self.signatures[0].signature
         ));
     }
 }
@@ -257,10 +341,10 @@ mod tests {
         let jws = m.to_jws().unwrap();
 
         // decode from jws
-
         let bytes = jws.as_bytes();
-        println!("{:?}", jws.to_string());
+
         let m = Message::from_bytes(bytes).unwrap();
+        m.verify(kp).unwrap();
     }
 
     #[test]
