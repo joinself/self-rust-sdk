@@ -12,17 +12,14 @@ pub struct Message {
     #[serde(serialize_with = "as_base64", deserialize_with = "from_base64")]
     payload: HashMap<String, serde_json::Value>,
     #[serde(
+        default,
         serialize_with = "as_base64",
-        deserialize_with = "protected_from_base64"
+        deserialize_with = "protected_from_base64",
+        skip_serializing_if = "Option::is_none"
     )]
-    #[serde(skip_serializing_if = "Option::is_none")]
     protected: Option<HashMap<String, serde_json::Value>>,
-    #[serde(
-        serialize_with = "as_base64",
-        deserialize_with = "signature_from_base64"
-    )]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    signature: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
     signatures: Vec<Signature>,
 }
 
@@ -48,7 +45,11 @@ where
 {
     use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| {
-        serde_json::from_str(&string).map_err(|err| Error::custom(err.to_string()))
+        let decoded_json = match base64::decode(string) {
+            Ok(decoded_json) => decoded_json,
+            Err(err) => return Err(Error::custom(err.to_string())),
+        };
+        serde_json::from_slice(&decoded_json).map_err(|err| Error::custom(err.to_string()))
     })
 }
 
@@ -60,17 +61,11 @@ where
 {
     use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| {
-        serde_json::from_str(&string).map_err(|err| Error::custom(err.to_string()))
-    })
-}
-
-fn signature_from_base64<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::Error;
-    String::deserialize(deserializer).and_then(|string| {
-        serde_json::from_str(&string).map_err(|err| Error::custom(err.to_string()))
+        let decoded_json = match base64::decode(string) {
+            Ok(decoded_json) => decoded_json,
+            Err(err) => return Err(Error::custom(err.to_string())),
+        };
+        serde_json::from_slice(&decoded_json).map_err(|err| Error::custom(err.to_string()))
     })
 }
 
@@ -135,7 +130,10 @@ impl Message {
     pub fn from_bytes(data: &[u8]) -> Result<Message, SelfError> {
         let m: Message = match serde_json::from_slice(data) {
             Ok(m) => m,
-            Err(_) => return Err(SelfError::MessageEncodingInvalid),
+            Err(err) => {
+                println!("json error: {}", err);
+                return Err(SelfError::MessageDecodingInvalid);
+            }
         };
 
         return Ok(m);
@@ -202,7 +200,7 @@ impl Message {
             }
         }
 
-        return Ok(()); 
+        return Ok(());
     }
 
     pub fn to_jws(&mut self) -> Result<String, SelfError> {
@@ -256,10 +254,13 @@ mod tests {
         assert!(m.sign(&kp).is_ok());
 
         // encode to jws
-        let jws = m.to_jws();
-        assert!(jws.is_ok());
+        let jws = m.to_jws().unwrap();
 
-        println!("{}", jws.unwrap());
+        // decode from jws
+
+        let bytes = jws.as_bytes();
+        println!("{:?}", jws.to_string());
+        let m = Message::from_bytes(bytes).unwrap();
     }
 
     #[test]
@@ -280,7 +281,5 @@ mod tests {
         // encode to jwt
         let jwt = m.to_jws();
         assert!(jwt.is_ok());
-
-        println!("{}", jwt.unwrap());
     }
 }

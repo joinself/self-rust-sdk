@@ -1,5 +1,5 @@
-use crate::error::SelfError;
 use crate::siggraph::action::Action;
+use crate::{error::SelfError, keypair::KeyPair};
 
 use serde::{Deserialize, Serialize};
 
@@ -21,4 +21,6 @@ impl Operation {
 
         return Ok(op);
     }
+
+    pub fn verify(&self, signing_key: KeyPair) {}
 }
