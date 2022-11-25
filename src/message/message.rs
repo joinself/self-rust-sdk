@@ -148,6 +148,48 @@ impl Message {
         };
     }
 
+    pub fn new_from_payload<T: Serialize>(custom_payload: &T) -> Result<Message, SelfError> {
+        // TODO this is not the right way to do this, but
+        // the most convenient/fastest way for now.
+        // Investigate if generic payload is possible,
+        // with a default of BTreeMap<String, Value>
+
+        let encoded_custom_payload = match serde_json::to_vec(custom_payload) {
+            Ok(encoded_custom_payload) => encoded_custom_payload,
+            Err(_) => return Err(SelfError::MessageEncodingInvalid),
+        };
+
+        let payload: BTreeMap<String, Value> = match serde_json::from_slice(&encoded_custom_payload)
+        {
+            Ok(payload) => payload,
+            Err(_) => return Err(SelfError::MessageDecodingInvalid),
+        };
+
+        return Ok(Message {
+            payload: payload,
+            protected: None,
+            signature: None,
+            signatures: Vec::new(),
+        });
+    }
+
+    pub fn to_custom_payload<T>(&self) -> Result<T, SelfError>
+    where
+        T: for<'a> Deserialize<'a>,
+    {
+        let encoded_payload = match serde_json::to_vec(&self.payload) {
+            Ok(encoded_payload) => encoded_payload,
+            Err(_) => return Err(SelfError::MessageEncodingInvalid),
+        };
+
+        let decoded_payload: T = match serde_json::from_slice(&encoded_payload) {
+            Ok(decoded_payload) => decoded_payload,
+            Err(_) => return Err(SelfError::MessageDecodingInvalid),
+        };
+
+        return Ok(decoded_payload);
+    }
+
     pub fn from_bytes(data: &[u8]) -> Result<Message, SelfError> {
         let m: Message = match serde_json::from_slice(data) {
             Ok(m) => m,
@@ -181,6 +223,21 @@ impl Message {
 
     pub fn add_field_object(&mut self, key: &str, value: Value) {
         self.payload.insert(String::from(key), value);
+    }
+
+    pub fn add_field_raw_json(&mut self, key: &str, value: &[u8]) -> Result<(), SelfError> {
+        let decoded_value: Value = match serde_json::from_slice(value) {
+            Ok(decoded_value) => decoded_value,
+            Err(_) => return Err(SelfError::MessageDecodingInvalid),
+        };
+
+        self.payload.insert(String::from(key), decoded_value);
+
+        return Ok(());
+    }
+
+    pub fn get_field(&self, key: &str) -> Option<&Value> {
+        return self.payload.get(key);
     }
 
     pub fn sign(&mut self, signing_key: &KeyPair) -> Result<(), SelfError> {
@@ -220,7 +277,7 @@ impl Message {
         return Ok(());
     }
 
-    pub fn verify(&self, signing_key: KeyPair) -> Result<(), SelfError> {
+    pub fn verify(&self, signing_key: &KeyPair) -> Result<(), SelfError> {
         if signing_key.keypair_type() != KeyPairType::Ed25519 {
             return Err(SelfError::MessageSigningKeyInvalid);
         }
@@ -344,7 +401,7 @@ mod tests {
         let bytes = jws.as_bytes();
 
         let m = Message::from_bytes(bytes).unwrap();
-        m.verify(kp).unwrap();
+        m.verify(&kp).unwrap();
     }
 
     #[test]
