@@ -71,6 +71,30 @@ impl Operation {
         return Ok(());
     }
 
+    pub fn signing_key_ids(&self) -> Option<Vec<String>> {
+        if self.message.is_none() {
+            return None;
+        }
+
+        return self.message.as_ref().unwrap().signing_key_ids();
+    }
+
+    pub fn action_by_kid(&self, kid: &str) -> Option<Action> {
+        for action in &self.actions {
+            if action.kid == kid {
+                return Some((*action).clone());
+            }
+        }
+
+        return None;
+    }
+
+    /*
+    fn timestamp(&self) -> chrono::DateTime<chrono::Utc> {
+
+    }
+     */
+
     pub fn to_jws(&mut self) -> Result<String, SelfError> {
         if self.message.is_none() {
             return Err(SelfError::SiggraphOperationNotSigned);
@@ -88,7 +112,7 @@ mod tests {
     use crate::siggraph::action::{ActionType, KeyRole};
 
     #[test]
-    fn parse() {
+    fn serialize_deserialize() {
         let kp = KeyPair::new(KeyPairType::Ed25519);
 
         let mut op = Operation {

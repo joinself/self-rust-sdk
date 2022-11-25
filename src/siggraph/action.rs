@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum ActionType {
     #[serde(rename = "key.add")]
     KeyAdd,
@@ -11,7 +11,7 @@ pub enum ActionType {
     KeyRevoke,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum KeyRole {
     #[serde(rename = "device.key")]
     Device,
@@ -19,7 +19,7 @@ pub enum KeyRole {
     Recovery,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Action {
     pub kid: String,
     pub did: Option<String>,

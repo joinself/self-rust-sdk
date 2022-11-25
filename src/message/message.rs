@@ -340,6 +340,32 @@ impl Message {
         return Err(SelfError::MessageSignatureKeypairMismatch);
     }
 
+    pub fn signing_key_ids(&self) -> Option<Vec<String>> {
+        let mut kids = Vec::new();
+
+        if self.protected.is_some() {
+            let kid = &self.protected.as_ref().unwrap()["kid"];
+
+            if kid.is_string() {
+                kids.push(kid.to_string())
+            }
+        }
+
+        for sig in &self.signatures {
+            let kid = &sig.protected["kid"];
+
+            if kid.is_string() {
+                kids.push(kid.to_string())
+            }
+        }
+
+        if kids.len() < 1 {
+            return None;
+        }
+
+        return Some(kids);
+    }
+
     pub fn to_jws(&mut self) -> Result<String, SelfError> {
         if self.signatures.len() < 1 {
             return Err(SelfError::MessageNoSignature);
@@ -402,6 +428,7 @@ mod tests {
 
         let m = Message::from_bytes(bytes).unwrap();
         m.verify(&kp).unwrap();
+        assert_eq!(m.signing_key_ids().unwrap().len(), 1);
     }
 
     #[test]
