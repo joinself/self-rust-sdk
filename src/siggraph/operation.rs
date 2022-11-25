@@ -15,8 +15,8 @@ pub struct Operation {
 }
 
 impl Operation {
-    pub fn parse(operation: &[u8]) -> Result<Operation, SelfError> {
-        let msg = match Message::from_bytes(operation) {
+    pub fn from_bytes(data: &[u8]) -> Result<Operation, SelfError> {
+        let msg = match Message::from_bytes(data) {
             Ok(msg) => msg,
             Err(err) => return Err(err),
         };
@@ -119,7 +119,7 @@ mod tests {
 
         // encode, decode and re-verify
         let encoded_operation = op.to_jws().unwrap();
-        let decoded_operation = Operation::parse(encoded_operation.as_bytes()).unwrap();
+        let decoded_operation = Operation::from_bytes(encoded_operation.as_bytes()).unwrap();
         assert!(decoded_operation.verify(&kp).is_ok());
     }
 }
