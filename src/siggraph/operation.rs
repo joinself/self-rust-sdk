@@ -1,9 +1,10 @@
 use crate::siggraph::action::Action;
 use crate::{error::SelfError, keypair::KeyPair, message::message::Message};
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Operation {
     pub sequence: i32,
     pub previous: String,
@@ -89,11 +90,16 @@ impl Operation {
         return None;
     }
 
-    /*
-    fn timestamp(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        if self.timestamp > i32::MAX as i64 {
+            return DateTime::from_utc(
+                NaiveDateTime::from_timestamp(self.timestamp / 1000, 0),
+                Utc,
+            );
+        }
 
+        return DateTime::from_utc(NaiveDateTime::from_timestamp(self.timestamp, 0), Utc);
     }
-     */
 
     pub fn to_jws(&mut self) -> Result<String, SelfError> {
         if self.message.is_none() {

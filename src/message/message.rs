@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use uuid::Builder;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Message {
     #[serde(serialize_with = "as_base64", deserialize_with = "from_base64")]
     payload: BTreeMap<String, serde_json::Value>,
@@ -23,7 +23,7 @@ pub struct Message {
     signatures: Vec<Signature>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Signature {
     #[serde(
         default,

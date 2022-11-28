@@ -36,6 +36,10 @@ pub enum SelfError {
     SiggraphOperationVersionInvalid,
     SiggraphOperationNotSigned,
     SiggraphOperationNOOP,
+    SiggraphOperationSignatureKeyRevoked,
+    SiggraphOperationAccountRecoveryActionInvalid,
+    SiggraphOperationNoValidKeys,
+    SiggraphOperationNoValidRecoveryKey,
 }
 
 impl std::error::Error for SelfError {}
@@ -96,6 +100,10 @@ impl fmt::Display for SelfError {
             SelfError::SiggraphOperationDecodingInvalid => write!(f, "Signature graph operation is not valid json"),
             SelfError::SiggraphOperationVersionInvalid => write!(f, "Signature graph operation version invalid"),
             SelfError::SiggraphOperationNotSigned => write!(f, "Signature graph operation cannot be verified as it has no signature"),
+            SelfError::SiggraphOperationSignatureKeyRevoked => write!(f, "Signature graph operation was signed with a key that was invalid for that time period"),
+            SelfError::SiggraphOperationAccountRecoveryActionInvalid => write!(f, "Signature graph account recovery operation does not invalidate the existing recovery key"),
+            SelfError::SiggraphOperationNoValidKeys => write!(f, "Signature graph operation leaves no active or valid keys"),
+            SelfError::SiggraphOperationNoValidRecoveryKey => write!(f, "Signature graph operation leaves no active recovery key"),
         }
     }
 }
