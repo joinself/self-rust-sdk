@@ -1,4 +1,4 @@
-use dryoc::sign::{Message, PublicKey, SecretKey, Signature, SignedMessage, SigningKeyPair};
+use dryoc::{sign::{Message, PublicKey, SecretKey, Signature, SignedMessage, SigningKeyPair}, keypair};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
@@ -41,6 +41,25 @@ impl KeyPair {
                 };
             }
         }
+    }
+
+    pub fn from_public_key(id: &str, keypair_type: KeyPairType, public_key: &str) -> Result<KeyPair, SelfError> {
+        // TODO keypair should probably be split into different types (public/private)?
+        let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
+            Ok(decoded_public_key) => decoded_public_key,
+            Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
+        };
+
+        if decoded_public_key.len() != 32 {
+            return Err(SelfError::SiggraphActionPublicKeyLengthBad);
+        }
+
+        return Ok(KeyPair{
+            id: Some(String::from(id)),
+            keypair_type: keypair_type,
+            public_key: decoded_public_key,
+            secret_key: Vec::new(),
+        });
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {

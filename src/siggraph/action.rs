@@ -69,7 +69,7 @@ impl Action {
         return Ok(());
     }
 
-    pub fn effective_from_time(&self) -> Option<DateTime<Utc>> {
+    pub fn effective_from(&self) -> Option<DateTime<Utc>> {
         if self.effective_from == 0 {
             return None;
         }
@@ -111,6 +111,6 @@ mod tests {
         action = serde_json::from_str(&json).unwrap();
 
         assert_eq!(action.action, ActionType::KeyAdd);
-        assert_eq!(action.effective_from_time().unwrap().timestamp(), ts);
+        assert_eq!(action.effective_from().unwrap().timestamp(), ts);
     }
 }

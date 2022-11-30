@@ -1,5 +1,5 @@
 use crate::siggraph::action::Action;
-use crate::{error::SelfError, keypair::KeyPair, message::message::Message};
+use crate::{error::SelfError, keypair::KeyPair, message::message::Message, message::message::Signature};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,14 @@ impl Operation {
         }
 
         return DateTime::from_utc(NaiveDateTime::from_timestamp(self.timestamp, 0), Utc);
+    }
+
+    pub fn signatures(&self) -> Vec<Signature> {
+        if self.message.is_none() {
+            return vec![];
+        }
+
+        return self.message.as_ref().unwrap().signatures();
     }
 
     pub fn to_jws(&mut self) -> Result<String, SelfError> {

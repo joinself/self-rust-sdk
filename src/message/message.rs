@@ -24,14 +24,14 @@ pub struct Message {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct Signature {
+pub struct Signature {
     #[serde(
         default,
         serialize_with = "as_base64",
         deserialize_with = "protected_from_base64"
     )]
-    protected: BTreeMap<String, serde_json::Value>,
-    signature: String,
+    pub protected: BTreeMap<String, serde_json::Value>,
+    pub signature: String,
 }
 
 fn as_base64<T, S>(buffer: &T, serializer: S) -> Result<S::Ok, S::Error>
@@ -364,6 +364,19 @@ impl Message {
         }
 
         return Some(kids);
+    }
+
+    pub fn signatures(&self) -> Vec<Signature> {
+        if self.protected.is_some() && self.signature.is_some() {
+            return vec![
+                Signature{
+                    protected: self.protected.as_ref().unwrap().clone(),
+                    signature: self.signature.as_ref().unwrap().clone(),
+                }
+            ];
+        }
+
+        return self.signatures.clone();
     }
 
     pub fn to_jws(&mut self) -> Result<String, SelfError> {

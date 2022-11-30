@@ -7,14 +7,14 @@ use crate::siggraph::action::KeyRole;
 
 pub struct Node {
     pub kid: String,
-    pub did: String,
+    pub did: Option<String>,
     pub typ: KeyRole,
-    pub seq: i64,
+    pub seq: i32,
     pub pk: KeyPair,
-    ca: i64,
-    ra: i64,
-    incoming: Vec<Rc<RefCell<Node>>>,
-    outgoing: Vec<Rc<RefCell<Node>>>,
+    pub ca: i64,
+    pub ra: i64,
+    pub incoming: Vec<Rc<RefCell<Node>>>,
+    pub outgoing: Vec<Rc<RefCell<Node>>>,
 }
 
 impl Node {
