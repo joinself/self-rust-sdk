@@ -1,5 +1,7 @@
 use crate::siggraph::action::Action;
-use crate::{error::SelfError, keypair::KeyPair, message::message::Message, message::message::Signature};
+use crate::{
+    error::SelfError, keypair::KeyPair, message::message::Message, message::message::Signature,
+};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -16,6 +18,17 @@ pub struct Operation {
 }
 
 impl Operation {
+    pub fn new(sequence: i32, previous: &str, timestamp: i64, actions: Vec<Action>) -> Operation {
+        return Operation {
+            sequence: sequence,
+            previous: String::from(previous),
+            version: String::from("1.0.0"),
+            timestamp: timestamp,
+            actions: actions,
+            message: None,
+        };
+    }
+
     pub fn from_bytes(data: &[u8]) -> Result<Operation, SelfError> {
         let msg = match Message::from_bytes(data) {
             Ok(msg) => msg,

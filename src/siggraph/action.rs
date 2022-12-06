@@ -58,6 +58,7 @@ impl Action {
         if self.role.is_some()
             && *self.role.as_ref().unwrap() == KeyRole::Device
             && self.did.is_none()
+            && self.action != ActionType::KeyRevoke
         {
             return Err(SelfError::SiggraphActionDeviceIDMissing);
         }

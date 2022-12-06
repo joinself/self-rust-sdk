@@ -4,7 +4,6 @@ use crate::siggraph::action::{Action, ActionType, KeyRole};
 use crate::siggraph::node::Node;
 use crate::siggraph::operation::Operation;
 
-use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -69,7 +68,7 @@ impl SignatureGraph {
             if signing_key_ids.len() != 1 {
                 return Err(SelfError::SiggraphOperationSigningKeyInvalid);
             }
- 
+
             for signing_key_id in signing_key_ids {
                 // check the key used to sign the operation exists
                 let signing_key = match self.keys.get(&signing_key_id) {
@@ -98,78 +97,81 @@ impl SignatureGraph {
                     }
                 }
             }
+        }
 
-            // run actions
-            for action in &operation.actions {
-                action.validate()?;
+        // run actions
+        for action in &operation.actions {
+            action.validate()?;
 
-                match action.action {
-                    ActionType::KeyAdd => {
-                        self.add(operation, action)?;
-                    }
-                    ActionType::KeyRevoke => {
-                        self.revoke(operation, action)?;
-                    }
+            match action.action {
+                ActionType::KeyAdd => {
+                    self.add(operation, action)?;
+                }
+                ActionType::KeyRevoke => {
+                    self.revoke(operation, action)?;
                 }
             }
+        }
 
-            let signing_key_ids = match operation.signing_key_ids() {
-                Some(signing_key_ids) => signing_key_ids,
+        let signing_key_ids = match operation.signing_key_ids() {
+            Some(signing_key_ids) => signing_key_ids,
+            None => return Err(SelfError::SiggraphOperationSigningKeyInvalid),
+        };
+
+        if signing_key_ids.len() != 1 {
+            return Err(SelfError::SiggraphOperationSigningKeyInvalid);
+        }
+
+        for signing_key_id in signing_key_ids {
+            // check the key used to sign the operation exists
+            let signing_key = match self.keys.get(&signing_key_id) {
+                Some(signing_key) => signing_key.clone(),
                 None => return Err(SelfError::SiggraphOperationSigningKeyInvalid),
             };
 
-            if signing_key_ids.len() != 1 {
-                return Err(SelfError::SiggraphOperationSigningKeyInvalid);
+            // check that the operation was signed before the signing key was revoked
+            if operation.timestamp() < (*signing_key).borrow().created_at().unwrap()
+                || !(*signing_key).borrow().revoked_at().is_none()
+                    && operation.timestamp() > (*signing_key).borrow().revoked_at().unwrap()
+            {
+                return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
             }
 
-            for signing_key_id in signing_key_ids {
-                // check the key used to sign the operation exists
-                let signing_key = match self.keys.get(&signing_key_id) {
-                    Some(signing_key) => signing_key.clone(),
-                    None => return Err(SelfError::SiggraphOperationSigningKeyInvalid),
-                };
+            operation.verify(&(*signing_key).borrow().pk)?;
 
-                // check that the operation was signed before the signing key was revoked
-                if operation.timestamp() < (*signing_key).borrow().created_at().unwrap()
-                    || !(*signing_key).borrow().revoked_at().is_none()
-                        && operation.timestamp() > (*signing_key).borrow().revoked_at().unwrap()
-                {
-                    return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
+            let mut valid: bool = false;
+
+            // check all keys to ensure that at least one key is active
+            for key in self.keys.values() {
+                let k = (**key).borrow();
+
+                if k.revoked_at().is_none() {
+                    valid = true;
+                    break;
                 }
-
-                operation.verify(&(*signing_key).borrow().pk)?;
-
-                let mut valid: bool = false;
-
-                // check all keys to ensure that at least one key is active
-                for key in self.keys.values() {
-                    let k = (**key).borrow();
-
-                    if k.revoked_at().is_none() {
-                        valid = true;
-                        break;
-                    }
-                }
-
-                if !valid {
-                    return Err(SelfError::SiggraphOperationNoValidKeys);
-                }
-
-                // check there is an active recovery key
-                if self.recovery_key.is_none() {
-                    return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
-                }
-
-                let recovery_key = self.recovery_key.as_ref().unwrap().clone();
-
-                if (*recovery_key).borrow().revoked_at().is_some() {
-                    return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
-                }
-
-                // add the operation to the history
-                self.operations.push(operation.clone());
-                self.signatures.insert(operation.signatures().first().unwrap().signature.clone(), operation.sequence as usize);
             }
+
+            if !valid {
+                return Err(SelfError::SiggraphOperationNoValidKeys);
+            }
+
+            // check there is an active recovery key
+            if self.recovery_key.is_none() {
+                return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
+            }
+
+            let recovery_key = self.recovery_key.as_ref().unwrap().clone();
+
+            if (*recovery_key).borrow().revoked_at().is_some() {
+                return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
+            }
+
+            // add the operation to the history
+            self.operations.push(operation.clone());
+            self.signatures.insert(
+                operation.signatures().first().unwrap().signature.clone(),
+                operation.sequence as usize,
+            );
         }
 
         return Ok(());
@@ -188,16 +190,20 @@ impl SignatureGraph {
         if action.role.is_none() {
             return Err(SelfError::SiggraphActionRoleMissing);
         }
-        
+
         let public_key = action.key.as_ref().unwrap();
         let public_key_role = action.role.as_ref().unwrap();
 
         let kp = match public_key_role {
-            KeyRole::Device => KeyPair::from_public_key(&action.kid, KeyPairType::Ed25519, &public_key),
-            KeyRole::Recovery => KeyPair::from_public_key(&action.kid, KeyPairType::Ed25519, &public_key),
+            KeyRole::Device => {
+                KeyPair::from_public_key(&action.kid, KeyPairType::Ed25519, &public_key)
+            }
+            KeyRole::Recovery => {
+                KeyPair::from_public_key(&action.kid, KeyPairType::Ed25519, &public_key)
+            }
         }?;
 
-        let node = Rc::new(RefCell::new(Node{
+        let node = Rc::new(RefCell::new(Node {
             kid: action.kid.clone(),
             did: action.did.clone(),
             typ: public_key_role.clone(),
@@ -220,7 +226,7 @@ impl SignatureGraph {
                 }
 
                 self.devices.insert(did, node.clone());
-            },
+            }
             KeyRole::Recovery => {
                 // check there are only one active recovery keys
                 if self.recovery_key.is_some() {
@@ -230,18 +236,21 @@ impl SignatureGraph {
                 }
 
                 self.recovery_key = Some(node.clone());
-            },
+            }
         };
 
         let kid = node.borrow().kid.clone();
-        self.keys.insert(kid.clone(), node.clone());        
+        self.keys.insert(kid.clone(), node.clone());
 
         let signing_key_id = operation.signing_key_ids().unwrap()[0].clone();
 
         if operation.sequence == 0 && signing_key_id == kid {
             self.root = Some(node.clone());
         } else {
-            let parent = self.keys.get(&signing_key_id).ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?;
+            let parent = self
+                .keys
+                .get(&signing_key_id)
+                .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?;
 
             node.as_ref().borrow_mut().incoming.push(parent.clone());
             parent.as_ref().borrow_mut().outgoing.push(node.clone());
@@ -271,7 +280,10 @@ impl SignatureGraph {
         revoked_key.ra = action.effective_from;
 
         let signing_key_id = operation.signing_key_ids().unwrap()[0].clone();
-        let signing_key = self.keys.get(&signing_key_id).ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?;
+        let signing_key = self
+            .keys
+            .get(&signing_key_id)
+            .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?;
 
         if signing_key.borrow().typ == KeyRole::Recovery {
             // if the signing key was a recovery key, then nuke all existing keys
@@ -301,9 +313,248 @@ impl SignatureGraph {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn new() {
+    use chrono::Utc;
+    use std::collections::HashMap;
 
+    use crate::{
+        error::SelfError,
+        keypair::KeyPair,
+        siggraph::action::{Action, ActionType, KeyRole},
+        siggraph::graph::SignatureGraph,
+        siggraph::operation::Operation,
+    };
+
+    struct TestOperation {
+        signer: String,
+        operation: Operation,
+        error: Result<(), SelfError>,
     }
 
+    fn test_keys() -> HashMap<String, KeyPair> {
+        let mut keys = HashMap::new();
+
+        for id in 0..10 {
+            let kp = KeyPair::new(crate::keypair::KeyPairType::Ed25519);
+            keys.insert(id.to_string(), kp);
+        }
+
+        return keys;
+    }
+
+    fn test_operation(
+        keys: &HashMap<String, KeyPair>,
+        signer: &str,
+        operation: &mut Operation,
+    ) -> String {
+        let sk = keys.get(signer).unwrap();
+        operation.sign(&sk).unwrap();
+
+        return operation
+            .signatures()
+            .first()
+            .as_ref()
+            .unwrap()
+            .signature
+            .clone();
+    }
+
+    fn test_execute(keys: &HashMap<String, KeyPair>, test_history: &mut Vec<TestOperation>) {
+        let mut sg = SignatureGraph::new(Vec::new()).unwrap();
+
+        let mut previous = String::from("-");
+
+        for test_op in test_history {
+            if test_op.operation.previous == "previous" {
+                test_op.operation.previous = previous;
+            }
+
+            previous = test_operation(keys, &test_op.signer, &mut test_op.operation);
+
+            let result = sg.execute(&test_op.operation);
+            if test_op.error.is_err() {
+                assert_eq!(
+                    result.err().unwrap(),
+                    *test_op.error.as_ref().err().unwrap()
+                );
+            } else {
+                assert_eq!(test_op.error.is_ok(), result.is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn execute_valid_single_entry() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![TestOperation {
+            signer: String::from("0"),
+            operation: Operation::new(
+                0,
+                "-",
+                now,
+                vec![
+                    Action {
+                        kid: keys["0"].id(),
+                        did: Some(String::from("device-1")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now,
+                        key: Some(base64::encode_config(
+                            keys["0"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    },
+                    Action {
+                        kid: keys["1"].id(),
+                        did: None,
+                        role: Some(KeyRole::Recovery),
+                        action: ActionType::KeyAdd,
+                        effective_from: now,
+                        key: Some(base64::encode_config(
+                            keys["1"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    },
+                ],
+            ),
+            error: Ok(()),
+        }];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_valid_multi_entry() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![Action {
+                        kid: keys["2"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    2,
+                    "previous",
+                    now + 2,
+                    vec![Action {
+                        kid: keys["3"].id(),
+                        did: Some(String::from("device-3")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 2,
+                        key: Some(base64::encode_config(
+                            keys["3"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("2"),
+                operation: Operation::new(
+                    3,
+                    "previous",
+                    now + 3,
+                    vec![Action {
+                        kid: keys["4"].id(),
+                        did: Some(String::from("device-4")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 3,
+                        key: Some(base64::encode_config(
+                            keys["4"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("3"),
+                operation: Operation::new(
+                    4,
+                    "previous",
+                    now + 4,
+                    vec![
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyRevoke,
+                            effective_from: now + 4,
+                            key: None,
+                        },
+                        Action {
+                            kid: keys["5"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 4,
+                            key: Some(base64::encode_config(
+                                keys["5"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
 }

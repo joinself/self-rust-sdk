@@ -301,7 +301,6 @@ impl Message {
 
             let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
             let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
-
             let message = format!("{}.{}", encoded_protected, encoded_payload);
 
             if !signing_key.verify(message.as_bytes(), &decoded_signature) {
@@ -327,7 +326,6 @@ impl Message {
 
             let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
             let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
-
             let message = format!("{}.{}", encoded_protected, encoded_payload);
 
             if !signing_key.verify(message.as_bytes(), &decoded_signature) {
@@ -347,7 +345,7 @@ impl Message {
             let kid = &self.protected.as_ref().unwrap()["kid"];
 
             if kid.is_string() {
-                kids.push(kid.to_string())
+                kids.push(String::from(kid.as_str().unwrap()));
             }
         }
 
@@ -355,7 +353,7 @@ impl Message {
             let kid = &sig.protected["kid"];
 
             if kid.is_string() {
-                kids.push(kid.to_string())
+                kids.push(String::from(kid.as_str().unwrap()));
             }
         }
 
@@ -368,12 +366,10 @@ impl Message {
 
     pub fn signatures(&self) -> Vec<Signature> {
         if self.protected.is_some() && self.signature.is_some() {
-            return vec![
-                Signature{
-                    protected: self.protected.as_ref().unwrap().clone(),
-                    signature: self.signature.as_ref().unwrap().clone(),
-                }
-            ];
+            return vec![Signature {
+                protected: self.protected.as_ref().unwrap().clone(),
+                signature: self.signature.as_ref().unwrap().clone(),
+            }];
         }
 
         return self.signatures.clone();
