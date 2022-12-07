@@ -8,6 +8,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use chrono::{DateTime, Utc};
+
 pub struct SignatureGraph {
     root: Option<Rc<RefCell<Node>>>,
     keys: HashMap<String, Rc<RefCell<Node>>>,
@@ -36,6 +38,8 @@ impl SignatureGraph {
     }
 
     pub fn execute(&mut self, operation: &Operation) -> Result<(), SelfError> {
+        operation.validate()?;
+
         // check the sequence is in order
         if operation.sequence != self.operations.len() as i32 {
             return Err(SelfError::SiggraphOperationSequenceOutOfOrder);
@@ -105,6 +109,12 @@ impl SignatureGraph {
         for action in &operation.actions {
             action.validate()?;
 
+            if operation.sequence > 0 && action.effective_from().is_some() {
+                if action.effective_from().unwrap() < self.root.as_ref().unwrap().borrow().created_at().unwrap() {
+                    return Err(SelfError::SiggraphActionEffectiveFromInvalid);
+                }
+            }
+
             match action.action {
                 ActionType::KeyAdd => {
                     self.add(operation, action)?;
@@ -165,6 +175,7 @@ impl SignatureGraph {
             let recovery_key = self.recovery_key.as_ref().unwrap().clone();
 
             if (*recovery_key).borrow().revoked_at().is_some() {
+                println!("revoked at recovery key {}", (*recovery_key).borrow().revoked_at().unwrap());
                 return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
             }
 
@@ -179,7 +190,39 @@ impl SignatureGraph {
         return Ok(());
     }
 
-    pub fn add(&mut self, operation: &Operation, action: &Action) -> Result<(), SelfError> {
+    pub fn is_key_valid(&self, kid: &str, at: DateTime<Utc>) -> bool {
+        println!(">>> get key");
+        let k = match self.keys.get(kid) {
+            Some(k) => k.clone(),
+            None => return false,
+        };
+
+        let k = k.borrow();
+
+        if k.created_at().is_none() {
+            println!(">>> created at none");
+            return false;
+        }
+
+        if k.created_at().unwrap() == at && k.revoked_at().is_none() || k.created_at().unwrap() < at && k.revoked_at().is_none() {
+            return true;
+        }
+
+        if k.revoked_at().is_none() {
+            println!(">>> revoked at none");
+            return false;
+        }
+
+        if k.created_at().unwrap() == at && k.revoked_at().unwrap() > at || k.created_at().unwrap() < at && k.revoked_at().unwrap() > at {
+            return true;
+        }
+
+        println!(">>> fallthrough");
+
+        return false;
+    }
+
+    fn add(&mut self, operation: &Operation, action: &Action) -> Result<(), SelfError> {
         // lookup the key the action refers to
         if self.keys.contains_key(&action.kid) {
             return Err(SelfError::SiggraphActionKeyDuplicate);
@@ -261,18 +304,18 @@ impl SignatureGraph {
         return Ok(());
     }
 
-    pub fn revoke(&mut self, operation: &Operation, action: &Action) -> Result<(), SelfError> {
+    fn revoke(&mut self, operation: &Operation, action: &Action) -> Result<(), SelfError> {
+        // if this is the first (root) operation, then key revocation is not permitted
+        if operation.sequence == 0 {
+            return Err(SelfError::SiggraphActionInvalidKeyRevocation);
+        }
+
         // lookup the key the action refers to
         let node = self
             .keys
             .get(&action.kid)
             .ok_or_else(|| SelfError::SiggraphActionKeyMissing)?
             .clone();
-
-        // if this is the first (root) operation, then key revocation is not permitted
-        if operation.sequence == 0 {
-            return Err(SelfError::SiggraphActionInvalidKeyRevocation);
-        }
 
         // if the key has been revoked, then fail
         let mut revoked_key = node.as_ref().borrow_mut();
@@ -305,23 +348,25 @@ impl SignatureGraph {
                     child_key.ra = action.effective_from;
                 }
             }
-        } else {
-            // get and re-borrow revoked key as immutable ref this time
-            let node = self
-                .keys
-                .get(&action.kid)
-                .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?
-                .clone();
 
-            let revoked_key = node.as_ref().borrow();
+            return Ok(());
+        }
 
-            // revoke all child keys created after the revocation takes effect
-            for child_node in revoked_key.collect() {
-                let mut child_key = child_node.as_ref().borrow_mut();
+        // get and re-borrow revoked key as immutable ref this time
+        let node = self
+            .keys
+            .get(&action.kid)
+            .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?
+            .clone();
 
-                if child_key.created_at().unwrap() < action.effective_from().unwrap() {
-                    child_key.ra = action.effective_from;
-                }
+        let revoked_key = node.as_ref().borrow();
+
+        // revoke all child keys created after the revocation takes effect
+        for child_node in revoked_key.collect() {
+            let mut child_key = child_node.as_ref().borrow_mut();
+
+            if child_key.created_at().unwrap() < action.effective_from().unwrap() {
+                child_key.ra = action.effective_from;
             }
         }
 
@@ -332,7 +377,7 @@ impl SignatureGraph {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use std::collections::HashMap;
+    use std::{collections::HashMap};
 
     use crate::{
         error::SelfError,
@@ -376,7 +421,7 @@ mod tests {
             .clone();
     }
 
-    fn test_execute(keys: &HashMap<String, KeyPair>, test_history: &mut Vec<TestOperation>) {
+    fn test_execute(keys: &HashMap<String, KeyPair>, test_history: &mut Vec<TestOperation>) -> SignatureGraph {
         let mut sg = SignatureGraph::new(Vec::new()).unwrap();
 
         let mut previous = String::from("-");
@@ -395,9 +440,14 @@ mod tests {
                     *test_op.error.as_ref().err().unwrap()
                 );
             } else {
+                if result.is_err() {
+                    println!("{:?}", result);
+                }
                 assert_eq!(test_op.error.is_ok(), result.is_ok());
             }
         }
+
+        return sg;
     }
 
     #[test]
@@ -750,4 +800,1317 @@ mod tests {
 
         test_execute(&keys, &mut test_history);
     }
+
+    #[test]
+    fn execute_invalid_sequence_ordering() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    3,
+                    "previous",
+                    now + 1,
+                    vec![Action {
+                        kid: keys["2"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Err(SelfError::SiggraphOperationSequenceOutOfOrder),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_timestamp() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now,
+                    vec![Action {
+                        kid: keys["2"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Err(SelfError::SiggraphOperationTimestampInvalid),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_previous_signature() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "invalid-previous",
+                    now + 1,
+                    vec![Action {
+                        kid: keys["2"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Err(SelfError::SiggraphOperationPreviousSignatureInvalid),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_duplicate_key_identifier() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![Action {
+                        kid: keys["0"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Err(SelfError::SiggraphActionKeyDuplicate),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_no_active_keys() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                        kid: keys["0"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now +1,
+                        key: None,
+                    }
+                    ],
+                ),
+                error: Err(SelfError::SiggraphOperationNoValidKeys),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_no_active_recovery_keys() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                        kid: keys["1"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now +1,
+                        key: None,
+                    }
+                    ],
+                ),
+                error: Err(SelfError::SiggraphOperationNoValidRecoveryKey),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_multiple_active_recovery_keys() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_multiple_active_device_keys() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["2"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphActionMultipleActiveDeviceKeys),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_revoked_key_creation() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: None,
+                            action: ActionType::KeyRevoke,
+                            effective_from: now + 1,
+                            key: None,
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("1"),
+                operation: Operation::new(
+                    2,
+                    "previous",
+                    now + 2,
+                    vec![
+                        Action {
+                            kid: keys["3"].id(),
+                            did: Some(String::from("device-3")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 2,
+                            key: Some(base64::encode_config(
+                                keys["3"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphOperationSignatureKeyRevoked),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_signing_key() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("3"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["1"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphOperationSigningKeyInvalid),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_recovery_no_revoke() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("1"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["2"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["3"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["3"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphOperationAccountRecoveryActionInvalid),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_empty_actions() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 2,
+                    vec![
+                    ],
+                ),
+                error: Err(SelfError::SiggraphOperationNOOP),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_already_revoked_key() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: None,
+                            action: ActionType::KeyRevoke,
+                            effective_from: now + 1,
+                            key: None,
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    2,
+                    "previous",
+                    now + 2,
+                    vec![
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: None,
+                            action: ActionType::KeyRevoke,
+                            effective_from: now + 2,
+                            key: None,
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphActionKeyAlreadyRevoked),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_key_reference() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["9"].id(),
+                            did: None,
+                            role: None,
+                            action: ActionType::KeyRevoke,
+                            effective_from: now + 1,
+                            key: None,
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphActionKeyMissing),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_root_operation_key_revocation() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["0"].id(),
+                            did: None,
+                            role: None,
+                            action: ActionType::KeyRevoke,
+                            effective_from: now,
+                            key: None,
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphActionInvalidKeyRevocation),
+            }
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_operation_signature() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["9"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("1"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["3"].id(),
+                            did: Some(String::from("device-3")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["3"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Err(SelfError::MessageSignatureInvalid),
+            }
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_operation_signature_root() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["9"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Err(SelfError::MessageSignatureInvalid),
+            }
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_invalid_revocation_before_root_operation_timestamp() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 1,
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: None,
+                            action: ActionType::KeyRevoke,
+                            effective_from: now - 100,
+                            key: None,
+                        },
+                    ],
+                ),
+                error: Err(SelfError::SiggraphActionEffectiveFromInvalid),
+            }
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn is_key_valid() {
+        let now = Utc::now();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now.timestamp(),
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now.timestamp(),
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now.timestamp(),
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    (now + chrono::Duration::seconds(1)).timestamp(),
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: None,
+                            role: None,
+                            action: ActionType::KeyRevoke,
+                            effective_from: (now + chrono::Duration::seconds(1)).timestamp(),
+                            key: None,
+                        },
+                        Action {
+                            kid: keys["2"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from:  (now + chrono::Duration::seconds(1)).timestamp(),
+                            key: Some(base64::encode_config(
+                                keys["2"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            }
+        ];
+
+        let sg = test_execute(&keys, &mut test_history);
+
+        assert!(sg.is_key_valid(&keys["1"].id(), now));
+        assert!(!sg.is_key_valid(&keys["1"].id(), now + chrono::Duration::seconds(1)));
+        
+    }
 }
+
+

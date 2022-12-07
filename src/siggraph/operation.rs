@@ -40,25 +40,30 @@ impl Operation {
             Err(err) => return Err(err),
         };
 
-        if operation.version != "1.0.0" {
+        operation.message = Some(msg);
+        operation.validate()?;
+
+        return Ok(operation);
+    }
+
+    pub fn validate(&self) -> Result<(), SelfError> {
+        if self.version != "1.0.0" {
             return Err(SelfError::SiggraphOperationVersionInvalid);
         }
 
-        if operation.sequence < 0 {
+        if self.sequence < 0 {
             return Err(SelfError::SiggraphOperationSequenceOutOfOrder);
         }
 
-        if operation.timestamp < 1 {
+        if self.timestamp < 1 {
             return Err(SelfError::SiggraphOperationTimestampInvalid);
         }
 
-        if operation.actions.len() < 1 {
+        if self.actions.len() < 1 {
             return Err(SelfError::SiggraphOperationNOOP);
         }
 
-        operation.message = Some(msg);
-
-        return Ok(operation);
+        return Ok(());
     }
 
     pub fn verify(&self, signing_key: &KeyPair) -> Result<(), SelfError> {
