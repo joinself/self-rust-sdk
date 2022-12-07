@@ -96,6 +96,8 @@ impl SignatureGraph {
                         return Err(SelfError::SiggraphOperationAccountRecoveryActionInvalid);
                     }
                 }
+
+                drop(signing_key);
             }
         }
 
@@ -261,31 +263,38 @@ impl SignatureGraph {
 
     pub fn revoke(&mut self, operation: &Operation, action: &Action) -> Result<(), SelfError> {
         // lookup the key the action refers to
-        let node = self.keys.get(&action.kid);
-        if node.is_none() {
-            return Err(SelfError::SiggraphActionKeyMissing);
-        }
+        let node = self
+            .keys
+            .get(&action.kid)
+            .ok_or_else(|| SelfError::SiggraphActionKeyMissing)?
+            .clone();
 
-        // if the key does not exist, then the revocation is invalid
+        // if this is the first (root) operation, then key revocation is not permitted
         if operation.sequence == 0 {
             return Err(SelfError::SiggraphActionInvalidKeyRevocation);
         }
 
-        let mut revoked_key = node.unwrap().as_ref().borrow_mut();
-
+        // if the key has been revoked, then fail
+        let mut revoked_key = node.as_ref().borrow_mut();
         if revoked_key.ra != 0 {
             return Err(SelfError::SiggraphActionKeyAlreadyRevoked);
         }
 
         revoked_key.ra = action.effective_from;
 
+        // drop mutable reference to make borrow checker happy for
+        // when we iterate over child nodes later
+        drop(revoked_key);
+
         let signing_key_id = operation.signing_key_ids().unwrap()[0].clone();
-        let signing_key = self
+
+        let node = self
             .keys
             .get(&signing_key_id)
-            .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?;
+            .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?
+            .clone();
 
-        if signing_key.borrow().typ == KeyRole::Recovery {
+        if node.as_ref().borrow().typ == KeyRole::Recovery {
             // if the signing key was a recovery key, then nuke all existing keys
             let mut root = self.root.as_ref().unwrap().as_ref().borrow_mut();
             root.ra = action.effective_from;
@@ -297,6 +306,15 @@ impl SignatureGraph {
                 }
             }
         } else {
+            // get and re-borrow revoked key as immutable ref this time
+            let node = self
+                .keys
+                .get(&action.kid)
+                .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?
+                .clone();
+
+            let revoked_key = node.as_ref().borrow();
+
             // revoke all child keys created after the revocation takes effect
             for child_node in revoked_key.collect() {
                 let mut child_key = child_node.as_ref().borrow_mut();
@@ -546,6 +564,181 @@ mod tests {
                             effective_from: now + 4,
                             key: Some(base64::encode_config(
                                 keys["5"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+        ];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    #[test]
+    fn execute_valid_multi_entry_with_recovery() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
+
+        let mut test_history = vec![
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    0,
+                    "-",
+                    now,
+                    vec![
+                        Action {
+                            kid: keys["0"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["0"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["1"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now,
+                            key: Some(base64::encode_config(
+                                keys["1"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    1,
+                    "previous",
+                    now + 1,
+                    vec![Action {
+                        kid: keys["2"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("0"),
+                operation: Operation::new(
+                    2,
+                    "previous",
+                    now + 2,
+                    vec![Action {
+                        kid: keys["3"].id(),
+                        did: Some(String::from("device-3")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 2,
+                        key: Some(base64::encode_config(
+                            keys["3"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("2"),
+                operation: Operation::new(
+                    3,
+                    "previous",
+                    now + 3,
+                    vec![Action {
+                        kid: keys["4"].id(),
+                        did: Some(String::from("device-4")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 3,
+                        key: Some(base64::encode_config(
+                            keys["4"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("3"),
+                operation: Operation::new(
+                    4,
+                    "previous",
+                    now + 4,
+                    vec![
+                        Action {
+                            kid: keys["2"].id(),
+                            did: None,
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyRevoke,
+                            effective_from: now + 4,
+                            key: None,
+                        },
+                        Action {
+                            kid: keys["5"].id(),
+                            did: Some(String::from("device-2")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 4,
+                            key: Some(base64::encode_config(
+                                keys["5"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                    ],
+                ),
+                error: Ok(()),
+            },
+            TestOperation {
+                signer: String::from("1"),
+                operation: Operation::new(
+                    5,
+                    "previous",
+                    now + 5,
+                    vec![
+                        Action {
+                            did: None,
+                            kid: keys["1"].id(),
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyRevoke,
+                            effective_from: now + 5,
+                            key: None,
+                        },
+                        Action {
+                            kid: keys["6"].id(),
+                            did: Some(String::from("device-1")),
+                            role: Some(KeyRole::Device),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 5,
+                            key: Some(base64::encode_config(
+                                keys["6"].public(),
+                                base64::URL_SAFE_NO_PAD,
+                            )),
+                        },
+                        Action {
+                            kid: keys["7"].id(),
+                            did: None,
+                            role: Some(KeyRole::Recovery),
+                            action: ActionType::KeyAdd,
+                            effective_from: now + 5,
+                            key: Some(base64::encode_config(
+                                keys["7"].public(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },

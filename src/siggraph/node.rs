@@ -5,6 +5,7 @@ use std::rc::Rc;
 use crate::keypair::KeyPair;
 use crate::siggraph::action::KeyRole;
 
+#[derive(Debug)]
 pub struct Node {
     pub kid: String,
     pub did: Option<String>,
