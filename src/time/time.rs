@@ -93,6 +93,7 @@ mod tests {
 
     #[test]
     fn get_rfc3339() {
-        println!("utc: {} - rfc: {}", chrono::Utc::now(), rfc3339());
+        rfc3339();
+        //println!("utc: {} - rfc: {}", chrono::Utc::now(), rfc3339());
     }
 }

@@ -1,4 +1,7 @@
-use dryoc::sign::{Message, PublicKey, SecretKey, Signature, SignedMessage, SigningKeyPair};
+use dryoc::{
+    sign::{Message, PublicKey, SecretKey, Signature, SignedMessage, SigningKeyPair},
+    types::StackByteArray,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
@@ -41,6 +44,29 @@ impl KeyPair {
                 };
             }
         }
+    }
+
+    pub fn from_public_key(
+        id: &str,
+        keypair_type: KeyPairType,
+        public_key: &str,
+    ) -> Result<KeyPair, SelfError> {
+        // TODO keypair should probably be split into different types (public/private)?
+        let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
+            Ok(decoded_public_key) => decoded_public_key,
+            Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
+        };
+
+        if decoded_public_key.len() != 32 {
+            return Err(SelfError::SiggraphActionPublicKeyLengthBad);
+        }
+
+        return Ok(KeyPair {
+            id: Some(String::from(id)),
+            keypair_type: keypair_type,
+            public_key: decoded_public_key,
+            secret_key: Vec::new(),
+        });
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
@@ -119,28 +145,20 @@ impl KeyPair {
         let sm =
             match SignedMessage::<Signature, Message>::from_bytes(&[signature, message].concat()) {
                 Ok(sm) => sm,
-                Err(_) => return false,
+                Err(err) => {
+                    println!("{}", err);
+                    return false;
+                }
             };
 
-        let sk = self.signing_key();
-        if sk.is_none() {
-            return false;
-        }
+        let mut sba = StackByteArray::new();
+        sba.copy_from_slice(&self.public_key);
+        let pk = PublicKey::from(sba);
 
-        match sm.verify(&sk.unwrap().public_key) {
+        match sm.verify(&pk) {
             Ok(_) => return true,
             Err(_) => return false,
         }
-    }
-
-    fn signing_key(&self) -> Option<SigningKeyPair<PublicKey, SecretKey>> {
-        return match SigningKeyPair::<PublicKey, SecretKey>::from_slices(
-            &self.public_key,
-            &self.secret_key,
-        ) {
-            Ok(kp) => Some(kp),
-            Err(_) => None,
-        };
     }
 }
 
