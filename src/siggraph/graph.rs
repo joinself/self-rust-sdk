@@ -175,7 +175,6 @@ impl SignatureGraph {
             let recovery_key = self.recovery_key.as_ref().unwrap().clone();
 
             if (*recovery_key).borrow().revoked_at().is_some() {
-                println!("revoked at recovery key {}", (*recovery_key).borrow().revoked_at().unwrap());
                 return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
             }
 
@@ -191,7 +190,6 @@ impl SignatureGraph {
     }
 
     pub fn is_key_valid(&self, kid: &str, at: DateTime<Utc>) -> bool {
-        println!(">>> get key");
         let k = match self.keys.get(kid) {
             Some(k) => k.clone(),
             None => return false,
@@ -200,7 +198,6 @@ impl SignatureGraph {
         let k = k.borrow();
 
         if k.created_at().is_none() {
-            println!(">>> created at none");
             return false;
         }
 
@@ -209,15 +206,12 @@ impl SignatureGraph {
         }
 
         if k.revoked_at().is_none() {
-            println!(">>> revoked at none");
             return false;
         }
 
         if k.created_at().unwrap() == at && k.revoked_at().unwrap() > at || k.created_at().unwrap() < at && k.revoked_at().unwrap() > at {
             return true;
         }
-
-        println!(">>> fallthrough");
 
         return false;
     }
@@ -365,7 +359,7 @@ impl SignatureGraph {
         for child_node in revoked_key.collect() {
             let mut child_key = child_node.as_ref().borrow_mut();
 
-            if child_key.created_at().unwrap() < action.effective_from().unwrap() {
+            if child_key.created_at().unwrap() >= action.effective_from().unwrap() {
                 child_key.ra = action.effective_from;
             }
         }
@@ -1086,7 +1080,7 @@ mod tests {
                             did: None,
                             role: Some(KeyRole::Recovery),
                             action: ActionType::KeyAdd,
-                            effective_from: now + 1,
+                            effective_from: now,
                             key: Some(base64::encode_config(
                                 keys["1"].public(),
                                 base64::URL_SAFE_NO_PAD,
@@ -1108,12 +1102,12 @@ mod tests {
                         did: None,
                         role: None,
                         action: ActionType::KeyRevoke,
-                        effective_from: now +1,
+                        effective_from: now,
                         key: None,
                     }
                     ],
                 ),
-                error: Err(SelfError::SiggraphOperationNoValidKeys),
+                error: Err(SelfError::SiggraphOperationSignatureKeyRevoked),
             },
         ];
 
@@ -2107,10 +2101,14 @@ mod tests {
 
         let sg = test_execute(&keys, &mut test_history);
 
-        assert!(sg.is_key_valid(&keys["1"].id(), now));
-        assert!(!sg.is_key_valid(&keys["1"].id(), now + chrono::Duration::seconds(1)));
-        
+        assert!(sg.is_key_valid(&keys["0"].id(), now));
+        assert!(!sg.is_key_valid(&keys["0"].id(), now + chrono::Duration::seconds(1)));
+        assert!(!sg.is_key_valid(&keys["0"].id(), now + chrono::Duration::seconds(2)));
+        assert!(!sg.is_key_valid(&keys["0"].id(), now - chrono::Duration::seconds(1)));
+        assert!(sg.is_key_valid(&keys["2"].id(), now + chrono::Duration::seconds(1)));
+        assert!(sg.is_key_valid(&keys["2"].id(), now + chrono::Duration::seconds(2)));
+        assert!(!sg.is_key_valid(&keys["0"].id(), now - chrono::Duration::seconds(1)));
     }
+
+    
 }
-
-
