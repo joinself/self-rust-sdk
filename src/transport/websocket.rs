@@ -1,20 +1,22 @@
 use crossbeam::channel;
-use crossbeam::channel::{Sender, Receiver};
+use crossbeam::channel::{Receiver, Sender};
+use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
-//use futures_util::stream::{SplitSink};
-//use futures_util::{AsyncRead, AsyncWrite, AsyncWriteExt};
-//use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
-use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream};
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
+
+/*
+use std::cell::RefCell;
+use std::rc::Rc;
+ */
 
 use crate::error::SelfError;
 
 pub struct Websocket {
     endpoint: Url,
-    socket: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     read_tx: Sender<Message>,
     read_rx: Receiver<Message>,
     write_tx: Sender<Message>,
@@ -36,7 +38,6 @@ impl Websocket {
 
         let ws = Websocket {
             endpoint: endpoint,
-            socket: None,
             read_tx: read_tx,
             read_rx: read_rx,
             write_tx: write_tx,
@@ -44,7 +45,7 @@ impl Websocket {
             runtime: runtime,
         };
 
-        return Ok(ws)
+        return Ok(ws);
     }
 
     pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
@@ -52,20 +53,14 @@ impl Websocket {
         let endpoint = self.endpoint.clone();
 
         let (tx, rx) = channel::bounded(1);
-        
+
         /*
         // TODO cleanup old sockets!
-        if self.socket.is_some() {
-            let result = self.socket.unwrap().close(None).await;
-            if result.is_err() {
-                // TODO implement error logging!
-            }
-        }
-        */
+         */
 
         handle.spawn(async move {
             let result = match connect_async(&endpoint).await {
-                Ok((socket, _)) => { Ok(socket) },
+                Ok((socket, _)) => Ok(socket),
                 Err(_) => Err(SelfError::RestRequestConnectionFailed),
             };
 
@@ -75,30 +70,68 @@ impl Websocket {
         let result = rx.recv().unwrap();
         if result.is_err() {
             return Err(result.err().unwrap());
-        }    
-    
-        let (mut socket_tx, _socket_rx) = result.unwrap().split();
+        }
+
+        let socket = result.unwrap();
+        let (mut socket_tx, socket_rx) = socket.split();
+
+        let write_rx = self.write_rx.clone();
+        let read_tx = self.read_tx.clone();
 
         handle.spawn(async move {
-            socket_tx.send(Message::binary(vec![0; 0])).await.expect("failed to send");
+            for m in write_rx.iter() {
+                socket_tx.send(m).await.unwrap_or_else(|_| return);
+            }
+            // TODO remove this
+            println!("exiting writer loop");
         });
 
+        handle.spawn(async move {
+            socket_rx
+                .for_each(|message| async {
+                    if message.is_ok() {
+                        let m = message.unwrap();
 
-        //self.socket.replace(result.unwrap());
+                        if m.is_close() {}
+
+                        if m.is_ping() {}
+
+                        if m.is_pong() {}
+
+                        if m.is_binary() {
+                            read_tx.send(m).unwrap_or_else(|_| return);
+                            // TODO remove this
+                        }
+                    }
+                })
+                .await;
+
+            println!("exiting writer loop");
+        });
+
+        //self.socket_tx.replace(socket_tx);
 
         return Ok(());
     }
 
-    fn authenticate(&self) {
+    fn authenticate(&self) {}
 
+    fn reader(&mut self) {}
+
+    fn send(&self, message: Message) -> Result<(), SelfError> {
+        return self
+            .write_tx
+            .send(message)
+            .map_err(|_| SelfError::RestRequestConnectionFailed);
     }
 
-    fn reader(&mut self) {
-        
+    fn receive(&self) -> Result<Message, SelfError> {
+        return self
+            .read_rx
+            .recv()
+            .map_err(|_| SelfError::RestRequestConnectionFailed);
     }
-
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -108,7 +141,5 @@ mod tests {
     #[test]
     fn new() {
         let ws = Websocket::new("wss://messaging.joinself.com/v2/messaging").unwrap();
-
     }
-
 }

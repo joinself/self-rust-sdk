@@ -63,7 +63,7 @@ impl Action {
             return Err(SelfError::SiggraphActionDeviceIDMissing);
         }
 
-        if self.effective_from < 0  {
+        if self.effective_from < 0 {
             return Err(SelfError::SiggraphActionEffectiveFromInvalid);
         }
 

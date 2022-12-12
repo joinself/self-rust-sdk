@@ -110,7 +110,9 @@ impl SignatureGraph {
             action.validate()?;
 
             if operation.sequence > 0 && action.effective_from().is_some() {
-                if action.effective_from().unwrap() < self.root.as_ref().unwrap().borrow().created_at().unwrap() {
+                if action.effective_from().unwrap()
+                    < self.root.as_ref().unwrap().borrow().created_at().unwrap()
+                {
                     return Err(SelfError::SiggraphActionEffectiveFromInvalid);
                 }
             }
@@ -201,7 +203,9 @@ impl SignatureGraph {
             return false;
         }
 
-        if k.created_at().unwrap() == at && k.revoked_at().is_none() || k.created_at().unwrap() < at && k.revoked_at().is_none() {
+        if k.created_at().unwrap() == at && k.revoked_at().is_none()
+            || k.created_at().unwrap() < at && k.revoked_at().is_none()
+        {
             return true;
         }
 
@@ -209,7 +213,9 @@ impl SignatureGraph {
             return false;
         }
 
-        if k.created_at().unwrap() == at && k.revoked_at().unwrap() > at || k.created_at().unwrap() < at && k.revoked_at().unwrap() > at {
+        if k.created_at().unwrap() == at && k.revoked_at().unwrap() > at
+            || k.created_at().unwrap() < at && k.revoked_at().unwrap() > at
+        {
             return true;
         }
 
@@ -371,7 +377,7 @@ impl SignatureGraph {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use std::{collections::HashMap};
+    use std::collections::HashMap;
 
     use crate::{
         error::SelfError,
@@ -415,7 +421,10 @@ mod tests {
             .clone();
     }
 
-    fn test_execute(keys: &HashMap<String, KeyPair>, test_history: &mut Vec<TestOperation>) -> SignatureGraph {
+    fn test_execute(
+        keys: &HashMap<String, KeyPair>,
+        test_history: &mut Vec<TestOperation>,
+    ) -> SignatureGraph {
         let mut sg = SignatureGraph::new(Vec::new()).unwrap();
 
         let mut previous = String::from("-");
@@ -1096,16 +1105,14 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
+                    vec![Action {
                         kid: keys["0"].id(),
                         did: None,
                         role: None,
                         action: ActionType::KeyRevoke,
                         effective_from: now,
                         key: None,
-                    }
-                    ],
+                    }],
                 ),
                 error: Err(SelfError::SiggraphOperationSignatureKeyRevoked),
             },
@@ -1159,16 +1166,14 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
+                    vec![Action {
                         kid: keys["1"].id(),
                         did: None,
                         role: None,
                         action: ActionType::KeyRevoke,
-                        effective_from: now +1,
+                        effective_from: now + 1,
                         key: None,
-                    }
-                    ],
+                    }],
                 ),
                 error: Err(SelfError::SiggraphOperationNoValidRecoveryKey),
             },
@@ -1222,19 +1227,17 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["2"].id(),
-                            did: None,
-                            role: Some(KeyRole::Recovery),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 1,
-                            key: Some(base64::encode_config(
-                                keys["2"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["2"].id(),
+                        did: None,
+                        role: Some(KeyRole::Recovery),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
                 ),
                 error: Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys),
             },
@@ -1288,19 +1291,17 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["2"].id(),
-                            did: Some(String::from("device-1")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["2"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["2"].id(),
+                        did: Some(String::from("device-1")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
                 ),
                 error: Err(SelfError::SiggraphActionMultipleActiveDeviceKeys),
             },
@@ -1365,16 +1366,14 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["1"].id(),
-                            did: None,
-                            role: None,
-                            action: ActionType::KeyRevoke,
-                            effective_from: now + 1,
-                            key: None,
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["1"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now + 1,
+                        key: None,
+                    }],
                 ),
                 error: Ok(()),
             },
@@ -1384,19 +1383,17 @@ mod tests {
                     2,
                     "previous",
                     now + 2,
-                    vec![
-                        Action {
-                            kid: keys["3"].id(),
-                            did: Some(String::from("device-3")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 2,
-                            key: Some(base64::encode_config(
-                                keys["3"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["3"].id(),
+                        did: Some(String::from("device-3")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 2,
+                        key: Some(base64::encode_config(
+                            keys["3"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
                 ),
                 error: Err(SelfError::SiggraphOperationSignatureKeyRevoked),
             },
@@ -1450,19 +1447,17 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["1"].id(),
-                            did: Some(String::from("device-2")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 1,
-                            key: Some(base64::encode_config(
-                                keys["1"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["1"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["1"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
                 ),
                 error: Err(SelfError::SiggraphOperationSigningKeyInvalid),
             },
@@ -1589,13 +1584,7 @@ mod tests {
             },
             TestOperation {
                 signer: String::from("0"),
-                operation: Operation::new(
-                    1,
-                    "previous",
-                    now + 2,
-                    vec![
-                    ],
-                ),
+                operation: Operation::new(1, "previous", now + 2, vec![]),
                 error: Err(SelfError::SiggraphOperationNOOP),
             },
         ];
@@ -1659,16 +1648,14 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["1"].id(),
-                            did: None,
-                            role: None,
-                            action: ActionType::KeyRevoke,
-                            effective_from: now + 1,
-                            key: None,
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["1"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now + 1,
+                        key: None,
+                    }],
                 ),
                 error: Ok(()),
             },
@@ -1678,16 +1665,14 @@ mod tests {
                     2,
                     "previous",
                     now + 2,
-                    vec![
-                        Action {
-                            kid: keys["1"].id(),
-                            did: None,
-                            role: None,
-                            action: ActionType::KeyRevoke,
-                            effective_from: now + 2,
-                            key: None,
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["1"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now + 2,
+                        key: None,
+                    }],
                 ),
                 error: Err(SelfError::SiggraphActionKeyAlreadyRevoked),
             },
@@ -1752,16 +1737,14 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["9"].id(),
-                            did: None,
-                            role: None,
-                            action: ActionType::KeyRevoke,
-                            effective_from: now + 1,
-                            key: None,
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["9"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now + 1,
+                        key: None,
+                    }],
                 ),
                 error: Err(SelfError::SiggraphActionKeyMissing),
             },
@@ -1775,60 +1758,58 @@ mod tests {
         let now = Utc::now().timestamp();
         let keys = test_keys();
 
-        let mut test_history = vec![
-            TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    0,
-                    "-",
-                    now,
-                    vec![
-                        Action {
-                            kid: keys["0"].id(),
-                            did: Some(String::from("device-1")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["0"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                        Action {
-                            kid: keys["1"].id(),
-                            did: Some(String::from("device-2")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["1"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                        Action {
-                            kid: keys["2"].id(),
-                            did: None,
-                            role: Some(KeyRole::Recovery),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 1,
-                            key: Some(base64::encode_config(
-                                keys["2"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                        Action {
-                            kid: keys["0"].id(),
-                            did: None,
-                            role: None,
-                            action: ActionType::KeyRevoke,
-                            effective_from: now,
-                            key: None,
-                        },
-                    ],
-                ),
-                error: Err(SelfError::SiggraphActionInvalidKeyRevocation),
-            }
-        ];
+        let mut test_history = vec![TestOperation {
+            signer: String::from("0"),
+            operation: Operation::new(
+                0,
+                "-",
+                now,
+                vec![
+                    Action {
+                        kid: keys["0"].id(),
+                        did: Some(String::from("device-1")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now,
+                        key: Some(base64::encode_config(
+                            keys["0"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    },
+                    Action {
+                        kid: keys["1"].id(),
+                        did: Some(String::from("device-2")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now,
+                        key: Some(base64::encode_config(
+                            keys["1"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    },
+                    Action {
+                        kid: keys["2"].id(),
+                        did: None,
+                        role: Some(KeyRole::Recovery),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["2"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    },
+                    Action {
+                        kid: keys["0"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now,
+                        key: None,
+                    },
+                ],
+            ),
+            error: Err(SelfError::SiggraphActionInvalidKeyRevocation),
+        }];
 
         test_execute(&keys, &mut test_history);
     }
@@ -1889,22 +1870,20 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["3"].id(),
-                            did: Some(String::from("device-3")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 1,
-                            key: Some(base64::encode_config(
-                                keys["3"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["3"].id(),
+                        did: Some(String::from("device-3")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["3"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    }],
                 ),
                 error: Err(SelfError::MessageSignatureInvalid),
-            }
+            },
         ];
 
         test_execute(&keys, &mut test_history);
@@ -1915,41 +1894,39 @@ mod tests {
         let now = Utc::now().timestamp();
         let keys = test_keys();
 
-        let mut test_history = vec![
-            TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    0,
-                    "-",
-                    now,
-                    vec![
-                        Action {
-                            kid: keys["0"].id(),
-                            did: Some(String::from("device-1")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["9"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                        Action {
-                            kid: keys["1"].id(),
-                            did: None,
-                            role: Some(KeyRole::Recovery),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 1,
-                            key: Some(base64::encode_config(
-                                keys["1"].public(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
-                ),
-                error: Err(SelfError::MessageSignatureInvalid),
-            }
-        ];
+        let mut test_history = vec![TestOperation {
+            signer: String::from("0"),
+            operation: Operation::new(
+                0,
+                "-",
+                now,
+                vec![
+                    Action {
+                        kid: keys["0"].id(),
+                        did: Some(String::from("device-1")),
+                        role: Some(KeyRole::Device),
+                        action: ActionType::KeyAdd,
+                        effective_from: now,
+                        key: Some(base64::encode_config(
+                            keys["9"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    },
+                    Action {
+                        kid: keys["1"].id(),
+                        did: None,
+                        role: Some(KeyRole::Recovery),
+                        action: ActionType::KeyAdd,
+                        effective_from: now + 1,
+                        key: Some(base64::encode_config(
+                            keys["1"].public(),
+                            base64::URL_SAFE_NO_PAD,
+                        )),
+                    },
+                ],
+            ),
+            error: Err(SelfError::MessageSignatureInvalid),
+        }];
 
         test_execute(&keys, &mut test_history);
     }
@@ -2010,19 +1987,17 @@ mod tests {
                     1,
                     "previous",
                     now + 1,
-                    vec![
-                        Action {
-                            kid: keys["1"].id(),
-                            did: None,
-                            role: None,
-                            action: ActionType::KeyRevoke,
-                            effective_from: now - 100,
-                            key: None,
-                        },
-                    ],
+                    vec![Action {
+                        kid: keys["1"].id(),
+                        did: None,
+                        role: None,
+                        action: ActionType::KeyRevoke,
+                        effective_from: now - 100,
+                        key: None,
+                    }],
                 ),
                 error: Err(SelfError::SiggraphActionEffectiveFromInvalid),
-            }
+            },
         ];
 
         test_execute(&keys, &mut test_history);
@@ -2087,7 +2062,7 @@ mod tests {
                             did: Some(String::from("device-1")),
                             role: Some(KeyRole::Device),
                             action: ActionType::KeyAdd,
-                            effective_from:  (now + chrono::Duration::seconds(1)).timestamp(),
+                            effective_from: (now + chrono::Duration::seconds(1)).timestamp(),
                             key: Some(base64::encode_config(
                                 keys["2"].public(),
                                 base64::URL_SAFE_NO_PAD,
@@ -2096,7 +2071,7 @@ mod tests {
                     ],
                 ),
                 error: Ok(()),
-            }
+            },
         ];
 
         let sg = test_execute(&keys, &mut test_history);
@@ -2109,6 +2084,4 @@ mod tests {
         assert!(sg.is_key_valid(&keys["2"].id(), now + chrono::Duration::seconds(2)));
         assert!(!sg.is_key_valid(&keys["0"].id(), now - chrono::Duration::seconds(1)));
     }
-
-    
 }
