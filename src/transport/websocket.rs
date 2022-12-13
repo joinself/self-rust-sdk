@@ -124,13 +124,7 @@ impl Websocket {
             .map_err(|_| SelfError::RestRequestConnectionFailed);
     }
 
-    /*
-    fn authenticate(&self) {
-
-    }
-
-    fn reader(&mut self) {}
-    */
+    fn authenticate(&self) {}
 
     pub fn send(&self, message: Message) -> Result<(), SelfError> {
         return self
