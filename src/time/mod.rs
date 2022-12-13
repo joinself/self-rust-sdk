@@ -1,1 +1,3 @@
-pub mod time;
+mod ntp;
+pub use self::ntp::*;
+

@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn serialize_deserialize() {
-        let ts = crate::time::time::unix();
+        let ts = crate::time::unix();
 
         let mut action = Action {
             kid: String::from("kid"),

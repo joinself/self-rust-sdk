@@ -1,1 +1,2 @@
-pub mod message;
+mod message;
+pub use self::message::*;

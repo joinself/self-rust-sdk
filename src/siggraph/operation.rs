@@ -1,6 +1,6 @@
 use crate::siggraph::action::Action;
 use crate::{
-    error::SelfError, keypair::KeyPair, message::message::Message, message::message::Signature,
+    error::SelfError, keypair::KeyPair, message::Message, message::Signature,
 };
 
 use chrono::{DateTime, NaiveDateTime, Utc};

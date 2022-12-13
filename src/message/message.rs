@@ -118,7 +118,7 @@ impl Message {
         m.payload
             .insert(String::from("jti"), Value::from(String::from(jti)));
 
-        let now = crate::time::time::now();
+        let now = crate::time::now();
 
         if unix {
             m.payload
