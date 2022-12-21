@@ -28,7 +28,7 @@ impl Operation {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Operation, SelfError> {
-        let msg = match Message::from_bytes(data) {
+        let msg = match Message::from_jws(data) {
             Ok(msg) => msg,
             Err(err) => return Err(err),
         };

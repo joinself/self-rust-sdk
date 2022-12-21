@@ -106,7 +106,7 @@ impl KeyPair {
             return self.id.as_ref().unwrap().clone();
         }
 
-        return hex::encode(&self.public_key);
+        return base64::encode_config(&self.public_key, base64::URL_SAFE_NO_PAD);
     }
 
     pub fn keypair_type(&self) -> KeyPairType {
