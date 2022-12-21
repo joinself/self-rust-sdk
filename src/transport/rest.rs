@@ -41,7 +41,7 @@ impl Rest {
     }
 
     fn authorization(&self, headers: &mut reqwest::header::HeaderMap) {
-        let mut token = crate::message::message::Message::new(
+        let mut token = crate::message::Message::new(
             "auth.token",
             &self.identity,
             &self.identity,

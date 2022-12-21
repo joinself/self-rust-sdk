@@ -63,7 +63,7 @@ impl Action {
             return Err(SelfError::SiggraphActionDeviceIDMissing);
         }
 
-        if self.effective_from < 0  {
+        if self.effective_from < 0 {
             return Err(SelfError::SiggraphActionEffectiveFromInvalid);
         }
 
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn serialize_deserialize() {
-        let ts = crate::time::time::unix();
+        let ts = crate::time::unix();
 
         let mut action = Action {
             kid: String::from("kid"),

@@ -118,7 +118,7 @@ impl Message {
         m.payload
             .insert(String::from("jti"), Value::from(String::from(jti)));
 
-        let now = crate::time::time::now();
+        let now = crate::time::now();
 
         if unix {
             m.payload
@@ -190,7 +190,7 @@ impl Message {
         return Ok(decoded_payload);
     }
 
-    pub fn from_bytes(data: &[u8]) -> Result<Message, SelfError> {
+    pub fn from_jws(data: &[u8]) -> Result<Message, SelfError> {
         let m: Message = match serde_json::from_slice(data) {
             Ok(m) => m,
             Err(err) => {
@@ -208,6 +208,34 @@ impl Message {
                 return Err(SelfError::MessageNoSignature);
             }
         }
+
+        return Ok(m);
+    }
+
+    pub fn from_jwt(data: &[u8]) -> Result<Message, SelfError> {
+        // TODO better way to do this?
+        let parts = data
+            .split(|byte| *byte == ".".as_bytes()[0])
+            .collect::<Vec<&[u8]>>();
+
+        if parts.len() < 3 {
+            return Err(SelfError::MessageDecodingInvalid);
+        }
+
+        let protected = base64::decode_config(parts[0], base64::URL_SAFE_NO_PAD)
+            .map_err(|_| SelfError::MessageDecodingInvalid)?;
+        let payload = base64::decode_config(parts[1], base64::URL_SAFE_NO_PAD)
+            .map_err(|_| SelfError::MessageDecodingInvalid)?;
+
+        let mut m = Message::new_without_defaults();
+
+        m.protected =
+            serde_json::from_slice(&protected).map_err(|_| SelfError::MessageDecodingInvalid)?;
+        m.payload =
+            serde_json::from_slice(&payload).map_err(|_| SelfError::MessageDecodingInvalid)?;
+        m.signature = Some(
+            String::from_utf8(parts[2].to_vec()).map_err(|_| SelfError::MessageDecodingInvalid)?,
+        );
 
         return Ok(m);
     }
@@ -435,7 +463,7 @@ mod tests {
         // decode from jws
         let bytes = jws.as_bytes();
 
-        let m = Message::from_bytes(bytes).unwrap();
+        let m = Message::from_jws(bytes).unwrap();
         m.verify(&kp).unwrap();
         assert_eq!(m.signing_key_ids().unwrap().len(), 1);
     }

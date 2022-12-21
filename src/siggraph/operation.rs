@@ -1,7 +1,5 @@
 use crate::siggraph::action::Action;
-use crate::{
-    error::SelfError, keypair::KeyPair, message::message::Message, message::message::Signature,
-};
+use crate::{error::SelfError, keypair::KeyPair, message::Message, message::Signature};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -30,7 +28,7 @@ impl Operation {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Operation, SelfError> {
-        let msg = match Message::from_bytes(data) {
+        let msg = match Message::from_jws(data) {
             Ok(msg) => msg,
             Err(err) => return Err(err),
         };
