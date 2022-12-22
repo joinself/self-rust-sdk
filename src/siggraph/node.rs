@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::keypair::KeyPair;
+use crate::keypair::signing::PublicKey;
 use crate::siggraph::action::KeyRole;
 
 #[derive(Debug)]
@@ -11,7 +11,7 @@ pub struct Node {
     pub did: Option<String>,
     pub typ: KeyRole,
     pub seq: i32,
-    pub pk: KeyPair,
+    pub pk: PublicKey,
     pub ca: i64,
     pub ra: i64,
     pub incoming: Vec<Rc<RefCell<Node>>>,

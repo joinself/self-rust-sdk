@@ -1,5 +1,5 @@
 use crate::error::SelfError;
-use crate::keypair::{KeyPair, KeyPairType};
+use crate::keypair::signing::{KeyPair, PublicKey};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -269,10 +269,6 @@ impl Message {
     }
 
     pub fn sign(&mut self, signing_key: &KeyPair) -> Result<(), SelfError> {
-        if signing_key.keypair_type() != KeyPairType::Ed25519 {
-            return Err(SelfError::MessageSigningKeyInvalid);
-        }
-
         let mut protected = BTreeMap::new();
         protected.insert(String::from("kid"), Value::String(signing_key.id()));
         protected.insert(String::from("alg"), Value::String(String::from("EdDSA")));
@@ -305,11 +301,7 @@ impl Message {
         return Ok(());
     }
 
-    pub fn verify(&self, signing_key: &KeyPair) -> Result<(), SelfError> {
-        if signing_key.keypair_type() != KeyPairType::Ed25519 {
-            return Err(SelfError::MessageSigningKeyInvalid);
-        }
-
+    pub fn verify(&self, signing_key: &PublicKey) -> Result<(), SelfError> {
         if self.protected.is_some() {
             let protected = self.protected.as_ref().unwrap();
             if protected["kid"] != signing_key.id() {
@@ -449,12 +441,8 @@ mod tests {
         // try to encode with no signatures
         assert!(m.to_jws().is_err());
 
-        // attempt to sign with an encryption key
-        let kp = KeyPair::new(KeyPairType::Curve25519);
-        assert!(m.sign(&kp).is_err());
-
         // add a valid signature
-        let kp = KeyPair::new(KeyPairType::Ed25519);
+        let kp = KeyPair::new();
         assert!(m.sign(&kp).is_ok());
 
         // encode to jws
@@ -464,7 +452,7 @@ mod tests {
         let bytes = jws.as_bytes();
 
         let m = Message::from_jws(bytes).unwrap();
-        m.verify(&kp).unwrap();
+        m.verify(&kp.public()).unwrap();
         assert_eq!(m.signing_key_ids().unwrap().len(), 1);
     }
 
@@ -475,12 +463,8 @@ mod tests {
         // try to encode with no signatures
         assert!(m.to_jws().is_err());
 
-        // attempt to sign with an encryption key
-        let kp = KeyPair::new(KeyPairType::Curve25519);
-        assert!(m.sign(&kp).is_err());
-
         // add a valid signature
-        let kp = KeyPair::new(KeyPairType::Ed25519);
+        let kp = KeyPair::new();
         assert!(m.sign(&kp).is_ok());
 
         // encode to jwt

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
-use crate::keypair::KeyPair;
+use crate::keypair::signing::KeyPair;
 use crate::protocol;
 
 enum Event {
@@ -459,16 +459,23 @@ mod tests {
         // we default to the public key as the signing key id for keys generated with this library, so no need to lookup
         let signing_key_id = auth_token.signing_key_ids().unwrap();
         let signing_key_id = signing_key_id.first().unwrap();
-        let signing_key = crate::keypair::KeyPair::from_public_key(
+        let signing_key = crate::keypair::signing::PublicKey::import(
             signing_key_id,
-            crate::keypair::KeyPairType::Ed25519,
+            crate::keypair::Algorithm::Ed25519,
             signing_key_id,
         )
         .expect("Invalid auth token signing key");
 
-        auth_token
-            .verify(&signing_key)
-            .expect("Auth token signature bad");
+        if auth_token.verify(&signing_key).is_err() {
+            err(
+                &mut socket_tx,
+                auth_message.id().unwrap(),
+                "invalid token signature",
+            )
+            .await;
+            socket_tx.close().await.expect("Closing socket failed");
+            return;
+        };
 
         ack(&mut socket_tx, auth_message.id().unwrap()).await;
 
@@ -527,7 +534,7 @@ mod tests {
     fn send_and_receive() {
         let (rt, msg_rx) = test_server();
 
-        let kp = KeyPair::new(crate::keypair::KeyPairType::Ed25519);
+        let kp = KeyPair::new();
 
         // connect
         let mut ws = Websocket::new("ws://localhost:12345", "self_id", "device_id", kp).unwrap();

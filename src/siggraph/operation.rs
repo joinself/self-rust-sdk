@@ -1,5 +1,7 @@
+use crate::error::SelfError;
+use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::message::{Message, Signature};
 use crate::siggraph::action::Action;
-use crate::{error::SelfError, keypair::KeyPair, message::Message, message::Signature};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -64,7 +66,7 @@ impl Operation {
         return Ok(());
     }
 
-    pub fn verify(&self, signing_key: &KeyPair) -> Result<(), SelfError> {
+    pub fn verify(&self, signing_key: &PublicKey) -> Result<(), SelfError> {
         if self.message.is_none() {
             return Err(SelfError::SiggraphOperationNotSigned);
         }
@@ -138,12 +140,12 @@ impl Operation {
 mod tests {
 
     use super::*;
-    use crate::keypair::{KeyPair, KeyPairType};
+    use crate::keypair::signing::KeyPair;
     use crate::siggraph::action::{ActionType, KeyRole};
 
     #[test]
     fn serialize_deserialize() {
-        let kp = KeyPair::new(KeyPairType::Ed25519);
+        let kp = KeyPair::new();
 
         let mut op = Operation {
             sequence: 0,
@@ -165,15 +167,15 @@ mod tests {
 
         // try to encode or verify with a signature
         assert!(op.to_jws().is_err());
-        assert!(op.verify(&kp).is_err());
+        assert!(op.verify(&kp.public()).is_err());
 
         // sign and verify
         assert!(op.sign(&kp).is_ok());
-        assert!(op.verify(&kp).is_ok());
+        assert!(op.verify(&kp.public()).is_ok());
 
         // encode, decode and re-verify
         let encoded_operation = op.to_jws().unwrap();
         let decoded_operation = Operation::from_bytes(encoded_operation.as_bytes()).unwrap();
-        assert!(decoded_operation.verify(&kp).is_ok());
+        assert!(decoded_operation.verify(&kp.public()).is_ok());
     }
 }
