@@ -2,7 +2,7 @@ use reqwest::blocking::{Client, Request};
 use reqwest::Url;
 
 use crate::error::SelfError;
-use crate::keypair::KeyPair;
+use crate::keypair::signing::KeyPair;
 
 pub struct Rest {
     client: reqwest::blocking::Client,
@@ -119,7 +119,7 @@ fn handle_error(e: reqwest::Error) -> SelfError {
 mod tests {
 
     use super::*;
-    use crate::keypair::{KeyPair, KeyPairType};
+    use crate::keypair::signing::KeyPair;
     use httptest::{matchers::*, responders::*, Expectation, Server};
 
     #[test]
@@ -137,7 +137,7 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new(KeyPairType::Ed25519);
+        let kp = KeyPair::new();
         let client = Rest::new("my-self-identity", kp);
 
         let url = server.url_str("/v1/identities");
@@ -169,7 +169,7 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new(KeyPairType::Ed25519);
+        let kp = KeyPair::new();
         let client = Rest::new("my-self-identity", kp);
 
         let url = server.url_str("/v1/identities");
@@ -201,7 +201,7 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new(KeyPairType::Ed25519);
+        let kp = KeyPair::new();
         let client = Rest::new("my-self-identity", kp);
 
         let url = server.url_str("/v1/identities");
@@ -232,7 +232,7 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new(KeyPairType::Ed25519);
+        let kp = KeyPair::new();
         let client = Rest::new("my-self-identity", kp);
 
         let url = server.url_str("/v1/identities");

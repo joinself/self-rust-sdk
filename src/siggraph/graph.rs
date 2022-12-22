@@ -1,5 +1,5 @@
 use crate::error::SelfError;
-use crate::keypair::{KeyPair, KeyPairType};
+use crate::keypair::signing::PublicKey;
 use crate::siggraph::action::{Action, ActionType, KeyRole};
 use crate::siggraph::node::Node;
 use crate::siggraph::operation::Operation;
@@ -241,10 +241,10 @@ impl SignatureGraph {
 
         let kp = match public_key_role {
             KeyRole::Device => {
-                KeyPair::from_public_key(&action.kid, KeyPairType::Ed25519, &public_key)
+                PublicKey::import(&action.kid, crate::keypair::Algorithm::Ed25519, &public_key)
             }
             KeyRole::Recovery => {
-                KeyPair::from_public_key(&action.kid, KeyPairType::Ed25519, &public_key)
+                PublicKey::import(&action.kid, crate::keypair::Algorithm::Ed25519, &public_key)
             }
         }?;
 
@@ -381,7 +381,7 @@ mod tests {
 
     use crate::{
         error::SelfError,
-        keypair::KeyPair,
+        keypair::signing::KeyPair,
         siggraph::action::{Action, ActionType, KeyRole},
         siggraph::graph::SignatureGraph,
         siggraph::operation::Operation,
@@ -397,7 +397,7 @@ mod tests {
         let mut keys = HashMap::new();
 
         for id in 0..10 {
-            let kp = KeyPair::new(crate::keypair::KeyPairType::Ed25519);
+            let kp = KeyPair::new();
             keys.insert(id.to_string(), kp);
         }
 
@@ -410,7 +410,7 @@ mod tests {
         operation: &mut Operation,
     ) -> String {
         let sk = keys.get(signer).unwrap();
-        operation.sign(&sk).unwrap();
+        operation.sign(sk).unwrap();
 
         return operation
             .signatures()
@@ -472,7 +472,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now,
                         key: Some(base64::encode_config(
-                            keys["0"].public(),
+                            keys["0"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
@@ -483,7 +483,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now,
                         key: Some(base64::encode_config(
-                            keys["1"].public(),
+                            keys["1"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
@@ -515,7 +515,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -526,7 +526,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -547,7 +547,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -567,7 +567,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 2,
                         key: Some(base64::encode_config(
-                            keys["3"].public(),
+                            keys["3"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -587,7 +587,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 3,
                         key: Some(base64::encode_config(
-                            keys["4"].public(),
+                            keys["4"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -616,7 +616,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 4,
                             key: Some(base64::encode_config(
-                                keys["5"].public(),
+                                keys["5"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -649,7 +649,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -660,7 +660,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -681,7 +681,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -701,7 +701,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 2,
                         key: Some(base64::encode_config(
-                            keys["3"].public(),
+                            keys["3"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -721,7 +721,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 3,
                         key: Some(base64::encode_config(
-                            keys["4"].public(),
+                            keys["4"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -750,7 +750,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 4,
                             key: Some(base64::encode_config(
-                                keys["5"].public(),
+                                keys["5"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -780,7 +780,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 5,
                             key: Some(base64::encode_config(
-                                keys["6"].public(),
+                                keys["6"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -791,7 +791,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 5,
                             key: Some(base64::encode_config(
-                                keys["7"].public(),
+                                keys["7"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -824,7 +824,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -835,7 +835,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -856,7 +856,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -888,7 +888,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -899,7 +899,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -920,7 +920,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -952,7 +952,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -963,7 +963,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -984,7 +984,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -1016,7 +1016,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1027,7 +1027,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1048,7 +1048,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -1080,7 +1080,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1091,7 +1091,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1141,7 +1141,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1152,7 +1152,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1202,7 +1202,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1213,7 +1213,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1234,7 +1234,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -1266,7 +1266,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1277,7 +1277,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1298,7 +1298,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -1330,7 +1330,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1341,7 +1341,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1352,7 +1352,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["2"].public(),
+                                keys["2"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1390,7 +1390,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 2,
                         key: Some(base64::encode_config(
-                            keys["3"].public(),
+                            keys["3"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -1422,7 +1422,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1433,7 +1433,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1454,7 +1454,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["1"].public(),
+                            keys["1"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -1486,7 +1486,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1497,7 +1497,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1519,7 +1519,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["2"].public(),
+                                keys["2"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1530,7 +1530,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["3"].public(),
+                                keys["3"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1563,7 +1563,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1574,7 +1574,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1612,7 +1612,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1623,7 +1623,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1634,7 +1634,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["2"].public(),
+                                keys["2"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1701,7 +1701,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1712,7 +1712,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1723,7 +1723,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["2"].public(),
+                                keys["2"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1772,7 +1772,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now,
                         key: Some(base64::encode_config(
-                            keys["0"].public(),
+                            keys["0"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
@@ -1783,7 +1783,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now,
                         key: Some(base64::encode_config(
-                            keys["1"].public(),
+                            keys["1"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
@@ -1794,7 +1794,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["2"].public(),
+                            keys["2"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
@@ -1834,7 +1834,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1845,7 +1845,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["9"].public(),
+                                keys["9"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1856,7 +1856,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["2"].public(),
+                                keys["2"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1877,7 +1877,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["3"].public(),
+                            keys["3"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     }],
@@ -1908,7 +1908,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now,
                         key: Some(base64::encode_config(
-                            keys["9"].public(),
+                            keys["9"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
@@ -1919,7 +1919,7 @@ mod tests {
                         action: ActionType::KeyAdd,
                         effective_from: now + 1,
                         key: Some(base64::encode_config(
-                            keys["1"].public(),
+                            keys["1"].public().to_vec(),
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
@@ -1951,7 +1951,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1962,7 +1962,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now,
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -1973,7 +1973,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now + 1,
                             key: Some(base64::encode_config(
-                                keys["2"].public(),
+                                keys["2"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -2023,7 +2023,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now.timestamp(),
                             key: Some(base64::encode_config(
-                                keys["0"].public(),
+                                keys["0"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -2034,7 +2034,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: now.timestamp(),
                             key: Some(base64::encode_config(
-                                keys["1"].public(),
+                                keys["1"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
@@ -2064,7 +2064,7 @@ mod tests {
                             action: ActionType::KeyAdd,
                             effective_from: (now + chrono::Duration::seconds(1)).timestamp(),
                             key: Some(base64::encode_config(
-                                keys["2"].public(),
+                                keys["2"].public().to_vec(),
                                 base64::URL_SAFE_NO_PAD,
                             )),
                         },
