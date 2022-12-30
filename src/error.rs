@@ -6,6 +6,7 @@ pub enum SelfError {
     KeyPairSignFailure,
     KeyPairSignMissingSingingKey,
     KeyPairSignWrongKeypairType,
+    KeyPairPublicKeyInvalidLength,
     MessageNoProtected,
     MessageNoSignature,
     MessageEncodingInvalid,
@@ -62,6 +63,10 @@ impl fmt::Display for SelfError {
             SelfError::KeyPairSignMissingSingingKey => write!(
                 f,
                 "Keypair cannot be used to sign as its missing it's secret key component"
+            ),
+            SelfError::KeyPairPublicKeyInvalidLength => write!(
+                f,
+                "Keypair public key is an incorrect length",
             ),
             SelfError::MessageNoProtected => write!(f, "Message has no protected header"),
             SelfError::MessageNoSignature => write!(f, "Message has no signature"),

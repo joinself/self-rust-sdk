@@ -1,7 +1,3 @@
-use dryoc::{
-    sign::{Message, Signature, SignedMessage, SigningKeyPair},
-    types::StackByteArray,
-};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
@@ -50,26 +46,6 @@ impl PublicKey {
         return base64::encode_config(&self.bytes, base64::URL_SAFE_NO_PAD);
     }
 
-    pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
-        let sm =
-            match SignedMessage::<Signature, Message>::from_bytes(&[signature, message].concat()) {
-                Ok(sm) => sm,
-                Err(err) => {
-                    println!("{}", err);
-                    return false;
-                }
-            };
-
-        let mut sba = StackByteArray::new();
-        sba.copy_from_slice(&self.bytes);
-        let pk = dryoc::sign::PublicKey::from(sba);
-
-        match sm.verify(&pk) {
-            Ok(_) => return true,
-            Err(_) => return false,
-        }
-    }
-
     pub fn to_vec(&self) -> Vec<u8> {
         return self.bytes.clone();
     }
@@ -82,12 +58,12 @@ pub struct SecretKey {
 
 impl KeyPair {
     pub fn new() -> KeyPair {
-        let kp = dryoc::sign::SigningKeyPair::gen_with_defaults();
+        let kp = dryoc::kx::KeyPair::gen_with_defaults();
 
         return KeyPair {
             public_key: PublicKey {
                 id: None,
-                algorithm: Algorithm::Ed25519,
+                algorithm: Algorithm::Curve25519,
                 bytes: kp.public_key.to_vec(),
             },
             secret_key: SecretKey {
@@ -123,7 +99,7 @@ impl KeyPair {
         return Ok(KeyPair {
             public_key: PublicKey {
                 id: Some(String::from(key_id)),
-                algorithm: Algorithm::Ed25519,
+                algorithm: Algorithm::Curve25519,
                 bytes: kp.public_key.to_vec(),
             },
             secret_key: SecretKey {
@@ -148,22 +124,6 @@ impl KeyPair {
         return self.public_key.clone();
     }
 
-    pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SelfError> {
-        return match SigningKeyPair::<dryoc::sign::PublicKey, dryoc::sign::SecretKey>::from_slices(
-            &self.public_key.bytes,
-            &self.secret_key.bytes,
-        ) {
-            Ok(kp) => match kp.sign_with_defaults(message) {
-                Ok(signed_message) => {
-                    let (sig, _) = signed_message.into_parts();
-                    return Ok(sig.to_vec());
-                }
-                Err(_) => Err(SelfError::KeyPairSignFailure),
-            },
-            Err(_) => Err(SelfError::KeyPairSignFailure),
-        };
-    }
-
     pub fn to_vec(&self) -> Vec<u8> {
         return self.secret_key.bytes.clone();
     }
@@ -180,61 +140,12 @@ mod tests {
     }
 
     #[test]
-    fn sign_verify() {
-        let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
-
-        // sign some data
-        let message = "hello".as_bytes();
-        let signature = skp.sign(message).unwrap();
-        assert!(signature.len() == 64);
-
-        // verify the signature
-        assert!(skp.public().verify(message, &signature));
-
-        // verify a bad signature
-        let mut bad_signature = signature.clone();
-        bad_signature[0] = 100;
-        assert!(!skp.public().verify(message, &bad_signature));
-
-        // verify a bad message
-        let bad_message = "goodbye".as_bytes();
-        assert!(!skp.public().verify(bad_message, &signature));
-    }
-
-    #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
         assert_eq!(skp.public().to_vec().len(), 32);
 
-        // sign some data
-        let message = "hello".as_bytes();
-        let signature = skp.sign(message).unwrap();
-        assert!(signature.len() == 64);
-
         // encode and decode the keypair
         let encoded_skp = skp.encode();
-        let decoded_skp = KeyPair::decode(&encoded_skp).unwrap();
-
-        // verify the signature
-        assert!(decoded_skp.public().verify(message, &signature));
-    }
-
-    #[test]
-    fn generate_ed25519_and_curve25519_keypair() {
-        use dryoc::classic::crypto_sign_ed25519::*;
-
-        let kp = dryoc::sign::SigningKeyPair::gen_with_defaults();
-
-        let ed25519_secret_key: [u8; 64] = kp.secret_key.to_vec()[0..64].try_into().unwrap();
-        let ed25519_public_key: [u8; 32] = kp.public_key.to_vec()[0..32].try_into().unwrap();
-
-        let mut curve25519_secret_key: [u8; 32] = vec![0; 32][0..32].try_into().unwrap();
-        let mut curve25519_public_key: [u8; 32] = vec![0; 32][0..32].try_into().unwrap();
-
-        crypto_sign_ed25519_sk_to_curve25519(&mut curve25519_secret_key, &ed25519_secret_key);
-
-        crypto_sign_ed25519_pk_to_curve25519(&mut curve25519_public_key, &ed25519_public_key)
-            .unwrap();
+        KeyPair::decode(&encoded_skp).unwrap();
     }
 }
