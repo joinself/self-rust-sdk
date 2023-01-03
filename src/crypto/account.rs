@@ -33,6 +33,38 @@ impl Account {
         }
     }
 
+    pub fn from_pickle(pickle: &mut [u8], password: Option<&[u8]>) -> Result<Account, SelfError> {
+        unsafe {
+            let account_len = olm_account_size() as usize;
+            let account_buf = vec![0; account_len].into_boxed_slice();
+            let account = olm_account(Box::into_raw(account_buf) as *mut libc::c_void);
+
+            let password_len = password
+                .and_then(|pwd| Some(pwd.len()))
+                .or_else(|| Some(0))
+                .unwrap();
+
+            let password_buf = password
+                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
+                .or_else(|| Some(std::ptr::null()))
+                .unwrap();
+
+            olm_unpickle_account(
+                account,
+                password_buf,
+                password_len as u64,
+                pickle as *mut [u8] as *mut libc::c_void,
+                pickle.len() as u64,
+            );
+
+            let account = Account { account: account };
+
+            account.last_error()?;
+
+            return Ok(account);
+        }
+    }
+
     pub fn one_time_keys(&self) -> Vec<u8> {
         unsafe {
             let mut one_time_keys_len = olm_account_one_time_keys_length(self.account);
@@ -100,6 +132,35 @@ impl Account {
         }
     }
 
+    pub fn pickle(&self, password: Option<&[u8]>) -> Result<Vec<u8>, SelfError> {
+        unsafe {
+            let mut account_pickle_len = olm_pickle_account_length(self.account);
+            let mut account_pickle_buf = vec![0; account_pickle_len as usize].into_boxed_slice();
+
+            let password_len = password
+                .and_then(|pwd| Some(pwd.len()))
+                .or_else(|| Some(0))
+                .unwrap();
+
+            let password_buf = password
+                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
+                .or_else(|| Some(std::ptr::null()))
+                .unwrap();
+
+            account_pickle_len = olm_pickle_account(
+                self.account,
+                password_buf,
+                password_len as u64,
+                account_pickle_buf.as_mut_ptr() as *mut libc::c_void,
+                account_pickle_len,
+            );
+
+            self.last_error()?;
+
+            return Ok(account_pickle_buf[0..account_pickle_len as usize].to_vec());
+        }
+    }
+
     fn last_error(&self) -> Result<(), SelfError> {
         unsafe {
             #[allow(non_upper_case_globals)]
@@ -153,7 +214,6 @@ mod tests {
     fn import_acocunt() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-
         Account::new(skp, ekp);
     }
 
@@ -161,7 +221,6 @@ mod tests {
     fn one_time_keys() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-
         let mut acc = Account::new(skp, ekp);
 
         acc.generate_one_time_keys(100)
@@ -185,7 +244,8 @@ mod tests {
     fn identity_keys() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-
+        let spk = skp.public().to_vec();
+        let epk = ekp.public().to_vec();
         let acc = Account::new(skp, ekp);
 
         let identity_keys_json = acc.identity_keys();
@@ -193,7 +253,47 @@ mod tests {
             serde_json::from_slice(&identity_keys_json)
                 .expect("failed to decode one time keys json");
 
-        assert!(json.get("ed25519").is_some());
-        assert!(json.get("curve25519").is_some());
+        assert_eq!(
+            base64::decode(json.get("ed25519").unwrap().as_str().unwrap()).unwrap(),
+            spk,
+        );
+
+        assert_eq!(
+            base64::decode(json.get("curve25519").unwrap().as_str().unwrap()).unwrap(),
+            epk,
+        );
+    }
+
+    #[test]
+    fn serialize_deserialize() {
+        let skp = crate::keypair::signing::KeyPair::new();
+        let ekp = crate::keypair::exchange::KeyPair::new();
+        let spk = skp.public().to_vec();
+        let epk = ekp.public().to_vec();
+        let acc = Account::new(skp, ekp);
+
+        // try pickle with both password and no password
+        acc.pickle(None).expect("failed to pickle account");
+        let mut pickle = acc
+            .pickle(Some("my-password".as_bytes()))
+            .expect("failed to pickle account");
+
+        let acc = Account::from_pickle(&mut pickle, Some("my-password".as_bytes()))
+            .expect("failed to unpickle account");
+
+        let identity_keys_json = acc.identity_keys();
+        let json: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&identity_keys_json)
+                .expect("failed to decode one time keys json");
+
+        assert_eq!(
+            base64::decode(json.get("ed25519").unwrap().as_str().unwrap()).unwrap(),
+            spk,
+        );
+
+        assert_eq!(
+            base64::decode(json.get("curve25519").unwrap().as_str().unwrap()).unwrap(),
+            epk,
+        );
     }
 }
