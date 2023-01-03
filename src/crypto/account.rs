@@ -1,6 +1,6 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
-use crate::keypair::exchange::KeyPair as ExchangeKeyPair;
+use crate::keypair::exchange::{self, KeyPair as ExchangeKeyPair};
 use crate::keypair::signing::KeyPair as SigningKeyPair;
 
 use olm_sys::*;
@@ -18,7 +18,7 @@ impl Account {
 
         unsafe {
             let account_len = olm_account_size() as usize;
-            let account_buf = vec![0; account_len].into_boxed_slice();
+            let account_buf = vec![0 as u8; account_len].into_boxed_slice();
             let account = olm_account(Box::into_raw(account_buf) as *mut libc::c_void);
 
             olm_import_account(
@@ -36,7 +36,7 @@ impl Account {
     pub fn from_pickle(pickle: &mut [u8], password: Option<&[u8]>) -> Result<Account, SelfError> {
         unsafe {
             let account_len = olm_account_size() as usize;
-            let account_buf = vec![0; account_len].into_boxed_slice();
+            let account_buf = vec![0 as u8; account_len].into_boxed_slice();
             let account = olm_account(Box::into_raw(account_buf) as *mut libc::c_void);
 
             let password_len = password
@@ -68,7 +68,8 @@ impl Account {
     pub fn one_time_keys(&self) -> Vec<u8> {
         unsafe {
             let mut one_time_keys_len = olm_account_one_time_keys_length(self.account);
-            let mut one_time_keys_buf = vec![0; one_time_keys_len as usize].into_boxed_slice();
+            let mut one_time_keys_buf =
+                vec![0 as u8; one_time_keys_len as usize].into_boxed_slice();
 
             one_time_keys_len = olm_account_one_time_keys(
                 self.account,
@@ -88,7 +89,7 @@ impl Account {
 
             let random_len =
                 olm_account_generate_one_time_keys_random_length(self.account, count as u64);
-            let mut random_buf = vec![0; random_len as usize].into_boxed_slice();
+            let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
             dryoc::rng::copy_randombytes(&mut random_buf);
 
             olm_account_generate_one_time_keys(
@@ -104,7 +105,7 @@ impl Account {
 
     pub fn remove_one_time_keys(&mut self, session: &Session) -> Result<(), SelfError> {
         unsafe {
-            olm_remove_one_time_keys(self.account, session.ptr());
+            olm_remove_one_time_keys(self.account, session.as_mut_ptr());
         }
 
         return self.last_error();
@@ -120,7 +121,8 @@ impl Account {
     pub fn identity_keys(&self) -> Vec<u8> {
         unsafe {
             let mut identity_keys_len = olm_account_identity_keys_length(self.account);
-            let mut identity_keys_buf = vec![0; identity_keys_len as usize].into_boxed_slice();
+            let mut identity_keys_buf =
+                vec![0 as u8; identity_keys_len as usize].into_boxed_slice();
 
             identity_keys_len = olm_account_identity_keys(
                 self.account,
@@ -135,7 +137,8 @@ impl Account {
     pub fn pickle(&self, password: Option<&[u8]>) -> Result<Vec<u8>, SelfError> {
         unsafe {
             let mut account_pickle_len = olm_pickle_account_length(self.account);
-            let mut account_pickle_buf = vec![0; account_pickle_len as usize].into_boxed_slice();
+            let mut account_pickle_buf =
+                vec![0 as u8; account_pickle_len as usize].into_boxed_slice();
 
             let password_len = password
                 .and_then(|pwd| Some(pwd.len()))
@@ -158,6 +161,75 @@ impl Account {
             self.last_error()?;
 
             return Ok(account_pickle_buf[0..account_pickle_len as usize].to_vec());
+        }
+    }
+
+    pub fn create_inbound_session(
+        &mut self,
+        identity_key: &exchange::PublicKey,
+        one_time_message: &[u8],
+    ) -> Result<Session, SelfError> {
+        let session = Session::new();
+
+        let identity_key_buf =
+            base64::encode_config(identity_key.to_vec(), base64::STANDARD_NO_PAD);
+
+        unsafe {
+            let mut one_time_message_buf = one_time_message.to_owned();
+
+            olm_create_inbound_session_from(
+                session.as_mut_ptr(),
+                self.account,
+                identity_key_buf.as_ptr() as *const libc::c_void,
+                identity_key_buf.len() as u64,
+                one_time_message_buf.as_mut_ptr() as *mut libc::c_void,
+                one_time_message_buf.len() as u64,
+            );
+
+            /*
+            olm_create_inbound_session(
+                session.as_mut_ptr(),
+                self.account,
+                one_time_message_buf.as_mut_ptr() as *mut libc::c_void,
+                one_time_message_buf.len() as u64,
+            );
+             */
+
+            session.last_error()?;
+
+            return Ok(session);
+        }
+    }
+
+    pub fn create_outbound_session(
+        &mut self,
+        identity_key: &exchange::PublicKey,
+        one_time_key: &[u8],
+    ) -> Result<Session, SelfError> {
+        let session = Session::new();
+
+        let identity_key_buf =
+            base64::encode_config(identity_key.to_vec(), base64::STANDARD_NO_PAD);
+
+        unsafe {
+            let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());
+            let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
+            dryoc::rng::copy_randombytes(&mut random_buf);
+
+            olm_create_outbound_session(
+                session.as_mut_ptr(),
+                self.account,
+                identity_key_buf.as_ptr() as *const libc::c_void,
+                identity_key_buf.len() as u64,
+                one_time_key.as_ptr() as *const libc::c_void,
+                one_time_key.len() as u64,
+                random_buf.as_ptr() as *mut libc::c_void,
+                random_len,
+            );
+
+            session.last_error()?;
+
+            return Ok(session);
         }
     }
 
