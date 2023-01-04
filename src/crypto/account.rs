@@ -186,15 +186,6 @@ impl Account {
                 one_time_message_buf.len() as u64,
             );
 
-            /*
-            olm_create_inbound_session(
-                session.as_mut_ptr(),
-                self.account,
-                one_time_message_buf.as_mut_ptr() as *mut libc::c_void,
-                one_time_message_buf.len() as u64,
-            );
-             */
-
             session.last_error()?;
 
             return Ok(session);

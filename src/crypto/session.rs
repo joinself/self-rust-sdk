@@ -18,6 +18,38 @@ impl Session {
         }
     }
 
+    pub fn from_pickle(pickle: &mut [u8], password: Option<&[u8]>) -> Result<Session, SelfError> {
+        unsafe {
+            let session_len = olm_session_size() as usize;
+            let session_buf = vec![0 as u8; session_len].into_boxed_slice();
+            let session = olm_session(Box::into_raw(session_buf) as *mut libc::c_void);
+
+            let password_len = password
+                .and_then(|pwd| Some(pwd.len()))
+                .or_else(|| Some(0))
+                .unwrap();
+
+            let password_buf = password
+                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
+                .or_else(|| Some(std::ptr::null()))
+                .unwrap();
+
+            olm_unpickle_session(
+                session,
+                password_buf,
+                password_len as u64,
+                pickle as *mut [u8] as *mut libc::c_void,
+                pickle.len() as u64,
+            );
+
+            let session = Session { session: session };
+
+            session.last_error()?;
+
+            return Ok(session);
+        }
+    }
+
     pub unsafe fn as_mut_ptr(&self) -> *mut OlmSession {
         return self.session;
     }
@@ -100,6 +132,36 @@ impl Session {
         }
     }
 
+    pub fn pickle(&self, password: Option<&[u8]>) -> Result<Vec<u8>, SelfError> {
+        unsafe {
+            let mut session_pickle_len = olm_pickle_session_length(self.session);
+            let mut session_pickle_buf =
+                vec![0 as u8; session_pickle_len as usize].into_boxed_slice();
+
+            let password_len = password
+                .and_then(|pwd| Some(pwd.len()))
+                .or_else(|| Some(0))
+                .unwrap();
+
+            let password_buf = password
+                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
+                .or_else(|| Some(std::ptr::null()))
+                .unwrap();
+
+            session_pickle_len = olm_pickle_session(
+                self.session,
+                password_buf,
+                password_len as u64,
+                session_pickle_buf.as_mut_ptr() as *mut libc::c_void,
+                session_pickle_len,
+            );
+
+            self.last_error()?;
+
+            return Ok(session_pickle_buf[0..session_pickle_len as usize].to_vec());
+        }
+    }
+
     pub fn last_error(&self) -> Result<(), SelfError> {
         unsafe {
             #[allow(non_upper_case_globals)]
@@ -147,6 +209,7 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
     use crate::crypto::account::Account;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -248,5 +311,71 @@ mod tests {
             .expect("failed to encrypt message to alice");
 
         assert_eq!(mtype, 1);
+    }
+
+    #[test]
+    fn serialize_and_deserialize() {
+        let alice_skp = crate::keypair::signing::KeyPair::new();
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_curve25519_pk = alice_ekp.public().clone();
+        let mut alice_acc = Account::new(alice_skp, alice_ekp);
+
+        let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
+        let bob_curve25519_pk = bob_ekp.public().clone();
+        let mut bob_acc = Account::new(bob_skp, bob_ekp);
+
+        alice_acc
+            .generate_one_time_keys(10)
+            .expect("failed to generate one time keys");
+
+        let alices_one_time_keys: HashMap<String, Value> =
+            serde_json::from_slice(&alice_acc.one_time_keys())
+                .expect("failed to load alices one time keys");
+
+        let alices_one_time_key = alices_one_time_keys
+            .get("curve25519")
+            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
+            .unwrap()
+            .as_str()
+            .unwrap();
+
+        // encrypt a message from bob with a new session to alice
+        let mut bobs_session_with_alice = bob_acc
+            .create_outbound_session(&alice_curve25519_pk, alices_one_time_key.as_bytes())
+            .expect("failed to create outbound session");
+
+        let (mtype, mut bobs_message_to_alice_1) = bobs_session_with_alice
+            .encrypt("hello alice, pt1".as_bytes())
+            .expect("failed to encrypt message to alice");
+
+        assert_eq!(mtype, 0);
+
+        // create alices session with bob from bobs first message
+        let alices_session_with_bob = alice_acc
+            .create_inbound_session(&bob_curve25519_pk, &bobs_message_to_alice_1)
+            .expect("failed to create inbound session");
+
+        let mut alices_session_with_bob_pickle = alices_session_with_bob
+            .pickle(Some("password".as_bytes()))
+            .expect("failed to pickle session");
+
+        let mut alices_session_with_bob = Session::from_pickle(
+            &mut alices_session_with_bob_pickle,
+            Some("password".as_bytes()),
+        )
+        .expect("failed to unpickle session");
+
+        // remove the one time key from alices account
+        alice_acc
+            .remove_one_time_keys(&alices_session_with_bob)
+            .expect("failed to remove session");
+
+        // decrypt the message from bob
+        let plaintext = alices_session_with_bob
+            .decrypt(mtype, &mut bobs_message_to_alice_1)
+            .expect("failed to decrypt bobs message");
+
+        assert_eq!(&plaintext, "hello alice, pt1".as_bytes());
     }
 }
