@@ -27,24 +27,17 @@ impl Session {
             let mtype = olm_encrypt_message_type(self.session);
 
             let random_len = olm_encrypt_random_length(self.session);
-
-            let random_buf = if random_len > 0 {
-                let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
-                dryoc::rng::copy_randombytes(&mut random_buf);
-                random_buf.as_ptr() as *mut libc::c_void
-            } else {
-                std::ptr::null_mut() as *mut libc::c_void
-            };
+            let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
+            dryoc::rng::copy_randombytes(&mut random_buf);
 
             let mut message_len = olm_encrypt_message_length(self.session, plaintext.len() as u64);
-
             let mut message_buf = vec![0 as u8; message_len as usize].into_boxed_slice();
 
             message_len = olm_encrypt(
                 self.session,
                 plaintext.as_ptr() as *const libc::c_void,
                 plaintext.len() as u64,
-                random_buf,
+                random_buf.as_mut_ptr() as *mut libc::c_void,
                 random_len,
                 message_buf.as_mut_ptr() as *mut libc::c_void,
                 message_len,
