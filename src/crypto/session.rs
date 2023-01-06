@@ -60,7 +60,7 @@ impl Session {
 
             let random_len = olm_encrypt_random_length(self.session);
             let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
-            dryoc::rng::copy_randombytes(&mut random_buf);
+            sodium_sys::randombytes_buf(random_buf.as_mut_ptr() as *mut libc::c_void, random_len);
 
             let mut message_len = olm_encrypt_message_length(self.session, plaintext.len() as u64);
             let mut message_buf = vec![0 as u8; message_len as usize].into_boxed_slice();

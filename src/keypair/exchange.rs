@@ -58,16 +58,23 @@ pub struct SecretKey {
 
 impl KeyPair {
     pub fn new() -> KeyPair {
-        let kp = dryoc::kx::KeyPair::gen_with_defaults();
+        let mut curve25519_pk =
+            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
+        let mut curve25519_sk =
+            vec![0u8; sodium_sys::crypto_box_SECRETKEYBYTES as usize].into_boxed_slice();
+
+        unsafe {
+            sodium_sys::crypto_box_keypair(curve25519_pk.as_mut_ptr(), curve25519_sk.as_mut_ptr());
+        }
 
         return KeyPair {
             public_key: PublicKey {
                 id: None,
                 algorithm: Algorithm::Curve25519,
-                bytes: kp.public_key.to_vec(),
+                bytes: curve25519_pk.to_vec(),
             },
             secret_key: SecretKey {
-                bytes: kp.secret_key.to_vec(),
+                bytes: curve25519_sk.to_vec(),
             },
         };
     }
@@ -94,16 +101,27 @@ impl KeyPair {
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
         };
 
-        let kp = dryoc::sign::SigningKeyPair::<dryoc::sign::PublicKey, dryoc::sign::SecretKey>::from_seed(&seed);
+        let mut curve25519_pk =
+            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
+        let mut curve25519_sk =
+            vec![0u8; sodium_sys::crypto_box_SECRETKEYBYTES as usize].into_boxed_slice();
+
+        unsafe {
+            sodium_sys::crypto_box_seed_keypair(
+                curve25519_pk.as_mut_ptr(),
+                curve25519_sk.as_mut_ptr(),
+                seed.as_ptr(),
+            );
+        }
 
         return Ok(KeyPair {
             public_key: PublicKey {
                 id: Some(String::from(key_id)),
                 algorithm: Algorithm::Curve25519,
-                bytes: kp.public_key.to_vec(),
+                bytes: curve25519_pk.to_vec(),
             },
             secret_key: SecretKey {
-                bytes: kp.secret_key.to_vec(),
+                bytes: curve25519_sk.to_vec(),
             },
         });
     }

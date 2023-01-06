@@ -90,7 +90,7 @@ impl Account {
             let random_len =
                 olm_account_generate_one_time_keys_random_length(self.account, count as u64);
             let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
-            dryoc::rng::copy_randombytes(&mut random_buf);
+            sodium_sys::randombytes_buf(random_buf.as_mut_ptr() as *mut libc::c_void, random_len);
 
             olm_account_generate_one_time_keys(
                 self.account,
@@ -205,7 +205,7 @@ impl Account {
         unsafe {
             let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());
             let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
-            dryoc::rng::copy_randombytes(&mut random_buf);
+            sodium_sys::randombytes_buf(random_buf.as_mut_ptr() as *mut libc::c_void, random_len);
 
             olm_create_outbound_session(
                 session.as_mut_ptr(),

@@ -1,7 +1,3 @@
-use dryoc::{
-    sign::{Message, Signature, SignedMessage, SigningKeyPair},
-    types::StackByteArray,
-};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
@@ -51,22 +47,13 @@ impl PublicKey {
     }
 
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
-        let sm =
-            match SignedMessage::<Signature, Message>::from_bytes(&[signature, message].concat()) {
-                Ok(sm) => sm,
-                Err(err) => {
-                    println!("{}", err);
-                    return false;
-                }
-            };
-
-        let mut sba = StackByteArray::new();
-        sba.copy_from_slice(&self.bytes);
-        let pk = dryoc::sign::PublicKey::from(sba);
-
-        match sm.verify(&pk) {
-            Ok(_) => return true,
-            Err(_) => return false,
+        unsafe {
+            return sodium_sys::crypto_sign_ed25519_verify_detached(
+                signature.as_ptr(),
+                message.as_ptr(),
+                message.len() as u64,
+                self.bytes.as_ptr(),
+            ) == 0;
         }
     }
 
@@ -82,16 +69,23 @@ pub struct SecretKey {
 
 impl KeyPair {
     pub fn new() -> KeyPair {
-        let kp = dryoc::sign::SigningKeyPair::gen_with_defaults();
+        let mut ed25519_pk =
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
+        let mut ed25519_sk =
+            vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
+
+        unsafe {
+            sodium_sys::crypto_sign_keypair(ed25519_pk.as_mut_ptr(), ed25519_sk.as_mut_ptr());
+        }
 
         return KeyPair {
             public_key: PublicKey {
                 id: None,
                 algorithm: Algorithm::Ed25519,
-                bytes: kp.public_key.to_vec(),
+                bytes: ed25519_pk.to_vec(),
             },
             secret_key: SecretKey {
-                bytes: kp.secret_key.to_vec(),
+                bytes: ed25519_sk.to_vec(),
             },
         };
     }
@@ -118,16 +112,27 @@ impl KeyPair {
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
         };
 
-        let kp = dryoc::sign::SigningKeyPair::<dryoc::sign::PublicKey, dryoc::sign::SecretKey>::from_seed(&seed);
+        let mut ed25519_pk =
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
+        let mut ed25519_sk =
+            vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
+
+        unsafe {
+            sodium_sys::crypto_sign_seed_keypair(
+                ed25519_pk.as_mut_ptr(),
+                ed25519_sk.as_mut_ptr(),
+                seed.as_ptr(),
+            );
+        }
 
         return Ok(KeyPair {
             public_key: PublicKey {
                 id: Some(String::from(key_id)),
                 algorithm: Algorithm::Ed25519,
-                bytes: kp.public_key.to_vec(),
+                bytes: ed25519_pk.to_vec(),
             },
             secret_key: SecretKey {
-                bytes: kp.secret_key.to_vec(),
+                bytes: ed25519_sk.to_vec(),
             },
         });
     }
@@ -148,20 +153,20 @@ impl KeyPair {
         return self.public_key.clone();
     }
 
-    pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SelfError> {
-        return match SigningKeyPair::<dryoc::sign::PublicKey, dryoc::sign::SecretKey>::from_slices(
-            &self.public_key.bytes,
-            &self.secret_key.bytes,
-        ) {
-            Ok(kp) => match kp.sign_with_defaults(message) {
-                Ok(signed_message) => {
-                    let (sig, _) = signed_message.into_parts();
-                    return Ok(sig.to_vec());
-                }
-                Err(_) => Err(SelfError::KeyPairSignFailure),
-            },
-            Err(_) => Err(SelfError::KeyPairSignFailure),
-        };
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        let mut signature = vec![0u8; sodium_sys::crypto_sign_BYTES as usize].into_boxed_slice();
+
+        unsafe {
+            sodium_sys::crypto_sign_ed25519_detached(
+                signature.as_mut_ptr(),
+                &mut (signature.len() as u64),
+                message.as_ptr(),
+                message.len() as u64,
+                self.secret_key.bytes.as_ptr(),
+            );
+        }
+
+        return signature.to_vec();
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
@@ -186,7 +191,7 @@ mod tests {
 
         // sign some data
         let message = "hello".as_bytes();
-        let signature = skp.sign(message).unwrap();
+        let signature = skp.sign(message);
         assert!(signature.len() == 64);
 
         // verify the signature
@@ -209,7 +214,7 @@ mod tests {
 
         // sign some data
         let message = "hello".as_bytes();
-        let signature = skp.sign(message).unwrap();
+        let signature = skp.sign(message);
         assert!(signature.len() == 64);
 
         // encode and decode the keypair
@@ -222,19 +227,29 @@ mod tests {
 
     #[test]
     fn generate_ed25519_and_curve25519_keypair() {
-        use dryoc::classic::crypto_sign_ed25519::*;
+        let mut ed25519_pk =
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
+        let mut ed25519_sk =
+            vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
 
-        let kp = dryoc::sign::SigningKeyPair::gen_with_defaults();
+        unsafe {
+            sodium_sys::crypto_sign_keypair(ed25519_pk.as_mut_ptr(), ed25519_sk.as_mut_ptr());
+        }
 
-        let ed25519_secret_key: [u8; 64] = kp.secret_key.to_vec()[0..64].try_into().unwrap();
-        let ed25519_public_key: [u8; 32] = kp.public_key.to_vec()[0..32].try_into().unwrap();
+        let mut curve25519_sk =
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
+        let mut curve25519_pk =
+            vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
 
-        let mut curve25519_secret_key: [u8; 32] = vec![0; 32][0..32].try_into().unwrap();
-        let mut curve25519_public_key: [u8; 32] = vec![0; 32][0..32].try_into().unwrap();
-
-        crypto_sign_ed25519_sk_to_curve25519(&mut curve25519_secret_key, &ed25519_secret_key);
-
-        crypto_sign_ed25519_pk_to_curve25519(&mut curve25519_public_key, &ed25519_public_key)
-            .unwrap();
+        unsafe {
+            sodium_sys::crypto_sign_ed25519_sk_to_curve25519(
+                curve25519_sk.as_mut_ptr(),
+                ed25519_sk.as_ptr(),
+            );
+            sodium_sys::crypto_sign_ed25519_pk_to_curve25519(
+                curve25519_pk.as_mut_ptr(),
+                ed25519_pk.as_ptr(),
+            );
+        }
     }
 }
