@@ -2,6 +2,7 @@ use std::fmt;
 
 #[derive(Debug, PartialEq)]
 pub enum SelfError {
+    CryptoUnknownGroupParticipant,
     CryptoNotEnoughRandom,
     CryptoOutputBufferTooSmall,
     CryptoBadMessageVersion,
@@ -73,6 +74,7 @@ impl std::error::Error for SelfError {}
 impl fmt::Display for SelfError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            SelfError::CryptoUnknownGroupParticipant => write!(f, "Crypto unknown group participant"),
             SelfError::CryptoNotEnoughRandom => write!(f, "Crypto function was provided a random buffer that's too small"),
             SelfError::CryptoOutputBufferTooSmall => write!(f, "Crypto function was provided an output buffer that's too small"),
             SelfError::CryptoBadMessageVersion => write!(f, "Crypto message version is unsupported"),
