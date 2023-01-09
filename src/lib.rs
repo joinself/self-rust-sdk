@@ -1,3 +1,4 @@
+pub mod crypto;
 pub mod error;
 pub mod keypair;
 pub mod message;

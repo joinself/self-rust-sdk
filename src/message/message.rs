@@ -100,7 +100,10 @@ impl Message {
         };
 
         let mut rng_bytes: [u8; 16] = [0; 16];
-        dryoc::rng::copy_randombytes(&mut rng_bytes);
+
+        unsafe {
+            sodium_sys::randombytes_buf(rng_bytes.as_mut_ptr() as *mut libc::c_void, 16);
+        }
 
         let jti = Builder::from_random_bytes(rng_bytes)
             .into_uuid()
@@ -286,11 +289,7 @@ impl Message {
 
         let message = format!("{}.{}", encoded_protected, encoded_payload);
 
-        let signature = match signing_key.sign(message.as_bytes()) {
-            Ok(signature) => signature,
-            Err(err) => return Err(err),
-        };
-
+        let signature = signing_key.sign(message.as_bytes());
         let encoded_signature = base64::encode_config(signature, base64::URL_SAFE_NO_PAD);
 
         self.signatures.push(Signature {
