@@ -67,6 +67,11 @@ pub enum SelfError {
     SiggraphOperationNoValidKeys,
     SiggraphOperationNoValidRecoveryKey,
     SiggraphActionKeyDuplicate,
+    StorageConnectionFailed,
+    StorageTableCreationFailed,
+    StorageTransactionCreationFailed,
+    StorageTransactionCommitFailed,
+    StorageTransactionRollbackFailed,
 }
 
 impl std::error::Error for SelfError {}
@@ -161,6 +166,11 @@ impl fmt::Display for SelfError {
             SelfError::SiggraphOperationAccountRecoveryActionInvalid => write!(f, "Siggraph account recovery operation does not invalidate the existing recovery key"),
             SelfError::SiggraphOperationNoValidKeys => write!(f, "Siggraph operation leaves no active or valid keys"),
             SelfError::SiggraphOperationNoValidRecoveryKey => write!(f, "Siggraph operation leaves no active recovery key"),
+            SelfError::StorageConnectionFailed => write!(f, "Storage connection failed"),
+            SelfError::StorageTableCreationFailed => write!(f, "Storage table creation failed"),
+            SelfError::StorageTransactionCreationFailed => write!(f, "Storage transaction creation failed"),
+            SelfError::StorageTransactionCommitFailed => write!(f, "Storage transaction commit failed"),
+            SelfError::StorageTransactionRollbackFailed => write!(f, "Storage transaction rollback failed"),
         }
     }
 }

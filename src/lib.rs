@@ -4,5 +4,6 @@ pub mod keypair;
 pub mod message;
 pub mod protocol;
 pub mod siggraph;
+pub mod storage;
 pub mod time;
 pub mod transport;
