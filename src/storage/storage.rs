@@ -12,20 +12,36 @@ impl Storage {
     pub fn new() -> Result<Storage, SelfError> {
         let conn = Connection::open_in_memory().map_err(|_| SelfError::StorageConnectionFailed)?;
 
+        /*
+        let conn = Connection::open("/tmp/test.db").map_err(|_| SelfError::StorageConnectionFailed)?;
+        conn.pragma_update(None, "synchronous", &"NORMAL").unwrap();
+        conn.pragma_update(None, "journal_mode", &"WAL").unwrap();
+        conn.pragma_update(None, "temp_store", &"MEMORY").unwrap();
+        */
+
         let mut storage = Storage { conn };
 
-        storage.setup_crypto_session_table()?;
+        storage.setup_crypto_accounts_table()?;
+        storage.setup_crypto_sessions_table()?;
+        storage.setup_account_keychain_table()?;
+        storage.setup_messaging_tokens_table()?;
+        storage.setup_messaging_groups_table()?;
+        storage.setup_messaging_membership_table()?;
 
         Ok(storage)
     }
 
-    fn setup_crypto_session_table(&mut self) -> Result<(), SelfError> {
+    fn setup_crypto_accounts_table(&mut self) -> Result<(), SelfError> {
         self.conn
             .execute(
-                "CREATE TABLE crypto_sessions (
-                identity BLOB PRIMARY KEY,
-                session BLOB NOT NULL
-            )",
+                "CREATE TABLE crypto_accounts (
+                    id INTEGER PRIMARY KEY,
+                    identity BLOB NOT NULL,
+                    account BLOB NOT NULL,
+                    offset INTEGER
+                );
+                CREATE UNIQUE INDEX idx_crypto_accounts_identity
+                ON crypto_accounts (identity);",
                 (),
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
@@ -33,10 +49,96 @@ impl Storage {
         return Ok(());
     }
 
-    pub fn transaction(
-        &mut self,
-        execute: Arc<dyn Fn(&mut Transaction) -> bool + Sync + Send>,
-    ) -> Result<(), SelfError> {
+    fn setup_crypto_sessions_table(&mut self) -> Result<(), SelfError> {
+        self.conn
+            .execute(
+                "CREATE TABLE crypto_sessions (
+                    id INTEGER PRIMARY KEY,
+                    identity BLOB NOT NULL,
+                    session BLOB NOT NULL,
+                    offset INTEGER
+                );
+                CREATE UNIQUE INDEX idx_crypto_sessions_identity
+                ON crypto_sessions (identity);",
+                (),
+            )
+            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+
+        return Ok(());
+    }
+
+    fn setup_account_keychain_table(&mut self) -> Result<(), SelfError> {
+        self.conn
+            .execute(
+                "CREATE TABLE account_keychain (
+                    id INTEGER PRIMARY KEY,
+                    identity BLOB NOT NULL,
+                    role INTEGER NOT NULL,
+                    key BLOB NOT NULL
+                )",
+                (),
+            )
+            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+
+        return Ok(());
+    }
+
+    fn setup_messaging_tokens_table(&mut self) -> Result<(), SelfError> {
+        self.conn
+            .execute(
+                "CREATE TABLE messaging_tokens (
+                    id INTEGER PRIMARY KEY,
+                    recipient BLOB NOT NULL,
+                    sender BLOB NOT NULL,
+                    token BLOB NOT NULL
+                );
+                CREATE UNIQUE INDEX idx_messaging_tokens_recipient
+                ON messaging_tokens (recipient);",
+                (),
+            )
+            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+
+        return Ok(());
+    }
+
+    fn setup_messaging_groups_table(&mut self) -> Result<(), SelfError> {
+        self.conn
+            .execute(
+                "CREATE TABLE messaging_tokens (
+                    id INTEGER PRIMARY KEY,
+                    identity BLOB PRIMARY KEY,
+                    owner BLOB NOT NULL,
+                )
+                CREATE UNIQUE INDEX idx_messaging_groups_identity
+                ON messaging_groups (identity);",
+                (),
+            )
+            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+
+        return Ok(());
+    }
+
+    fn setup_messaging_membership_table(&mut self) -> Result<(), SelfError> {
+        self.conn
+            .execute(
+                "CREATE TABLE messaging_members (
+                    id INTEGER PRIMARY KEY,
+                    group INTEGER NOT NULL,
+                    member BLOB NOT NULL,
+                );
+                CREATE UNIQUE INDEX idx_messaging_members_group_member
+                ON messaging_members (group, member);",
+                (),
+            )
+            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+
+        return Ok(());
+    }
+
+    pub fn transaction<F>(&mut self, execute: F) -> Result<(), SelfError>
+    where
+        F: FnOnce(&Transaction) -> bool,
+    {
         let mut txn = self
             .conn
             .transaction()
@@ -64,23 +166,19 @@ mod tests {
 
         // create a session
         storage
-            .transaction(Arc::new(|txn| {
-                if txn
+            .transaction(|txn| {
+                return txn
                     .execute(
                         "INSERT INTO crypto_sessions (identity, session) VALUES (?1, ?2)",
                         (b"bob", b"session-with-bob"),
                     )
-                    .is_err()
-                {
-                    return false;
-                };
-                return true;
-            }))
+                    .is_ok();
+            })
             .expect("failed to create transaction");
 
         // load a session
         storage
-            .transaction(Arc::new(|txn| {
+            .transaction(|txn| {
                 let mut statement = txn
                     .prepare("SELECT * FROM crypto_sessions WHERE identity = ?1")
                     .expect("failed to prepare statement");
@@ -95,7 +193,7 @@ mod tests {
                 assert_eq!(session, b"session-with-bob");
 
                 return true;
-            }))
+            })
             .expect("failed to create transaction");
     }
 }
