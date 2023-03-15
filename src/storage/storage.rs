@@ -1,7 +1,5 @@
 use rusqlite::{Connection, Result, Transaction};
 
-use std::sync::Arc;
-
 use crate::error::SelfError;
 
 pub struct Storage {
@@ -75,7 +73,9 @@ impl Storage {
                     identity BLOB NOT NULL,
                     role INTEGER NOT NULL,
                     key BLOB NOT NULL
-                )",
+                );
+                CREATE UNIQUE INDEX idx_account_keychain_identity
+                ON account_keychain (identity);",
                 (),
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
@@ -104,11 +104,11 @@ impl Storage {
     fn setup_messaging_groups_table(&mut self) -> Result<(), SelfError> {
         self.conn
             .execute(
-                "CREATE TABLE messaging_tokens (
+                "CREATE TABLE messaging_groups (
                     id INTEGER PRIMARY KEY,
-                    identity BLOB PRIMARY KEY,
-                    owner BLOB NOT NULL,
-                )
+                    identity BLOB NOT NULL,
+                    owner BLOB NOT NULL
+                );
                 CREATE UNIQUE INDEX idx_messaging_groups_identity
                 ON messaging_groups (identity);",
                 (),
@@ -123,11 +123,11 @@ impl Storage {
             .execute(
                 "CREATE TABLE messaging_members (
                     id INTEGER PRIMARY KEY,
-                    group INTEGER NOT NULL,
-                    member BLOB NOT NULL,
+                    group_id INTEGER NOT NULL,
+                    member BLOB NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_messaging_members_group_member
-                ON messaging_members (group, member);",
+                ON messaging_members (group_id, member);",
                 (),
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
@@ -186,8 +186,8 @@ mod tests {
                 let mut rows = statement.query([b"bob"]).expect("failed to execute query");
                 let row = rows.next().expect("no rows found").unwrap();
 
-                let identity: Vec<u8> = row.get(0).unwrap();
-                let session: Vec<u8> = row.get(1).unwrap();
+                let identity: Vec<u8> = row.get(1).unwrap();
+                let session: Vec<u8> = row.get(2).unwrap();
 
                 assert_eq!(identity, b"bob");
                 assert_eq!(session, b"session-with-bob");

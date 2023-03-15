@@ -2,8 +2,6 @@ use crate::keypair::signing::KeyPair;
 use crate::storage::Storage;
 //use crate::transport::rest::Rest;
 
-use std::sync::Arc;
-
 pub struct Account {
     storage: Storage,
 }
