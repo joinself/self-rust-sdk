@@ -1,3 +1,4 @@
+use hex::ToHex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
@@ -11,7 +12,6 @@ pub struct KeyPair {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PublicKey {
-    id: Option<String>,
     algorithm: Algorithm,
     bytes: Vec<u8>,
 }
@@ -32,18 +32,28 @@ impl PublicKey {
         }
 
         return Ok(PublicKey {
-            id: Some(String::from(id)),
             algorithm: algorithm,
             bytes: decoded_public_key,
         });
     }
 
-    pub fn id(&self) -> String {
-        if self.id.is_some() {
-            return self.id.as_ref().unwrap().clone();
+    pub fn from_bytes(bytes: &[u8], algorithm: Algorithm) -> Result<PublicKey, SelfError> {
+        if bytes.len() < 32 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
         }
 
-        return base64::encode_config(&self.bytes, base64::URL_SAFE_NO_PAD);
+        return Ok(PublicKey {
+            algorithm: algorithm,
+            bytes: bytes.to_vec(),
+        });
+    }
+
+    pub fn id(&self) -> String {
+        return self.bytes.encode_hex();
+    }
+
+    pub fn eq(&self, bytes: &[u8]) -> bool {
+        return self.bytes.eq(bytes);
     }
 
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
@@ -80,7 +90,6 @@ impl KeyPair {
 
         return KeyPair {
             public_key: PublicKey {
-                id: None,
                 algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
             },
@@ -127,7 +136,6 @@ impl KeyPair {
 
         return Ok(KeyPair {
             public_key: PublicKey {
-                id: Some(String::from(key_id)),
                 algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
             },
@@ -138,11 +146,7 @@ impl KeyPair {
     }
 
     pub fn id(&self) -> String {
-        if self.public_key.id.is_some() {
-            return self.public_key.id.as_ref().unwrap().clone();
-        }
-
-        return base64::encode_config(&self.public_key.bytes, base64::URL_SAFE_NO_PAD);
+        return self.public_key.id();
     }
 
     pub fn algorithm(&self) -> Algorithm {

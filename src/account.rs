@@ -13,12 +13,6 @@ impl Account {
         };
     }
 
-    /*
-    pub fn import_legacy_device(device_id: &str, ed25519_seed: &[u8])  {
-
-    }
-    */
-
     pub fn register(&mut self) -> (KeyPair, KeyPair) {
         let (id_key, device_key, recovery_key) = (KeyPair::new(), KeyPair::new(), KeyPair::new());
 
@@ -35,11 +29,11 @@ impl Account {
             .transaction(move |txn| {
                 txn.execute(
                     "INSERT INTO account_keychain (id, role, key)
-                VALUES
-                    (?1, ?2, ?3),
-                    (?4, ?5, ?6),
-                    (?7, ?8, ?9),
-                ",
+                    VALUES
+                        (?1, ?2, ?3),
+                        (?4, ?5, ?6),
+                        (?7, ?8, ?9),
+                    ",
                     (
                         &id_key_id,
                         1,
@@ -58,6 +52,12 @@ impl Account {
 
         return (device_key, recovery_key);
     }
+
+    /*
+    pub fn import_legacy_device(device_id: &str, ed25519_seed: &[u8])  {
+
+    }
+    */
 }
 
 #[cfg(test)]

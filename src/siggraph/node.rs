@@ -1,19 +1,16 @@
-use chrono::{DateTime, NaiveDateTime, Utc};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::keypair::signing::PublicKey;
-use crate::siggraph::action::KeyRole;
+use crate::siggraph::KeyRole;
 
 #[derive(Debug)]
 pub struct Node {
-    pub kid: String,
-    pub did: Option<String>,
     pub typ: KeyRole,
-    pub seq: i32,
-    pub pk: PublicKey,
+    pub seq: u32,
     pub ca: i64,
     pub ra: i64,
+    pub pk: PublicKey,
     pub incoming: Vec<Rc<RefCell<Node>>>,
     pub outgoing: Vec<Rc<RefCell<Node>>>,
 }
@@ -28,41 +25,5 @@ impl Node {
         }
 
         return nodes;
-    }
-
-    pub fn created_at(&self) -> Option<DateTime<Utc>> {
-        if self.ca == 0 {
-            return None;
-        }
-
-        if self.ca > i32::MAX as i64 {
-            return Some(DateTime::from_utc(
-                NaiveDateTime::from_timestamp(self.ca / 1000, 0),
-                Utc,
-            ));
-        }
-
-        return Some(DateTime::from_utc(
-            NaiveDateTime::from_timestamp(self.ca, 0),
-            Utc,
-        ));
-    }
-
-    pub fn revoked_at(&self) -> Option<DateTime<Utc>> {
-        if self.ra == 0 {
-            return None;
-        }
-
-        if self.ra > i32::MAX as i64 {
-            return Some(DateTime::from_utc(
-                NaiveDateTime::from_timestamp(self.ra / 1000, 0),
-                Utc,
-            ));
-        }
-
-        return Some(DateTime::from_utc(
-            NaiveDateTime::from_timestamp(self.ra, 0),
-            Utc,
-        ));
     }
 }

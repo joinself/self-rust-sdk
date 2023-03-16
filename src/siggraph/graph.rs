@@ -1,300 +1,316 @@
 use crate::error::SelfError;
 use crate::keypair::signing::PublicKey;
-use crate::siggraph::action::{Action, ActionType, KeyRole};
+use crate::keypair::Algorithm;
 use crate::siggraph::node::Node;
-use crate::siggraph::operation::Operation;
+use crate::siggraph::schema::schema::{
+    Action, CreateKey, Operation, Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
+};
 
+use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use chrono::{DateTime, Utc};
 
-pub struct SignatureGraph {
+use super::schema::schema::{root_as_signed_operation, Actionable};
+use super::{KeyAlgorithm, KeyRole};
+
+pub struct SignatureGraph<'a> {
+    id: Option<Vec<u8>>,
     root: Option<Rc<RefCell<Node>>>,
-    keys: HashMap<String, Rc<RefCell<Node>>>,
-    devices: HashMap<String, Rc<RefCell<Node>>>,
-    signatures: HashMap<String, usize>,
-    operations: Vec<Operation>,
+    keys: HashMap<Vec<u8>, Rc<RefCell<Node>>>,
+    hashes: HashMap<Vec<u8>, usize>,
+    operations: Vec<Operation<'a>>,
     recovery_key: Option<Rc<RefCell<Node>>>,
+    sig_buf: Vec<u8>,
 }
 
-impl SignatureGraph {
-    pub fn new(history: Vec<Operation>) -> Result<SignatureGraph, SelfError> {
+impl<'a> SignatureGraph<'_> {
+    pub fn new(history: Vec<Vec<u8>>) -> Result<SignatureGraph<'a>, SelfError> {
         let mut sg = SignatureGraph {
+            id: None,
             root: None,
             keys: HashMap::new(),
-            devices: HashMap::new(),
-            signatures: HashMap::new(),
+            hashes: HashMap::new(),
             operations: Vec::new(),
             recovery_key: None,
+            sig_buf: vec![0; 96],
         };
 
         for operation in &history {
-            sg.execute(operation)?
+            sg.execute_operation(operation, true)?
         }
 
         return Ok(sg);
     }
 
-    pub fn execute(&mut self, operation: &Operation) -> Result<(), SelfError> {
-        operation.validate()?;
-
-        // check the sequence is in order
-        if operation.sequence != self.operations.len() as i32 {
-            return Err(SelfError::SiggraphOperationSequenceOutOfOrder);
-        }
-
-        if operation.sequence > 0 {
-            // check the previous signature matches, if not the first (root) operation
-            let previous = match self.signatures.get(&operation.previous) {
-                Some(previous) => *previous,
-                None => return Err(SelfError::SiggraphOperationPreviousSignatureInvalid),
-            };
-
-            if previous != self.operations.len() - 1 {
-                return Err(SelfError::SiggraphOperationPreviousSignatureInvalid);
-            }
-
-            // check the timestamp is greater than the previous operations
-            if self.operations[self.operations.len() - 1].timestamp() == operation.timestamp()
-                || self.operations[self.operations.len() - 1].timestamp() > operation.timestamp()
-            {
-                return Err(SelfError::SiggraphOperationTimestampInvalid);
-            }
-
-            // check the operation was signed by one or more keys
-            let signing_key_ids = match operation.signing_key_ids() {
-                Some(signing_key_ids) => signing_key_ids,
-                None => return Err(SelfError::SiggraphOperationSigningKeyInvalid),
-            };
-
-            if signing_key_ids.len() != 1 {
-                return Err(SelfError::SiggraphOperationSigningKeyInvalid);
-            }
-
-            for signing_key_id in signing_key_ids {
-                // check the key used to sign the operation exists
-                let signing_key = match self.keys.get(&signing_key_id) {
-                    Some(signing_key) => signing_key.clone(),
-                    None => return Err(SelfError::SiggraphOperationSigningKeyInvalid),
-                };
-
-                // check the signign key hasn't been revoked before the operation
-                if (*signing_key).borrow().revoked_at().is_some() {
-                    let revoked_at = (*signing_key).borrow().revoked_at().unwrap();
-
-                    if operation.timestamp() > revoked_at {
-                        return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
-                    }
-                }
-
-                // if this operation is an account recovery, check that it revokes the active recovery key
-                if (*signing_key).borrow().typ == KeyRole::Recovery {
-                    let action = operation.action_by_kid(&signing_key_id);
-                    if action.is_none() {
-                        return Err(SelfError::SiggraphOperationAccountRecoveryActionInvalid);
-                    }
-
-                    if action.unwrap().action != ActionType::KeyRevoke {
-                        return Err(SelfError::SiggraphOperationAccountRecoveryActionInvalid);
-                    }
-                }
-
-                drop(signing_key);
-            }
-        }
-
-        // run actions
-        for action in &operation.actions {
-            action.validate()?;
-
-            if operation.sequence > 0 && action.effective_from().is_some() {
-                if action.effective_from().unwrap()
-                    < self.root.as_ref().unwrap().borrow().created_at().unwrap()
-                {
-                    return Err(SelfError::SiggraphActionEffectiveFromInvalid);
-                }
-            }
-
-            match action.action {
-                ActionType::KeyAdd => {
-                    self.add(operation, action)?;
-                }
-                ActionType::KeyRevoke => {
-                    self.revoke(operation, action)?;
-                }
-            }
-        }
-
-        let signing_key_ids = match operation.signing_key_ids() {
-            Some(signing_key_ids) => signing_key_ids,
-            None => return Err(SelfError::SiggraphOperationSigningKeyInvalid),
+    pub fn load(history: Vec<Vec<u8>>) -> Result<SignatureGraph<'a>, SelfError> {
+        let mut sg = SignatureGraph {
+            id: None,
+            root: None,
+            keys: HashMap::new(),
+            hashes: HashMap::new(),
+            operations: Vec::new(),
+            recovery_key: None,
+            sig_buf: vec![0; 96],
         };
 
-        if signing_key_ids.len() != 1 {
-            return Err(SelfError::SiggraphOperationSigningKeyInvalid);
+        for operation in &history {
+            sg.execute_operation(operation, false)?
         }
 
-        for signing_key_id in signing_key_ids {
-            // check the key used to sign the operation exists
-            let signing_key = match self.keys.get(&signing_key_id) {
-                Some(signing_key) => signing_key.clone(),
-                None => return Err(SelfError::SiggraphOperationSigningKeyInvalid),
-            };
+        return Ok(sg);
+    }
 
-            // check that the operation was signed before the signing key was revoked
-            if operation.timestamp() < (*signing_key).borrow().created_at().unwrap()
-                || !(*signing_key).borrow().revoked_at().is_none()
-                    && operation.timestamp() > (*signing_key).borrow().revoked_at().unwrap()
-            {
-                return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
+    pub fn execute(&mut self, operation: &[u8]) -> Result<(), SelfError> {
+        self.execute_operation(operation, true)
+    }
+
+    fn execute_operation(&mut self, operation: &[u8], verify: bool) -> Result<(), SelfError> {
+        let signed_op = root_as_signed_operation(operation)
+            .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
+
+        let op_bytes = signed_op
+            .operation()
+            .ok_or_else(|| SelfError::SiggraphOperationDecodingInvalid)?;
+
+        let op = flatbuffers::root::<Operation<'_>>(op_bytes)
+            .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
+
+        let op_hash = crate::crypto::hash::blake2b(op_bytes);
+
+        let mut signers = HashSet::new();
+
+        if verify {
+            // copy the operation hash to our temporary buffer we
+            // will use to calculate signatures for each signer
+            self.sig_buf[32..].copy_from_slice(&op_hash);
+
+            self.validate_operation(&signed_op, &op, &mut signers)?;
+
+            if op.sequence() > 0 {
+                self.authorize_operation(&op, &signers)?;
             }
+        }
 
-            operation.verify(&(*signing_key).borrow().pk)?;
+        let actions = match op.actions() {
+            Some(actions) => actions,
+            None => return Err(SelfError::SiggraphOperationNOOP),
+        };
 
-            let mut valid: bool = false;
-
-            // check all keys to ensure that at least one key is active
-            for key in self.keys.values() {
-                let k = (**key).borrow();
-
-                if k.revoked_at().is_none() {
-                    valid = true;
-                    break;
+        for action in actions {
+            match action.actionable_type() {
+                Actionable::CreateKey => {
+                    let create_key = action.actionable_as_create_key().unwrap();
+                    self.create_key(&op, &create_key, &signers)?;
                 }
+                Actionable::RevokeKey => {}
+                Actionable::Recover => {}
+                _ => return Err(SelfError::SiggraphActionUnknown),
             }
-
-            if !valid {
-                return Err(SelfError::SiggraphOperationNoValidKeys);
-            }
-
-            // check there is an active recovery key
-            if self.recovery_key.is_none() {
-                return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
-            }
-
-            let recovery_key = self.recovery_key.as_ref().unwrap().clone();
-
-            if (*recovery_key).borrow().revoked_at().is_some() {
-                return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
-            }
-
-            // add the operation to the history
-            self.operations.push(operation.clone());
-            self.signatures.insert(
-                operation.signatures().first().unwrap().signature.clone(),
-                operation.sequence as usize,
-            );
         }
 
         return Ok(());
     }
 
-    pub fn is_key_valid(&self, kid: &str, at: DateTime<Utc>) -> bool {
-        let k = match self.keys.get(kid) {
-            Some(k) => k.clone(),
-            None => return false,
+    fn validate_operation(
+        &mut self,
+        signed_op: &SignedOperation,
+        op: &Operation,
+        signers: &mut HashSet<Vec<u8>>,
+    ) -> Result<(), SelfError> {
+        // check the sequence is in order and version of the operation are correct
+        if op.sequence() != self.operations.len() as u32 {
+            return Err(SelfError::SiggraphOperationSequenceOutOfOrder);
+        }
+
+        if op.version() != 2 {
+            return Err(SelfError::SiggraphOperationVersionInvalid);
+        }
+
+        if op.actions().is_none() || op.actions().is_some_and(|a| a.len() < 1) {
+            return Err(SelfError::SiggraphOperationNOOP);
+        }
+
+        let signatures = match signed_op.signatures() {
+            Some(signatures) => signatures,
+            None => return Err(SelfError::SiggraphOperationNotSigned),
         };
 
-        let k = k.borrow();
+        if op.sequence() == 0 {
+            // check the root operation contains a signature using the secret key
+            // used to generate the identifier for the account, as well as a signature
+            // by the device and recovery key
+            if signatures.len() < 3 {
+                return Err(SelfError::SiggraphOperationNotEnoughSigners);
+            }
 
-        if k.created_at().is_none() {
-            return false;
+            let previous = match op.previous() {
+                Some(previous) => previous,
+                None => return Err(SelfError::SiggraphOperationPreviousHashMissing),
+            };
+
+            let hash_index = match self.hashes.get(previous) {
+                Some(hash_index) => *hash_index,
+                None => return Err(SelfError::SiggraphOperationPreviousHashMissing),
+            };
+
+            // check the provided previous hash matches the hash of the last operation
+            if hash_index != self.operations.len() - 1 {
+                return Err(SelfError::SiggraphOperationPreviousHashInvalid);
+            }
+
+            // check the timestamp is greater than the previous operations
+            if self.operations[self.operations.len() - 1].timestamp() == op.timestamp()
+                || self.operations[self.operations.len() - 1].timestamp() > op.timestamp()
+            {
+                return Err(SelfError::SiggraphOperationTimestampInvalid);
+            }
         }
 
-        if k.created_at().unwrap() == at && k.revoked_at().is_none()
-            || k.created_at().unwrap() < at && k.revoked_at().is_none()
-        {
-            return true;
+        for (i, sig) in signatures.iter().enumerate() {
+            let hdr_bytes = match sig.header() {
+                Some(hdr_bytes) => hdr_bytes,
+                None => return Err(SelfError::SiggraphOperationSignatureHeaderMissing),
+            };
+
+            let signature = match sig.signature() {
+                Some(signature) => signature,
+                None => return Err(SelfError::SiggraphOperationSignatureInvalid),
+            };
+
+            let hdr_hash = crate::crypto::hash::blake2b(hdr_bytes);
+            self.sig_buf[64..].copy_from_slice(&hdr_hash);
+
+            let hdr = flatbuffers::root::<SignatureHeader<'_>>(hdr_bytes)
+                .map_err(|_| SelfError::SiggraphOperationSignatureHeaderInvalid)?;
+
+            let signer = match hdr.signer() {
+                Some(signer) => signer,
+                None => return Err(SelfError::SiggraphOperationSignatureSignerMissing),
+            };
+
+            if op.sequence() == 0 && i == 0 {
+                // if this is the first signature on the first operation
+                // this is the key used as an identifier for the account.
+                // copy it to the sig buffer for verifying signatures
+                self.id = Some(signer.to_vec());
+                self.sig_buf.copy_from_slice(signer);
+            }
+
+            // TODO store signature alg in header
+            let signers_pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)?;
+            if !signers_pk.verify(&self.sig_buf, signature) {
+                return Err(SelfError::SiggraphOperationSignatureInvalid);
+            };
+
+            signers.insert(signer.to_vec());
         }
 
-        if k.revoked_at().is_none() {
-            return false;
-        }
-
-        if k.created_at().unwrap() == at && k.revoked_at().unwrap() > at
-            || k.created_at().unwrap() < at && k.revoked_at().unwrap() > at
-        {
-            return true;
-        }
-
-        return false;
+        return Ok(());
     }
 
-    fn add(&mut self, operation: &Operation, action: &Action) -> Result<(), SelfError> {
-        // lookup the key the action refers to
-        if self.keys.contains_key(&action.kid) {
+    fn authorize_operation(
+        &self,
+        op: &Operation,
+        signers: &HashSet<Vec<u8>>,
+    ) -> Result<(), SelfError> {
+        let mut authorized = false;
+
+        for signer in signers {
+            let signing_key = match self.keys.get(signer) {
+                Some(signing_key) => signing_key,
+                None => continue,
+            };
+
+            let created_at = (*signing_key).as_ref().borrow().ca;
+            let revoked_at = (*signing_key).as_ref().borrow().ra;
+
+            if op.timestamp() < created_at {
+                return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
+            }
+
+            // check the signign key hasn't been revoked before the operation
+            if revoked_at > 0 && op.timestamp() > revoked_at {
+                return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
+            }
+
+            authorized = true;
+            drop(signing_key);
+        }
+
+        if !authorized {
+            return Err(SelfError::SiggraphOperationSigningKeyInvalid);
+        }
+
+        return Ok(());
+    }
+
+    fn create_key(
+        &mut self,
+        op: &Operation,
+        ck: &CreateKey,
+        signers: &HashSet<Vec<u8>>,
+    ) -> Result<(), SelfError> {
+        let key = match ck.key() {
+            Some(key) => key,
+            None => return Err(SelfError::SiggraphActionKeyMissing),
+        };
+
+        if self.id.as_ref().is_some_and(|id| id.eq(key)) {
             return Err(SelfError::SiggraphActionKeyDuplicate);
         }
 
-        if action.key.is_none() {
-            return Err(SelfError::SiggraphActionPublicKeyLengthBad);
+        if signers.get(key).is_none() {
+            return Err(SelfError::SiggraphOperationNotEnoughSigners);
         }
 
-        if action.role.is_none() {
-            return Err(SelfError::SiggraphActionRoleMissing);
+        if self.keys.get(key).is_some() {
+            return Err(SelfError::SiggraphActionKeyDuplicate);
         }
 
-        let public_key = action.key.as_ref().unwrap();
-        let public_key_role = action.role.as_ref().unwrap();
-
-        let kp = match public_key_role {
-            KeyRole::Device => {
-                PublicKey::import(&action.kid, crate::keypair::Algorithm::Ed25519, &public_key)
-            }
-            KeyRole::Recovery => {
-                PublicKey::import(&action.kid, crate::keypair::Algorithm::Ed25519, &public_key)
-            }
-        }?;
+        if op.sequence() > 0 && ck.effective_from() < self.operations[0].timestamp() {
+            return Err(SelfError::SiggraphOperationTimestampInvalid);
+        }
 
         let node = Rc::new(RefCell::new(Node {
-            kid: action.kid.clone(),
-            did: action.did.clone(),
-            typ: public_key_role.clone(),
-            seq: operation.sequence,
-            ca: operation.timestamp,
+            typ: ck.role(),
+            seq: op.sequence(),
+            ca: op.timestamp(),
             ra: 0,
-            pk: kp,
+            pk: PublicKey::from_bytes(key, Algorithm::Ed25519)?,
             incoming: Vec::new(),
             outgoing: Vec::new(),
         }));
 
-        match public_key_role {
-            KeyRole::Device => {
-                let did = node.borrow().did.as_ref().unwrap().clone();
+        if ck.role() == KeyRole::Recovery
+            && self
+                .recovery_key
+                .as_ref()
+                .is_some_and(|rk| rk.as_ref().borrow().ra == 0)
+        {
+            return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
+        }
 
-                // check there are no devices with an active key
-                let device = self.devices.get(&did);
-                if device.is_some() && device.as_ref().unwrap().borrow().ra < 1 {
-                    return Err(SelfError::SiggraphActionMultipleActiveDeviceKeys);
+        self.keys.insert(key.to_vec(), node.clone());
+
+        for signer in signers {
+            if op.sequence() == 0 && self.root.is_none() {
+                if key.eq(signer) && !self.id.as_ref().is_some_and(|id| key.eq(&*id)) {
+                    self.root = Some(node.clone());
                 }
-
-                self.devices.insert(did, node.clone());
+                continue;
             }
-            KeyRole::Recovery => {
-                // check there are only one active recovery keys
-                if self.recovery_key.is_some() {
-                    if self.recovery_key.as_ref().unwrap().borrow().ra == 0 {
-                        return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
-                    }
-                }
 
-                self.recovery_key = Some(node.clone());
+            if key.eq(signer) {
+                // this is a self signed signature, skip it
+                continue;
             }
-        };
 
-        let kid = node.borrow().kid.clone();
-        self.keys.insert(kid.clone(), node.clone());
-
-        let signing_key_id = operation.signing_key_ids().unwrap()[0].clone();
-
-        if operation.sequence == 0 && signing_key_id == kid {
-            self.root = Some(node.clone());
-        } else {
             let parent = self
                 .keys
-                .get(&signing_key_id)
+                .get(key)
                 .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?;
 
             node.as_ref().borrow_mut().incoming.push(parent.clone());
@@ -304,58 +320,38 @@ impl SignatureGraph {
         return Ok(());
     }
 
-    fn revoke(&mut self, operation: &Operation, action: &Action) -> Result<(), SelfError> {
+    fn revoke_key(&mut self, op: &Operation, rk: &RevokeKey) -> Result<(), SelfError> {
+        let key = match rk.key() {
+            Some(key) => key,
+            None => return Err(SelfError::SiggraphActionKeyMissing),
+        };
+
+        let node = match self.keys.get(key) {
+            Some(node) => node,
+            None => return Err(SelfError::SiggraphActionKeyMissing),
+        };
+
         // if this is the first (root) operation, then key revocation is not permitted
-        if operation.sequence == 0 {
+        if op.sequence() == 0 {
             return Err(SelfError::SiggraphActionInvalidKeyRevocation);
         }
 
-        // lookup the key the action refers to
-        let node = self
-            .keys
-            .get(&action.kid)
-            .ok_or_else(|| SelfError::SiggraphActionKeyMissing)?
-            .clone();
-
         // if the key has been revoked, then fail
-        let mut revoked_key = node.as_ref().borrow_mut();
-        if revoked_key.ra != 0 {
+        if node.as_ref().borrow().ra != 0 {
             return Err(SelfError::SiggraphActionKeyAlreadyRevoked);
         }
 
-        revoked_key.ra = action.effective_from;
-
-        // drop mutable reference to make borrow checker happy for
-        // when we iterate over child nodes later
-        drop(revoked_key);
-
-        let signing_key_id = operation.signing_key_ids().unwrap()[0].clone();
-
-        let node = self
-            .keys
-            .get(&signing_key_id)
-            .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?
-            .clone();
-
-        if node.as_ref().borrow().typ == KeyRole::Recovery {
-            // if the signing key was a recovery key, then nuke all existing keys
-            let mut root = self.root.as_ref().unwrap().as_ref().borrow_mut();
-            root.ra = action.effective_from;
-
-            for child_node in root.collect() {
-                let mut child_key = child_node.as_ref().borrow_mut();
-                if child_key.ra != 0 {
-                    child_key.ra = action.effective_from;
-                }
-            }
-
-            return Ok(());
+        // check if the effective from timestamp is after the first operation
+        if rk.effective_from() < self.operations[0].timestamp() {
+            return Err(SelfError::SiggraphOperationTimestampInvalid);
         }
+
+        node.borrow_mut().ra = rk.effective_from();
 
         // get and re-borrow revoked key as immutable ref this time
         let node = self
             .keys
-            .get(&action.kid)
+            .get(key)
             .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?
             .clone();
 
@@ -365,12 +361,104 @@ impl SignatureGraph {
         for child_node in revoked_key.collect() {
             let mut child_key = child_node.as_ref().borrow_mut();
 
-            if child_key.created_at().unwrap() >= action.effective_from().unwrap() {
-                child_key.ra = action.effective_from;
+            if child_key.ca >= rk.effective_from() {
+                child_key.ra = rk.effective_from();
             }
         }
 
         return Ok(());
+    }
+
+    fn recover(
+        &mut self,
+        op: &Operation,
+        rc: &Recover,
+        signers: &HashSet<Vec<u8>>,
+    ) -> Result<(), SelfError> {
+        // if this is the first (root) operation, then recovery is not permitted
+        if op.sequence() == 0 {
+            return Err(SelfError::SiggraphActionInvalidKeyRevocation);
+        }
+
+        if rc.effective_from() < self.operations[0].timestamp() {
+            return Err(SelfError::SiggraphOperationTimestampInvalid);
+        }
+
+        let mut signed_by_recovery_key = false;
+
+        for signer in signers {
+            if self
+                .recovery_key
+                .as_ref()
+                .is_some_and(|rk| rk.as_ref().borrow().pk.eq(signer))
+            {
+                signed_by_recovery_key = true;
+                break;
+            }
+        }
+
+        if !signed_by_recovery_key {
+            return Err(SelfError::SiggraphOperationAccountRecoveryActionInvalid);
+        }
+
+        self.root.as_ref().unwrap().borrow_mut().ra = rc.effective_from();
+
+        // if the signing key was a recovery key, then nuke all existing keys
+        let mut root = self.root.as_ref().unwrap().as_ref().borrow_mut();
+        root.ra = rc.effective_from();
+
+        for child_node in root.collect() {
+            let mut child_key = child_node.as_ref().borrow_mut();
+            if child_key.ra != 0 {
+                child_key.ra = rc.effective_from();
+            }
+        }
+
+        return Ok(());
+    }
+
+    pub fn is_key_valid(&self, id: &[u8], at: i64) -> bool {
+        let k = match self.keys.get(id) {
+            Some(k) => k.as_ref(),
+            None => return false,
+        }
+        .borrow();
+
+        if k.ca == 0 {
+            return false;
+        }
+
+        if k.ca == at && k.ra == 0 || k.ca < at && k.ra == 0 {
+            return true;
+        }
+
+        if k.ra == 0 {
+            return false;
+        }
+
+        if k.ca == at && k.ra > at || k.ca < at && k.ra > at {
+            return true;
+        }
+
+        return false;
+    }
+
+    fn action_by_key(&self, op: &Operation, key: &[u8]) -> Option<Action<'a>> {
+        let actions = match op.actions() {
+            Some(actions) => actions,
+            None => return None,
+        };
+
+        for action in actions {
+            match action.actionable_type() {
+                Actionable::CreateKey => {}
+                Actionable::RevokeKey => {}
+                Actionable::Recover => {}
+                _ => return None,
+            }
+        }
+
+        return None;
     }
 }
 
@@ -379,16 +467,10 @@ mod tests {
     use chrono::Utc;
     use std::collections::HashMap;
 
-    use crate::{
-        error::SelfError,
-        keypair::signing::KeyPair,
-        siggraph::action::{Action, ActionType, KeyRole},
-        siggraph::graph::SignatureGraph,
-        siggraph::operation::Operation,
-    };
+    use crate::{error::SelfError, keypair::signing::KeyPair, siggraph::graph::SignatureGraph};
 
     struct TestOperation {
-        signer: String,
+        signers: Vec<Vec<u8>>,
         operation: Operation,
         error: Result<(), SelfError>,
     }
