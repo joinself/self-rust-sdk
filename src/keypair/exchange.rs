@@ -1,3 +1,4 @@
+use hex::ToHex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
@@ -38,16 +39,12 @@ impl PublicKey {
         });
     }
 
-    pub fn id(&self) -> String {
-        if self.id.is_some() {
-            return self.id.as_ref().unwrap().clone();
-        }
-
-        return base64::encode_config(&self.bytes, base64::URL_SAFE_NO_PAD);
+    pub fn id(&self) -> Vec<u8> {
+        return self.bytes.clone();
     }
 
-    pub fn to_vec(&self) -> Vec<u8> {
-        return self.bytes.clone();
+    pub fn encoded_id(&self) -> String {
+        return self.bytes.encode_hex();
     }
 }
 
@@ -154,13 +151,13 @@ mod tests {
     #[test]
     fn new() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
     }
 
     #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
 
         // encode and decode the keypair
         let encoded_skp = skp.encode();

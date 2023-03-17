@@ -4,20 +4,20 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
+use serde_cbor::Value;
 use uuid::Builder;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Message {
     #[serde(serialize_with = "as_base64", deserialize_with = "from_base64")]
-    payload: BTreeMap<String, serde_json::Value>,
+    payload: BTreeMap<String, serde_cbor::Value>,
     #[serde(
         default,
         serialize_with = "as_base64",
         deserialize_with = "protected_optional_from_base64",
         skip_serializing_if = "Option::is_none"
     )]
-    protected: Option<BTreeMap<String, serde_json::Value>>,
+    protected: Option<BTreeMap<String, serde_cbor::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
     signatures: Vec<Signature>,
@@ -30,7 +30,7 @@ pub struct Signature {
         serialize_with = "as_base64",
         deserialize_with = "protected_from_base64"
     )]
-    pub protected: BTreeMap<String, serde_json::Value>,
+    pub protected: BTreeMap<String, serde_cbor::Value>,
     pub signature: String,
 }
 
@@ -39,54 +39,54 @@ where
     T: Serialize,
     S: Serializer,
 {
-    let json = serde_json::to_string(buffer).unwrap();
-    let encoded_json = base64::encode_config(&json, base64::URL_SAFE_NO_PAD);
-    serializer.serialize_str(&encoded_json)
+    let cbor = serde_cbor::to_vec(buffer).unwrap();
+    let encoded_cbor = base64::encode_config(&cbor, base64::URL_SAFE_NO_PAD);
+    serializer.serialize_str(&encoded_cbor)
 }
 
-fn from_base64<'de, D>(deserializer: D) -> Result<BTreeMap<String, serde_json::Value>, D::Error>
+fn from_base64<'de, D>(deserializer: D) -> Result<BTreeMap<String, serde_cbor::Value>, D::Error>
 where
     D: Deserializer<'de>,
 {
     use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| {
-        let decoded_json = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
-            Ok(decoded_json) => decoded_json,
+        let decoded_cbor = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
+            Ok(decoded_cbor) => decoded_cbor,
             Err(err) => return Err(Error::custom(err.to_string())),
         };
-        serde_json::from_slice(&decoded_json).map_err(|err| Error::custom(err.to_string()))
+        serde_cbor::from_slice(&decoded_cbor).map_err(|err| Error::custom(err.to_string()))
     })
 }
 
 fn protected_from_base64<'de, D>(
     deserializer: D,
-) -> Result<BTreeMap<String, serde_json::Value>, D::Error>
+) -> Result<BTreeMap<String, serde_cbor::Value>, D::Error>
 where
     D: Deserializer<'de>,
 {
     use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| {
-        let decoded_json = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
-            Ok(decoded_json) => decoded_json,
+        let decoded_cbor = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
+            Ok(decoded_cbor) => decoded_cbor,
             Err(err) => return Err(Error::custom(err.to_string())),
         };
-        serde_json::from_slice(&decoded_json).map_err(|err| Error::custom(err.to_string()))
+        serde_cbor::from_slice(&decoded_cbor).map_err(|err| Error::custom(err.to_string()))
     })
 }
 
 fn protected_optional_from_base64<'de, D>(
     deserializer: D,
-) -> Result<Option<BTreeMap<String, serde_json::Value>>, D::Error>
+) -> Result<Option<BTreeMap<String, serde_cbor::Value>>, D::Error>
 where
     D: Deserializer<'de>,
 {
     use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| {
-        let decoded_json = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
-            Ok(decoded_json) => decoded_json,
+        let decoded_cbor = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
+            Ok(decoded_cbor) => decoded_cbor,
             Err(err) => return Err(Error::custom(err.to_string())),
         };
-        serde_json::from_slice(&decoded_json).map_err(|err| Error::custom(err.to_string()))
+        serde_cbor::from_slice(&decoded_cbor).map_err(|err| Error::custom(err.to_string()))
     })
 }
 
@@ -157,12 +157,12 @@ impl Message {
         // Investigate if generic payload is possible,
         // with a default of BTreeMap<String, Value>
 
-        let encoded_custom_payload = match serde_json::to_vec(custom_payload) {
+        let encoded_custom_payload = match serde_cbor::to_vec(custom_payload) {
             Ok(encoded_custom_payload) => encoded_custom_payload,
             Err(_) => return Err(SelfError::MessageEncodingInvalid),
         };
 
-        let payload: BTreeMap<String, Value> = match serde_json::from_slice(&encoded_custom_payload)
+        let payload: BTreeMap<String, Value> = match serde_cbor::from_slice(&encoded_custom_payload)
         {
             Ok(payload) => payload,
             Err(_) => return Err(SelfError::MessageDecodingInvalid),
@@ -180,12 +180,12 @@ impl Message {
     where
         T: for<'a> Deserialize<'a>,
     {
-        let encoded_payload = match serde_json::to_vec(&self.payload) {
+        let encoded_payload = match serde_cbor::to_vec(&self.payload) {
             Ok(encoded_payload) => encoded_payload,
             Err(_) => return Err(SelfError::MessageEncodingInvalid),
         };
 
-        let decoded_payload: T = match serde_json::from_slice(&encoded_payload) {
+        let decoded_payload: T = match serde_cbor::from_slice(&encoded_payload) {
             Ok(decoded_payload) => decoded_payload,
             Err(_) => return Err(SelfError::MessageDecodingInvalid),
         };
@@ -194,7 +194,7 @@ impl Message {
     }
 
     pub fn from_jws(data: &[u8]) -> Result<Message, SelfError> {
-        let m: Message = match serde_json::from_slice(data) {
+        let m: Message = match serde_cbor::from_slice(data) {
             Ok(m) => m,
             Err(err) => {
                 println!("json error: {}", err);
@@ -233,9 +233,9 @@ impl Message {
         let mut m = Message::new_without_defaults();
 
         m.protected =
-            serde_json::from_slice(&protected).map_err(|_| SelfError::MessageDecodingInvalid)?;
+            serde_cbor::from_slice(&protected).map_err(|_| SelfError::MessageDecodingInvalid)?;
         m.payload =
-            serde_json::from_slice(&payload).map_err(|_| SelfError::MessageDecodingInvalid)?;
+            serde_cbor::from_slice(&payload).map_err(|_| SelfError::MessageDecodingInvalid)?;
         m.signature = Some(
             String::from_utf8(parts[2].to_vec()).map_err(|_| SelfError::MessageDecodingInvalid)?,
         );
@@ -257,7 +257,7 @@ impl Message {
     }
 
     pub fn add_field_raw_json(&mut self, key: &str, value: &[u8]) -> Result<(), SelfError> {
-        let decoded_value: Value = match serde_json::from_slice(value) {
+        let decoded_value: Value = match serde_cbor::from_slice(value) {
             Ok(decoded_value) => decoded_value,
             Err(_) => return Err(SelfError::MessageDecodingInvalid),
         };
@@ -276,14 +276,14 @@ impl Message {
         protected.insert(String::from("kid"), Value::String(signing_key.id()));
         protected.insert(String::from("alg"), Value::String(String::from("EdDSA")));
 
-        let payload = match serde_json::to_string(&self.payload) {
+        let payload = match serde_cbor::to_string(&self.payload) {
             Ok(payload) => payload,
             Err(_) => return Err(SelfError::MessageEncodingInvalid),
         };
 
         let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
         let encoded_protected = base64::encode_config(
-            serde_json::to_vec(&protected).unwrap(),
+            serde_cbor::to_vec(&protected).unwrap(),
             base64::URL_SAFE_NO_PAD,
         );
 
@@ -315,8 +315,8 @@ impl Message {
                     Err(_) => return Err(SelfError::MessageSignatureEncodingInvalid),
                 };
 
-            let payload = serde_json::to_string(&self.payload).unwrap();
-            let protected = serde_json::to_string(&self.protected).unwrap();
+            let payload = serde_cbor::to_vec(&self.payload).unwrap();
+            let protected = serde_cbor::to_vec(&self.protected).unwrap();
 
             let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
             let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
@@ -340,8 +340,8 @@ impl Message {
                     Err(_) => return Err(SelfError::MessageSignatureEncodingInvalid),
                 };
 
-            let payload = serde_json::to_string(&self.payload).unwrap();
-            let protected = serde_json::to_string(&s.protected).unwrap();
+            let payload = serde_cbor::to_vec(&self.payload).unwrap();
+            let protected = serde_cbor::to_vec(&s.protected).unwrap();
 
             let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
             let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
@@ -361,11 +361,11 @@ impl Message {
         let mut kids = Vec::new();
 
         if self.protected.is_some() {
+            
+            
             let kid = &self.protected.as_ref().unwrap()["kid"];
-
-            if kid.is_string() {
-                kids.push(String::from(kid.as_str().unwrap()));
-            }
+            
+            kids.push(Vec::from(kid));
         }
 
         for sig in &self.signatures {
@@ -399,7 +399,7 @@ impl Message {
             return Err(SelfError::MessageNoSignature);
         }
 
-        let json = match serde_json::to_string(self) {
+        let cbor = match serde_cbor::to_string(self) {
             Ok(json) => json,
             Err(_) => return Err(SelfError::MessageEncodingInvalid),
         };
@@ -412,12 +412,12 @@ impl Message {
             return Err(SelfError::MessageNoSignature);
         }
 
-        let payload = match serde_json::to_string(&self.payload) {
+        let payload = match serde_cbor::to_string(&self.payload) {
             Ok(payload) => payload,
             Err(_) => return Err(SelfError::MessageEncodingInvalid),
         };
 
-        let protected = serde_json::to_vec(&self.signatures[0].protected).unwrap();
+        let protected = serde_cbor::to_vec(&self.signatures[0].protected).unwrap();
 
         let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
         let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);

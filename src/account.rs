@@ -16,13 +16,13 @@ impl Account {
     pub fn register(&mut self) -> (KeyPair, KeyPair) {
         let (id_key, device_key, recovery_key) = (KeyPair::new(), KeyPair::new(), KeyPair::new());
 
-        let id_key_id = id_key.public().to_vec();
+        let id_key_id = id_key.public().id();
         let id_key_encoded = id_key.encode();
 
-        let device_key_id = device_key.public().to_vec();
+        let device_key_id = device_key.public().id();
         let device_key_encoded = device_key.encode();
 
-        let recovery_key_id = recovery_key.public().to_vec();
+        let recovery_key_id = recovery_key.public().id();
         let recovery_key_encoded = recovery_key.encode();
 
         self.storage

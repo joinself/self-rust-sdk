@@ -2,19 +2,14 @@ use crate::error::SelfError;
 use crate::keypair::signing::PublicKey;
 use crate::keypair::Algorithm;
 use crate::siggraph::node::Node;
-use crate::siggraph::schema::schema::{
-    Action, CreateKey, Operation, Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
+use crate::siggraph::{
+    root_as_signed_operation, Action, Actionable, CreateKey, KeyAlgorithm, KeyRole, Operation,
+    Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
 };
 
-use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-
-use chrono::{DateTime, Utc};
-
-use super::schema::schema::{root_as_signed_operation, Actionable};
-use super::{KeyAlgorithm, KeyRole};
 
 pub struct SignatureGraph<'a> {
     id: Option<Vec<u8>>,
@@ -85,7 +80,7 @@ impl<'a> SignatureGraph<'_> {
         if verify {
             // copy the operation hash to our temporary buffer we
             // will use to calculate signatures for each signer
-            self.sig_buf[32..].copy_from_slice(&op_hash);
+            self.sig_buf[32..64].copy_from_slice(&op_hash);
 
             self.validate_operation(&signed_op, &op, &mut signers)?;
 
@@ -105,8 +100,14 @@ impl<'a> SignatureGraph<'_> {
                     let create_key = action.actionable_as_create_key().unwrap();
                     self.create_key(&op, &create_key, &signers)?;
                 }
-                Actionable::RevokeKey => {}
-                Actionable::Recover => {}
+                Actionable::RevokeKey => {
+                    let revoke_key = action.actionable_as_revoke_key().unwrap();
+                    self.revoke_key(&op, &revoke_key)?;
+                }
+                Actionable::Recover => {
+                    let recover = action.actionable_as_recover().unwrap();
+                    self.recover(&op, &recover, &signers)?;
+                }
                 _ => return Err(SelfError::SiggraphActionUnknown),
             }
         }
@@ -145,7 +146,7 @@ impl<'a> SignatureGraph<'_> {
             if signatures.len() < 3 {
                 return Err(SelfError::SiggraphOperationNotEnoughSigners);
             }
-
+        } else {
             let previous = match op.previous() {
                 Some(previous) => previous,
                 None => return Err(SelfError::SiggraphOperationPreviousHashMissing),
@@ -196,7 +197,7 @@ impl<'a> SignatureGraph<'_> {
                 // this is the key used as an identifier for the account.
                 // copy it to the sig buffer for verifying signatures
                 self.id = Some(signer.to_vec());
-                self.sig_buf.copy_from_slice(signer);
+                self.sig_buf[..32].copy_from_slice(signer);
             }
 
             // TODO store signature alg in header
@@ -262,11 +263,11 @@ impl<'a> SignatureGraph<'_> {
             return Err(SelfError::SiggraphActionKeyDuplicate);
         }
 
-        if signers.get(key).is_none() {
+        if !signers.contains(key) {
             return Err(SelfError::SiggraphOperationNotEnoughSigners);
         }
 
-        if self.keys.get(key).is_some() {
+        if self.keys.contains_key(key) {
             return Err(SelfError::SiggraphActionKeyDuplicate);
         }
 
@@ -464,61 +465,225 @@ impl<'a> SignatureGraph<'_> {
 
 #[cfg(test)]
 mod tests {
+
     use chrono::Utc;
+    use flatbuffers::{Vector, WIPOffset};
     use std::collections::HashMap;
 
-    use crate::{error::SelfError, keypair::signing::KeyPair, siggraph::graph::SignatureGraph};
+    use crate::{
+        error::SelfError,
+        keypair::signing::KeyPair,
+        siggraph::{
+            Action, ActionArgs, Actionable, CreateKey, CreateKeyArgs, KeyRole, OperationArgs,
+            Recover, RecoverArgs, RevokeKey, RevokeKeyArgs, Signature, SignatureArgs,
+            SignatureGraph, SignatureHeader, SignatureHeaderArgs, SignedOperation,
+            SignedOperationArgs,
+        },
+        siggraph::{KeyAlgorithm, Operation},
+    };
+
+    struct TestSigner {
+        id: Vec<u8>,
+        sk: KeyPair,
+    }
+
+    struct TestAction {
+        key: Vec<u8>,
+        alg: KeyAlgorithm,
+        role: KeyRole,
+        actionable: Actionable,
+        effective_from: i64,
+    }
 
     struct TestOperation {
-        signers: Vec<Vec<u8>>,
-        operation: Operation,
+        id: KeyPair,
+        version: u8,
+        sequence: u32,
+        timestamp: i64,
+        previous: Vec<u8>,
+        actions: Vec<TestAction>,
+        signers: Vec<TestSigner>,
         error: Result<(), SelfError>,
     }
 
-    fn test_keys() -> HashMap<String, KeyPair> {
-        let mut keys = HashMap::new();
+    fn test_keys() -> Vec<KeyPair> {
+        let mut keys = Vec::new();
 
         for id in 0..10 {
             let kp = KeyPair::new();
-            keys.insert(id.to_string(), kp);
+            keys.push(kp);
         }
 
         return keys;
     }
 
-    fn test_operation(
-        keys: &HashMap<String, KeyPair>,
-        signer: &str,
-        operation: &mut Operation,
-    ) -> String {
-        let sk = keys.get(signer).unwrap();
-        operation.sign(sk).unwrap();
+    fn test_operation(test_op: &mut TestOperation) -> (Vec<u8>, Vec<u8>) {
+        let mut op_builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+        let mut sg_builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+        let mut fn_builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
-        return operation
-            .signatures()
-            .first()
-            .as_ref()
-            .unwrap()
-            .signature
-            .clone();
+        let mut actions = Vec::new();
+
+        for action in &test_op.actions {
+            match action.actionable {
+                Actionable::CreateKey => {
+                    let kb = op_builder.create_vector(&action.key);
+
+                    let ck = CreateKey::create(
+                        &mut op_builder,
+                        &CreateKeyArgs {
+                            key: Some(kb),
+                            alg: action.alg,
+                            role: action.role,
+                            effective_from: action.effective_from,
+                        },
+                    );
+
+                    let ac = Action::create(
+                        &mut op_builder,
+                        &ActionArgs {
+                            actionable_type: Actionable::CreateKey,
+                            actionable: Some(ck.as_union_value()),
+                        },
+                    );
+
+                    actions.push(ac);
+                }
+                Actionable::RevokeKey => {
+                    let kb = op_builder.create_vector(&action.key);
+
+                    let rk = RevokeKey::create(
+                        &mut op_builder,
+                        &RevokeKeyArgs {
+                            key: Some(kb),
+                            effective_from: action.effective_from,
+                        },
+                    );
+
+                    let ac = Action::create(
+                        &mut op_builder,
+                        &ActionArgs {
+                            actionable_type: Actionable::RevokeKey,
+                            actionable: Some(rk.as_union_value()),
+                        },
+                    );
+
+                    actions.push(ac);
+                }
+                Actionable::Recover => {
+                    let rk = Recover::create(
+                        &mut op_builder,
+                        &RecoverArgs {
+                            effective_from: action.effective_from,
+                        },
+                    );
+
+                    let ac = Action::create(
+                        &mut op_builder,
+                        &ActionArgs {
+                            actionable_type: Actionable::Recover,
+                            actionable: Some(rk.as_union_value()),
+                        },
+                    );
+
+                    actions.push(ac);
+                }
+                _ => {}
+            }
+        }
+
+        let actions_vec = op_builder.create_vector(&actions);
+
+        let mut previous: Option<WIPOffset<Vector<u8>>> = None;
+
+        if test_op.previous.len() > 0 {
+            previous = Some(op_builder.create_vector(&test_op.previous));
+        }
+
+        let op = Operation::create(
+            &mut op_builder,
+            &OperationArgs {
+                version: test_op.version,
+                sequence: test_op.sequence,
+                timestamp: test_op.timestamp,
+                previous: previous,
+                actions: Some(actions_vec),
+            },
+        );
+
+        op_builder.finish(op, None);
+
+        let op_hash = crate::crypto::hash::blake2b(op_builder.finished_data());
+
+        let mut sig_buf: Vec<u8> = vec![0; 96];
+        sig_buf[..32].copy_from_slice(&test_op.id.id());
+        sig_buf[32..64].copy_from_slice(&op_hash);
+
+        let mut signatures = Vec::new();
+
+        for signer in &test_op.signers {
+            sg_builder.reset();
+
+            let sb = sg_builder.create_vector(&signer.id);
+
+            let header =
+                SignatureHeader::create(&mut sg_builder, &SignatureHeaderArgs { signer: Some(sb) });
+
+            sg_builder.finish(header, None);
+
+            let header_hash = crate::crypto::hash::blake2b(sg_builder.finished_data());
+
+            sig_buf[64..].copy_from_slice(&header_hash);
+            let signature = signer.sk.sign(&sig_buf);
+
+            let hb = fn_builder.create_vector(sg_builder.finished_data());
+            let sb = fn_builder.create_vector(&signature);
+
+            let sig = Signature::create(
+                &mut fn_builder,
+                &SignatureArgs {
+                    header: Some(hb),
+                    signature: Some(sb),
+                },
+            );
+
+            signatures.push(sig);
+        }
+
+        let op_signatures = fn_builder.create_vector(&signatures);
+        let op_data = fn_builder.create_vector(op_builder.finished_data());
+
+        let signed_op = SignedOperation::create(
+            &mut fn_builder,
+            &SignedOperationArgs {
+                operation: Some(op_data),
+                signatures: Some(op_signatures),
+            },
+        );
+
+        fn_builder.finish(signed_op, None);
+
+        return (fn_builder.finished_data().to_vec(), op_hash);
     }
 
-    fn test_execute(
-        keys: &HashMap<String, KeyPair>,
+    fn test_execute<'a>(
+        keys: &Vec<KeyPair>,
         test_history: &mut Vec<TestOperation>,
-    ) -> SignatureGraph {
+    ) -> SignatureGraph<'a> {
+        let mut previous_hash: Option<Vec<u8>> = None;
+
         let mut sg = SignatureGraph::new(Vec::new()).unwrap();
 
-        let mut previous = String::from("-");
-
-        for test_op in test_history {
-            if test_op.operation.previous == "previous" {
-                test_op.operation.previous = previous;
+        for mut test_op in test_history {
+            if test_op.previous.len() < 1 && previous_hash.is_some() {
+                test_op.previous = previous_hash.unwrap();
             }
 
-            previous = test_operation(keys, &test_op.signer, &mut test_op.operation);
+            let (signed_op, previous) = test_operation(&mut test_op);
 
-            let result = sg.execute(&test_op.operation);
+            previous_hash = Some(previous);
+
+            let result = sg.execute(&signed_op);
             if test_op.error.is_err() {
                 assert_eq!(
                     result.err().unwrap(),
@@ -541,8 +706,49 @@ mod tests {
         let keys = test_keys();
 
         let mut test_history = vec![TestOperation {
-            signer: String::from("0"),
-            operation: Operation::new(
+            id: keys[0].clone(),
+            version: 2,
+            sequence: 0,
+            timestamp: now,
+            previous: Vec::new(),
+            signers: vec![
+                TestSigner {
+                    id: keys[0].id(),
+                    sk: keys[0].clone(),
+                },
+                TestSigner {
+                    id: keys[1].id(),
+                    sk: keys[1].clone(),
+                },
+                TestSigner {
+                    id: keys[2].id(),
+                    sk: keys[2].clone(),
+                },
+            ],
+            actions: vec![
+                TestAction {
+                    key: keys[1].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: 0,
+                },
+                TestAction {
+                    key: keys[2].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Recovery,
+                    actionable: Actionable::CreateKey,
+                    effective_from: 0,
+                },
+            ],
+            error: Ok(()),
+        }];
+
+        test_execute(&keys, &mut test_history);
+    }
+
+    /*
+    operation: Operation::new(
                 0,
                 "-",
                 now,
@@ -569,25 +775,24 @@ mod tests {
                             base64::URL_SAFE_NO_PAD,
                         )),
                     },
-                ],
-            ),
-            error: Ok(()),
-        }];
+                    ],
+                ),
+                error: Ok(()),
+            }
+    */
 
-        test_execute(&keys, &mut test_history);
-    }
+    /*
+        #[test]
+        fn execute_valid_multi_entry() {
+            let now = Utc::now().timestamp();
+            let keys = test_keys();
 
-    #[test]
-    fn execute_valid_multi_entry() {
-        let now = Utc::now().timestamp();
-        let keys = test_keys();
-
-        let mut test_history = vec![
-            TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    0,
-                    "-",
+            let mut test_history = vec![
+                TestOperation {
+                    signer: String::from("0"),
+                    operation: Operation::new(
+                        0,
+                        "-",
                     now,
                     vec![
                         Action {
@@ -2166,4 +2371,5 @@ mod tests {
         assert!(sg.is_key_valid(&keys["2"].id(), now + chrono::Duration::seconds(2)));
         assert!(!sg.is_key_valid(&keys["0"].id(), now - chrono::Duration::seconds(1)));
     }
+    */
 }

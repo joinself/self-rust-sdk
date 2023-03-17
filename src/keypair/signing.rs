@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::SelfError;
 use crate::keypair::Algorithm;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KeyPair {
     public_key: PublicKey,
     secret_key: SecretKey,
@@ -48,7 +48,11 @@ impl PublicKey {
         });
     }
 
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> Vec<u8> {
+        return self.bytes.clone();
+    }
+
+    pub fn encoded_id(&self) -> String {
         return self.bytes.encode_hex();
     }
 
@@ -66,13 +70,9 @@ impl PublicKey {
             ) == 0;
         }
     }
-
-    pub fn to_vec(&self) -> Vec<u8> {
-        return self.bytes.clone();
-    }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SecretKey {
     bytes: Vec<u8>,
 }
@@ -145,7 +145,7 @@ impl KeyPair {
         });
     }
 
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> Vec<u8> {
         return self.public_key.id();
     }
 
@@ -185,13 +185,13 @@ mod tests {
     #[test]
     fn new() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
     }
 
     #[test]
     fn sign_verify() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();

@@ -1,5 +1,5 @@
-pub mod rest;
-pub mod websocket;
+//pub mod rest;
+//pub mod websocket;
 
 use uuid::*;
 
