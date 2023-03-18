@@ -7,22 +7,23 @@ use crate::siggraph::{
     Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
 };
 
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-pub struct SignatureGraph<'a> {
+pub struct SignatureGraph {
     id: Option<Vec<u8>>,
     root: Option<Rc<RefCell<Node>>>,
     keys: HashMap<Vec<u8>, Rc<RefCell<Node>>>,
     hashes: HashMap<Vec<u8>, usize>,
-    operations: Vec<Operation<'a>>,
+    operations: Vec<Vec<u8>>,
     recovery_key: Option<Rc<RefCell<Node>>>,
     sig_buf: Vec<u8>,
 }
 
-impl<'a> SignatureGraph<'_> {
-    pub fn new(history: Vec<Vec<u8>>) -> Result<SignatureGraph<'a>, SelfError> {
+impl SignatureGraph {
+    pub fn new(history: &[Vec<u8>]) -> Result<SignatureGraph, SelfError> {
         let mut sg = SignatureGraph {
             id: None,
             root: None,
@@ -33,14 +34,14 @@ impl<'a> SignatureGraph<'_> {
             sig_buf: vec![0; 96],
         };
 
-        for operation in &history {
-            sg.execute_operation(operation, true)?
+        for operation in history {
+            sg.execute_operation(operation.to_owned(), true)?
         }
 
         return Ok(sg);
     }
 
-    pub fn load(history: Vec<Vec<u8>>) -> Result<SignatureGraph<'a>, SelfError> {
+    pub fn load(history: &[Vec<u8>]) -> Result<SignatureGraph, SelfError> {
         let mut sg = SignatureGraph {
             id: None,
             root: None,
@@ -51,26 +52,27 @@ impl<'a> SignatureGraph<'_> {
             sig_buf: vec![0; 96],
         };
 
-        for operation in &history {
-            sg.execute_operation(operation, false)?
+        for operation in history {
+            sg.execute_operation(operation.to_owned(), false)?
         }
 
         return Ok(sg);
     }
 
-    pub fn execute(&mut self, operation: &[u8]) -> Result<(), SelfError> {
-        self.execute_operation(operation, true)
+    pub fn execute(&mut self, operation: Vec<u8>) -> Result<(), SelfError> {
+        self.execute_operation(operation.to_owned(), true)
     }
 
-    fn execute_operation(&mut self, operation: &[u8], verify: bool) -> Result<(), SelfError> {
-        let signed_op = root_as_signed_operation(operation)
+    fn execute_operation(&mut self, operation: Vec<u8>, verify: bool) -> Result<(), SelfError> {
+        //let operation_copy: &'a [u8] = &operation;
+        let signed_op = root_as_signed_operation(&operation)
             .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
 
         let op_bytes = signed_op
             .operation()
             .ok_or_else(|| SelfError::SiggraphOperationDecodingInvalid)?;
 
-        let op = flatbuffers::root::<Operation<'_>>(op_bytes)
+        let op = flatbuffers::root::<Operation>(op_bytes)
             .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
 
         let op_hash = crate::crypto::hash::blake2b(op_bytes);
@@ -111,6 +113,9 @@ impl<'a> SignatureGraph<'_> {
                 _ => return Err(SelfError::SiggraphActionUnknown),
             }
         }
+
+        self.hashes.insert(op_hash, self.operations.len());
+        self.operations.push(operation);
 
         return Ok(());
     }
@@ -163,8 +168,8 @@ impl<'a> SignatureGraph<'_> {
             }
 
             // check the timestamp is greater than the previous operations
-            if self.operations[self.operations.len() - 1].timestamp() == op.timestamp()
-                || self.operations[self.operations.len() - 1].timestamp() > op.timestamp()
+            if self.operation(self.operations.len() - 1).timestamp() == op.timestamp()
+                || self.operation(self.operations.len() - 1).timestamp() > op.timestamp()
             {
                 return Err(SelfError::SiggraphOperationTimestampInvalid);
             }
@@ -271,7 +276,7 @@ impl<'a> SignatureGraph<'_> {
             return Err(SelfError::SiggraphActionKeyDuplicate);
         }
 
-        if op.sequence() > 0 && ck.effective_from() < self.operations[0].timestamp() {
+        if op.sequence() > 0 && ck.effective_from() < self.operation(0).timestamp() {
             return Err(SelfError::SiggraphOperationTimestampInvalid);
         }
 
@@ -285,13 +290,16 @@ impl<'a> SignatureGraph<'_> {
             outgoing: Vec::new(),
         }));
 
-        if ck.role() == KeyRole::Recovery
-            && self
+        if ck.role() == KeyRole::Recovery {
+            if self
                 .recovery_key
                 .as_ref()
                 .is_some_and(|rk| rk.as_ref().borrow().ra == 0)
-        {
-            return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
+            {
+                return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
+            }
+
+            self.recovery_key = Some(node.clone());
         }
 
         self.keys.insert(key.to_vec(), node.clone());
@@ -309,12 +317,12 @@ impl<'a> SignatureGraph<'_> {
                 continue;
             }
 
-            let parent = self
-                .keys
-                .get(key)
-                .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?;
+            let parent = match self.keys.get(signer) {
+                Some(parent) => parent,
+                None => continue,
+            };
 
-            node.as_ref().borrow_mut().incoming.push(parent.clone());
+            node.as_ref().borrow_mut().incoming.push((*parent).clone());
             parent.as_ref().borrow_mut().outgoing.push(node.clone());
         }
 
@@ -343,7 +351,7 @@ impl<'a> SignatureGraph<'_> {
         }
 
         // check if the effective from timestamp is after the first operation
-        if rk.effective_from() < self.operations[0].timestamp() {
+        if rk.effective_from() < self.operation(0).timestamp() {
             return Err(SelfError::SiggraphOperationTimestampInvalid);
         }
 
@@ -381,7 +389,7 @@ impl<'a> SignatureGraph<'_> {
             return Err(SelfError::SiggraphActionInvalidKeyRevocation);
         }
 
-        if rc.effective_from() < self.operations[0].timestamp() {
+        if rc.effective_from() < self.operation(0).timestamp() {
             return Err(SelfError::SiggraphOperationTimestampInvalid);
         }
 
@@ -402,15 +410,13 @@ impl<'a> SignatureGraph<'_> {
             return Err(SelfError::SiggraphOperationAccountRecoveryActionInvalid);
         }
 
-        self.root.as_ref().unwrap().borrow_mut().ra = rc.effective_from();
-
         // if the signing key was a recovery key, then nuke all existing keys
         let mut root = self.root.as_ref().unwrap().as_ref().borrow_mut();
         root.ra = rc.effective_from();
 
         for child_node in root.collect() {
             let mut child_key = child_node.as_ref().borrow_mut();
-            if child_key.ra != 0 {
+            if child_key.ra == 0 {
                 child_key.ra = rc.effective_from();
             }
         }
@@ -444,31 +450,19 @@ impl<'a> SignatureGraph<'_> {
         return false;
     }
 
-    fn action_by_key(&self, op: &Operation, key: &[u8]) -> Option<Action<'a>> {
-        let actions = match op.actions() {
-            Some(actions) => actions,
-            None => return None,
-        };
+    fn operation(&self, index: usize) -> Operation {
+        let signed_op = root_as_signed_operation(&self.operations[index]).unwrap();
 
-        for action in actions {
-            match action.actionable_type() {
-                Actionable::CreateKey => {}
-                Actionable::RevokeKey => {}
-                Actionable::Recover => {}
-                _ => return None,
-            }
-        }
+        let op_bytes = signed_op.operation().unwrap();
 
-        return None;
+        return flatbuffers::root::<Operation>(op_bytes).unwrap();
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     use chrono::Utc;
     use flatbuffers::{Vector, WIPOffset};
-    use std::collections::HashMap;
 
     use crate::{
         error::SelfError,
@@ -509,7 +503,7 @@ mod tests {
     fn test_keys() -> Vec<KeyPair> {
         let mut keys = Vec::new();
 
-        for id in 0..10 {
+        for _ in 0..10 {
             let kp = KeyPair::new();
             keys.push(kp);
         }
@@ -593,7 +587,6 @@ mod tests {
         }
 
         let actions_vec = op_builder.create_vector(&actions);
-
         let mut previous: Option<WIPOffset<Vector<u8>>> = None;
 
         if test_op.previous.len() > 0 {
@@ -666,13 +659,9 @@ mod tests {
         return (fn_builder.finished_data().to_vec(), op_hash);
     }
 
-    fn test_execute<'a>(
-        keys: &Vec<KeyPair>,
-        test_history: &mut Vec<TestOperation>,
-    ) -> SignatureGraph<'a> {
+    fn test_execute<'a>(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
+        let mut sg = SignatureGraph::new(&Vec::new()).unwrap();
         let mut previous_hash: Option<Vec<u8>> = None;
-
-        let mut sg = SignatureGraph::new(Vec::new()).unwrap();
 
         for mut test_op in test_history {
             if test_op.previous.len() < 1 && previous_hash.is_some() {
@@ -683,7 +672,7 @@ mod tests {
 
             previous_hash = Some(previous);
 
-            let result = sg.execute(&signed_op);
+            let result = sg.execute(signed_op);
             if test_op.error.is_err() {
                 assert_eq!(
                     result.err().unwrap(),
@@ -744,176 +733,156 @@ mod tests {
             error: Ok(()),
         }];
 
-        test_execute(&keys, &mut test_history);
+        test_execute(&mut test_history);
     }
 
-    /*
-    operation: Operation::new(
-                0,
-                "-",
-                now,
-                vec![
-                    Action {
-                        kid: keys["0"].id(),
-                        did: Some(String::from("device-1")),
-                        role: Some(KeyRole::Device),
-                        action: ActionType::KeyAdd,
-                        effective_from: now,
-                        key: Some(base64::encode_config(
-                            keys["0"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    },
-                    Action {
-                        kid: keys["1"].id(),
-                        did: None,
-                        role: Some(KeyRole::Recovery),
-                        action: ActionType::KeyAdd,
-                        effective_from: now,
-                        key: Some(base64::encode_config(
-                            keys["1"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    },
-                    ],
-                ),
-                error: Ok(()),
-            }
-    */
+    #[test]
+    fn execute_valid_multi_entry() {
+        let now = Utc::now().timestamp();
+        let keys = test_keys();
 
-    /*
-        #[test]
-        fn execute_valid_multi_entry() {
-            let now = Utc::now().timestamp();
-            let keys = test_keys();
-
-            let mut test_history = vec![
-                TestOperation {
-                    signer: String::from("0"),
-                    operation: Operation::new(
-                        0,
-                        "-",
-                    now,
-                    vec![
-                        Action {
-                            kid: keys["0"].id(),
-                            did: Some(String::from("device-1")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["0"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                        Action {
-                            kid: keys["1"].id(),
-                            did: None,
-                            role: Some(KeyRole::Recovery),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["1"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
-                ),
+        let mut test_history = vec![
+            TestOperation {
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 0,
+                timestamp: now,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[0].id(),
+                        sk: keys[0].clone(),
+                    },
+                    TestSigner {
+                        id: keys[1].id(),
+                        sk: keys[1].clone(),
+                    },
+                    TestSigner {
+                        id: keys[2].id(),
+                        sk: keys[2].clone(),
+                    },
+                ],
+                actions: vec![
+                    TestAction {
+                        key: keys[1].id(),
+                        alg: KeyAlgorithm::Ed25519,
+                        role: KeyRole::Signing,
+                        actionable: Actionable::CreateKey,
+                        effective_from: now,
+                    },
+                    TestAction {
+                        key: keys[2].id(),
+                        alg: KeyAlgorithm::Ed25519,
+                        role: KeyRole::Recovery,
+                        actionable: Actionable::CreateKey,
+                        effective_from: now,
+                    },
+                ],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    1,
-                    "previous",
-                    now + 1,
-                    vec![Action {
-                        kid: keys["2"].id(),
-                        did: Some(String::from("device-2")),
-                        role: Some(KeyRole::Device),
-                        action: ActionType::KeyAdd,
-                        effective_from: now + 1,
-                        key: Some(base64::encode_config(
-                            keys["2"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    }],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 1,
+                timestamp: now + 1,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[1].id(),
+                        sk: keys[1].clone(),
+                    },
+                    TestSigner {
+                        id: keys[3].id(),
+                        sk: keys[3].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[3].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 1,
+                }],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    2,
-                    "previous",
-                    now + 2,
-                    vec![Action {
-                        kid: keys["3"].id(),
-                        did: Some(String::from("device-3")),
-                        role: Some(KeyRole::Device),
-                        action: ActionType::KeyAdd,
-                        effective_from: now + 2,
-                        key: Some(base64::encode_config(
-                            keys["3"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    }],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 2,
+                timestamp: now + 2,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[1].id(),
+                        sk: keys[1].clone(),
+                    },
+                    TestSigner {
+                        id: keys[4].id(),
+                        sk: keys[4].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[4].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 2,
+                }],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("2"),
-                operation: Operation::new(
-                    3,
-                    "previous",
-                    now + 3,
-                    vec![Action {
-                        kid: keys["4"].id(),
-                        did: Some(String::from("device-4")),
-                        role: Some(KeyRole::Device),
-                        action: ActionType::KeyAdd,
-                        effective_from: now + 3,
-                        key: Some(base64::encode_config(
-                            keys["4"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    }],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 3,
+                timestamp: now + 3,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[3].id(),
+                        sk: keys[3].clone(),
+                    },
+                    TestSigner {
+                        id: keys[5].id(),
+                        sk: keys[5].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[5].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 3,
+                }],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("3"),
-                operation: Operation::new(
-                    4,
-                    "previous",
-                    now + 4,
-                    vec![
-                        Action {
-                            kid: keys["2"].id(),
-                            did: None,
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyRevoke,
-                            effective_from: now + 4,
-                            key: None,
-                        },
-                        Action {
-                            kid: keys["5"].id(),
-                            did: Some(String::from("device-2")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 4,
-                            key: Some(base64::encode_config(
-                                keys["5"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 4,
+                timestamp: now + 4,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[4].id(),
+                        sk: keys[4].clone(),
+                    },
+                    TestSigner {
+                        id: keys[6].id(),
+                        sk: keys[6].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[6].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 4,
+                }],
                 error: Ok(()),
             },
         ];
 
-        test_execute(&keys, &mut test_history);
+        test_execute(&mut test_history);
     }
 
     #[test]
@@ -923,173 +892,194 @@ mod tests {
 
         let mut test_history = vec![
             TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    0,
-                    "-",
-                    now,
-                    vec![
-                        Action {
-                            kid: keys["0"].id(),
-                            did: Some(String::from("device-1")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["0"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                        Action {
-                            kid: keys["1"].id(),
-                            did: None,
-                            role: Some(KeyRole::Recovery),
-                            action: ActionType::KeyAdd,
-                            effective_from: now,
-                            key: Some(base64::encode_config(
-                                keys["1"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 0,
+                timestamp: now,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[0].id(),
+                        sk: keys[0].clone(),
+                    },
+                    TestSigner {
+                        id: keys[1].id(),
+                        sk: keys[1].clone(),
+                    },
+                    TestSigner {
+                        id: keys[2].id(),
+                        sk: keys[2].clone(),
+                    },
+                ],
+                actions: vec![
+                    TestAction {
+                        key: keys[1].id(),
+                        alg: KeyAlgorithm::Ed25519,
+                        role: KeyRole::Signing,
+                        actionable: Actionable::CreateKey,
+                        effective_from: now,
+                    },
+                    TestAction {
+                        key: keys[2].id(),
+                        alg: KeyAlgorithm::Ed25519,
+                        role: KeyRole::Recovery,
+                        actionable: Actionable::CreateKey,
+                        effective_from: now,
+                    },
+                ],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    1,
-                    "previous",
-                    now + 1,
-                    vec![Action {
-                        kid: keys["2"].id(),
-                        did: Some(String::from("device-2")),
-                        role: Some(KeyRole::Device),
-                        action: ActionType::KeyAdd,
-                        effective_from: now + 1,
-                        key: Some(base64::encode_config(
-                            keys["2"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    }],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 1,
+                timestamp: now + 1,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[1].id(),
+                        sk: keys[1].clone(),
+                    },
+                    TestSigner {
+                        id: keys[3].id(),
+                        sk: keys[3].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[3].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 1,
+                }],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("0"),
-                operation: Operation::new(
-                    2,
-                    "previous",
-                    now + 2,
-                    vec![Action {
-                        kid: keys["3"].id(),
-                        did: Some(String::from("device-3")),
-                        role: Some(KeyRole::Device),
-                        action: ActionType::KeyAdd,
-                        effective_from: now + 2,
-                        key: Some(base64::encode_config(
-                            keys["3"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    }],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 2,
+                timestamp: now + 2,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[1].id(),
+                        sk: keys[1].clone(),
+                    },
+                    TestSigner {
+                        id: keys[4].id(),
+                        sk: keys[4].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[4].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 2,
+                }],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("2"),
-                operation: Operation::new(
-                    3,
-                    "previous",
-                    now + 3,
-                    vec![Action {
-                        kid: keys["4"].id(),
-                        did: Some(String::from("device-4")),
-                        role: Some(KeyRole::Device),
-                        action: ActionType::KeyAdd,
-                        effective_from: now + 3,
-                        key: Some(base64::encode_config(
-                            keys["4"].public().to_vec(),
-                            base64::URL_SAFE_NO_PAD,
-                        )),
-                    }],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 3,
+                timestamp: now + 3,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[3].id(),
+                        sk: keys[3].clone(),
+                    },
+                    TestSigner {
+                        id: keys[5].id(),
+                        sk: keys[5].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[5].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 3,
+                }],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("3"),
-                operation: Operation::new(
-                    4,
-                    "previous",
-                    now + 4,
-                    vec![
-                        Action {
-                            kid: keys["2"].id(),
-                            did: None,
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyRevoke,
-                            effective_from: now + 4,
-                            key: None,
-                        },
-                        Action {
-                            kid: keys["5"].id(),
-                            did: Some(String::from("device-2")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 4,
-                            key: Some(base64::encode_config(
-                                keys["5"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 4,
+                timestamp: now + 4,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[4].id(),
+                        sk: keys[4].clone(),
+                    },
+                    TestSigner {
+                        id: keys[6].id(),
+                        sk: keys[6].clone(),
+                    },
+                ],
+                actions: vec![TestAction {
+                    key: keys[6].id(),
+                    alg: KeyAlgorithm::Ed25519,
+                    role: KeyRole::Signing,
+                    actionable: Actionable::CreateKey,
+                    effective_from: now + 4,
+                }],
                 error: Ok(()),
             },
             TestOperation {
-                signer: String::from("1"),
-                operation: Operation::new(
-                    5,
-                    "previous",
-                    now + 5,
-                    vec![
-                        Action {
-                            did: None,
-                            kid: keys["1"].id(),
-                            role: Some(KeyRole::Recovery),
-                            action: ActionType::KeyRevoke,
-                            effective_from: now + 5,
-                            key: None,
-                        },
-                        Action {
-                            kid: keys["6"].id(),
-                            did: Some(String::from("device-1")),
-                            role: Some(KeyRole::Device),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 5,
-                            key: Some(base64::encode_config(
-                                keys["6"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                        Action {
-                            kid: keys["7"].id(),
-                            did: None,
-                            role: Some(KeyRole::Recovery),
-                            action: ActionType::KeyAdd,
-                            effective_from: now + 5,
-                            key: Some(base64::encode_config(
-                                keys["7"].public().to_vec(),
-                                base64::URL_SAFE_NO_PAD,
-                            )),
-                        },
-                    ],
-                ),
+                id: keys[0].clone(),
+                version: 2,
+                sequence: 5,
+                timestamp: now + 5,
+                previous: Vec::new(),
+                signers: vec![
+                    TestSigner {
+                        id: keys[2].id(),
+                        sk: keys[2].clone(),
+                    },
+                    TestSigner {
+                        id: keys[7].id(),
+                        sk: keys[7].clone(),
+                    },
+                    TestSigner {
+                        id: keys[8].id(),
+                        sk: keys[8].clone(),
+                    },
+                ],
+                actions: vec![
+                    TestAction {
+                        key: keys[2].id(),
+                        alg: KeyAlgorithm::Ed25519,
+                        role: KeyRole::Recovery,
+                        actionable: Actionable::Recover,
+                        effective_from: now + 5,
+                    },
+                    TestAction {
+                        key: keys[7].id(),
+                        alg: KeyAlgorithm::Ed25519,
+                        role: KeyRole::Signing,
+                        actionable: Actionable::CreateKey,
+                        effective_from: now + 5,
+                    },
+                    TestAction {
+                        key: keys[8].id(),
+                        alg: KeyAlgorithm::Ed25519,
+                        role: KeyRole::Recovery,
+                        actionable: Actionable::CreateKey,
+                        effective_from: now + 5,
+                    },
+                ],
                 error: Ok(()),
             },
         ];
 
-        test_execute(&keys, &mut test_history);
+        test_execute(&mut test_history);
     }
+
+    /*
 
     #[test]
     fn execute_invalid_sequence_ordering() {

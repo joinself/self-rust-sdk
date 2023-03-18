@@ -17,11 +17,7 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
-    pub fn import(
-        id: &str,
-        algorithm: Algorithm,
-        public_key: &str,
-    ) -> Result<PublicKey, SelfError> {
+    pub fn import(algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
         let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_public_key) => decoded_public_key,
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
@@ -111,7 +107,7 @@ impl KeyPair {
     }
 
     pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {
-        let (key_id, encoded_seed) = match legacy_keypair.split_once(':') {
+        let (_, encoded_seed) = match legacy_keypair.split_once(':') {
             Some((first, last)) => (first, last),
             None => return Err(SelfError::KeyPairDecodeInvalidData),
         };
