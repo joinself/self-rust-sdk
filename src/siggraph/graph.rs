@@ -209,7 +209,7 @@ impl SignatureGraph {
         op: &Operation,
         signers: &HashSet<Vec<u8>>,
     ) -> Result<(), SelfError> {
-        if op.sequence() < 1  {
+        if op.sequence() < 1 {
             return Ok(());
         }
 
@@ -250,14 +250,12 @@ impl SignatureGraph {
         actions: &Vector<ForwardsUOffset<Action>>,
         signers: &HashSet<Vec<u8>>,
     ) -> Result<(), SelfError> {
-        let mut active_keys = HashSet::new();
-        let mut revoked_keys = HashSet::new();
+        let mut active_keys = HashMap::new();
 
         self.keys.iter().for_each(|(key, value)| {
             if value.as_ref().borrow().ra == 0 {
-                active_keys.insert(key.clone());
-            } else {
-                revoked_keys.insert(key.clone());
+                let typ = value.as_ref().borrow().typ;
+                active_keys.insert(key.clone(), typ);
             }
         });
 
@@ -269,20 +267,41 @@ impl SignatureGraph {
                 }
                 Actionable::RevokeKey => {
                     let revoke_key = action.actionable_as_revoke_key().unwrap();
-                    self.validate_revoke_key(op, &revoke_key, &mut active_keys, &mut revoked_keys)?;
+                    self.validate_revoke_key(op, &revoke_key, &mut active_keys)?;
                 }
                 Actionable::Recover => {
                     let recover = action.actionable_as_recover().unwrap();
-                    self.validate_recover(
-                        op,
-                        &recover,
-                        signers,
-                        &mut active_keys,
-                        &mut revoked_keys,
-                    )?;
+                    self.validate_recover(op, &recover, signers, &mut active_keys)?;
                 }
                 _ => return Err(SelfError::SiggraphActionUnknown),
             }
+        }
+
+        if active_keys.len() < 1 {
+            return Err(SelfError::SiggraphOperationNoValidKeys);
+        }
+
+        let mut signing_keys = 0;
+        let mut recovery_keys = 0;
+
+        for (_, key) in &active_keys {
+            if *key == KeyRole::Signing {
+                signing_keys += 1;
+            } else if *key == KeyRole::Recovery {
+                recovery_keys += 1;
+            }
+        }
+
+        if signing_keys < 1 {
+            return Err(SelfError::SiggraphOperationNoValidKeys);
+        }
+
+        if recovery_keys < 1 {
+            return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
+        }
+
+        if recovery_keys > 1 {
+            return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
         }
 
         return Ok(());
@@ -303,11 +322,11 @@ impl SignatureGraph {
                 }
                 Actionable::RevokeKey => {
                     let revoke_key = action.actionable_as_revoke_key().unwrap();
-                    self.execute_revoke_key(&op, &revoke_key)?;
+                    self.execute_revoke_key(&revoke_key)?;
                 }
                 Actionable::Recover => {
                     let recover = action.actionable_as_recover().unwrap();
-                    self.execute_recover(&op, &recover, &signers)?;
+                    self.execute_recover(&recover)?;
                 }
                 _ => return Err(SelfError::SiggraphActionUnknown),
             }
@@ -321,7 +340,7 @@ impl SignatureGraph {
         op: &Operation,
         ck: &CreateKey,
         signers: &HashSet<Vec<u8>>,
-        active_keys: &mut HashSet<Vec<u8>>,
+        active_keys: &mut HashMap<Vec<u8>, KeyRole>,
     ) -> Result<(), SelfError> {
         let key = match ck.key() {
             Some(key) => key,
@@ -337,7 +356,7 @@ impl SignatureGraph {
             return Err(SelfError::SiggraphOperationNotEnoughSigners);
         }
 
-        if active_keys.contains(key) {
+        if active_keys.contains_key(key) {
             return Err(SelfError::SiggraphActionKeyDuplicate);
         }
 
@@ -354,7 +373,7 @@ impl SignatureGraph {
             return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
         }
 
-        active_keys.insert(key.to_vec());
+        active_keys.insert(key.to_vec(), ck.role());
 
         return Ok(());
     }
@@ -411,8 +430,7 @@ impl SignatureGraph {
         &self,
         op: &Operation,
         rk: &RevokeKey,
-        active_keys: &mut HashSet<Vec<u8>>,
-        revoked_keys: &mut HashSet<Vec<u8>>,
+        active_keys: &mut HashMap<Vec<u8>, KeyRole>,
     ) -> Result<(), SelfError> {
         let key = match rk.key() {
             Some(key) => key,
@@ -440,12 +458,11 @@ impl SignatureGraph {
         }
 
         active_keys.remove(key);
-        revoked_keys.insert(key.to_vec());
 
         return Ok(());
     }
 
-    fn execute_revoke_key(&mut self, op: &Operation, rk: &RevokeKey) -> Result<(), SelfError> {
+    fn execute_revoke_key(&mut self, rk: &RevokeKey) -> Result<(), SelfError> {
         let key = match rk.key() {
             Some(key) => key,
             None => return Err(SelfError::SiggraphActionKeyMissing),
@@ -484,8 +501,7 @@ impl SignatureGraph {
         op: &Operation,
         rc: &Recover,
         signers: &HashSet<Vec<u8>>,
-        active_keys: &mut HashSet<Vec<u8>>,
-        revoked_keys: &mut HashSet<Vec<u8>>,
+        active_keys: &mut HashMap<Vec<u8>, KeyRole>,
     ) -> Result<(), SelfError> {
         // if this is the first (root) operation, then recovery is not permitted
         if op.sequence() == 0 {
@@ -511,18 +527,12 @@ impl SignatureGraph {
         for child_node in root.collect() {
             let key = child_node.as_ref().borrow().pk.id();
             active_keys.remove(&key);
-            revoked_keys.insert(key.to_vec());
         }
 
         return Ok(());
     }
 
-    fn execute_recover(
-        &mut self,
-        op: &Operation,
-        rc: &Recover,
-        signers: &HashSet<Vec<u8>>,
-    ) -> Result<(), SelfError> {
+    fn execute_recover(&mut self, rc: &Recover) -> Result<(), SelfError> {
         // if the signing key was a recovery key, then nuke all existing keys
         let mut root = self.root.as_ref().unwrap().as_ref().borrow_mut();
         root.ra = rc.effective_from();
