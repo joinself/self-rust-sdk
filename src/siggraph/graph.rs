@@ -122,8 +122,14 @@ impl SignatureGraph {
             return Err(SelfError::SiggraphOperationVersionInvalid);
         }
 
-        if op.actions().is_none() || op.actions().is_some_and(|a| a.len() < 1) {
+        if op.actions().is_none() {
             return Err(SelfError::SiggraphOperationNOOP);
+        }
+        // TODO replace with is_some_and once stable
+        if let Some(actions) = op.actions() {
+            if actions.len() < 1 {
+                return Err(SelfError::SiggraphOperationNOOP);
+            }
         }
 
         let signatures = match signed_op.signatures() {
@@ -234,7 +240,6 @@ impl SignatureGraph {
             }
 
             authorized = true;
-            //drop(signing_key);
         }
 
         if !authorized {
@@ -348,8 +353,10 @@ impl SignatureGraph {
         };
 
         // check this key is not the key used to as the identities identifier
-        if self.id.as_ref().is_some_and(|id| id.eq(key)) {
-            return Err(SelfError::SiggraphActionKeyDuplicate);
+        if let Some(id) = self.id.as_ref() {
+            if id.eq(key) {
+                return Err(SelfError::SiggraphActionKeyDuplicate);
+            }
         }
 
         if !signers.contains(key) {
@@ -364,13 +371,13 @@ impl SignatureGraph {
             return Err(SelfError::SiggraphOperationTimestampInvalid);
         }
 
-        if ck.role() == KeyRole::Recovery
-            && self
-                .recovery_key
-                .as_ref()
-                .is_some_and(|rk| rk.as_ref().borrow().ra == 0)
-        {
-            return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
+        if ck.role() == KeyRole::Recovery {
+            // TODO replace with is_some_and when stable
+            if let Some(recovery_key) = self.recovery_key.as_ref() {
+                if recovery_key.as_ref().borrow().ra == 0 {
+                    return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
+                }
+            }
         }
 
         active_keys.insert(key.to_vec(), ck.role());
@@ -403,8 +410,13 @@ impl SignatureGraph {
 
         for signer in signers {
             if op.sequence() == 0 && self.root.is_none() {
-                if key.eq(signer) && !self.id.as_ref().is_some_and(|id| key.eq(&*id)) {
-                    self.root = Some(node.clone());
+                if key.eq(signer) {
+                    // TODO replace with is_some_and once stable
+                    if let Some(id) = self.id.as_ref() {
+                        if !key.eq(&*id) {
+                            self.root = Some(node.clone());
+                        }
+                    }
                 }
                 continue;
             }
