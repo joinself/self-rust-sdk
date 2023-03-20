@@ -12,9 +12,9 @@ pub struct Account {
 impl Account {
     pub fn new(signing_keypair: SigningKeyPair, exchange_keypair: ExchangeKeyPair) -> Account {
         let mut ed25519_secret_key = signing_keypair.to_vec();
-        let mut ed25519_public_key = signing_keypair.public().to_vec();
+        let mut ed25519_public_key = signing_keypair.public().id();
         let mut curve25519_secret_key = exchange_keypair.to_vec();
-        let mut curve25519_public_key = exchange_keypair.public().to_vec();
+        let mut curve25519_public_key = exchange_keypair.public().id();
 
         unsafe {
             let account_len = olm_account_size() as usize;
@@ -171,8 +171,7 @@ impl Account {
     ) -> Result<Session, SelfError> {
         let session = Session::new();
 
-        let identity_key_buf =
-            base64::encode_config(identity_key.to_vec(), base64::STANDARD_NO_PAD);
+        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
 
         unsafe {
             let mut one_time_message_buf = one_time_message.to_owned();
@@ -199,8 +198,7 @@ impl Account {
     ) -> Result<Session, SelfError> {
         let session = Session::new();
 
-        let identity_key_buf =
-            base64::encode_config(identity_key.to_vec(), base64::STANDARD_NO_PAD);
+        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
 
         unsafe {
             let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());
@@ -307,8 +305,8 @@ mod tests {
     fn identity_keys() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let spk = skp.public().to_vec();
-        let epk = ekp.public().to_vec();
+        let spk = skp.public().id();
+        let epk = ekp.public().id();
         let acc = Account::new(skp, ekp);
 
         let identity_keys_json = acc.identity_keys();
@@ -331,8 +329,8 @@ mod tests {
     fn serialize_deserialize() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let spk = skp.public().to_vec();
-        let epk = ekp.public().to_vec();
+        let spk = skp.public().id();
+        let epk = ekp.public().id();
         let acc = Account::new(skp, ekp);
 
         // try pickle with both password and no password

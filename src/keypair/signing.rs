@@ -1,9 +1,10 @@
+use hex::ToHex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
 use crate::keypair::Algorithm;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KeyPair {
     public_key: PublicKey,
     secret_key: SecretKey,
@@ -11,17 +12,12 @@ pub struct KeyPair {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PublicKey {
-    id: Option<String>,
     algorithm: Algorithm,
     bytes: Vec<u8>,
 }
 
 impl PublicKey {
-    pub fn import(
-        id: &str,
-        algorithm: Algorithm,
-        public_key: &str,
-    ) -> Result<PublicKey, SelfError> {
+    pub fn import(algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
         let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_public_key) => decoded_public_key,
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
@@ -32,18 +28,32 @@ impl PublicKey {
         }
 
         return Ok(PublicKey {
-            id: Some(String::from(id)),
             algorithm: algorithm,
             bytes: decoded_public_key,
         });
     }
 
-    pub fn id(&self) -> String {
-        if self.id.is_some() {
-            return self.id.as_ref().unwrap().clone();
+    pub fn from_bytes(bytes: &[u8], algorithm: Algorithm) -> Result<PublicKey, SelfError> {
+        if bytes.len() < 32 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
         }
 
-        return base64::encode_config(&self.bytes, base64::URL_SAFE_NO_PAD);
+        return Ok(PublicKey {
+            algorithm: algorithm,
+            bytes: bytes.to_vec(),
+        });
+    }
+
+    pub fn id(&self) -> Vec<u8> {
+        return self.bytes.clone();
+    }
+
+    pub fn encoded_id(&self) -> String {
+        return self.bytes.encode_hex();
+    }
+
+    pub fn eq(&self, bytes: &[u8]) -> bool {
+        return self.bytes.eq(bytes);
     }
 
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
@@ -56,13 +66,9 @@ impl PublicKey {
             ) == 0;
         }
     }
-
-    pub fn to_vec(&self) -> Vec<u8> {
-        return self.bytes.clone();
-    }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SecretKey {
     bytes: Vec<u8>,
 }
@@ -80,7 +86,6 @@ impl KeyPair {
 
         return KeyPair {
             public_key: PublicKey {
-                id: None,
                 algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
             },
@@ -102,7 +107,7 @@ impl KeyPair {
     }
 
     pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {
-        let (key_id, encoded_seed) = match legacy_keypair.split_once(':') {
+        let (_, encoded_seed) = match legacy_keypair.split_once(':') {
             Some((first, last)) => (first, last),
             None => return Err(SelfError::KeyPairDecodeInvalidData),
         };
@@ -127,7 +132,6 @@ impl KeyPair {
 
         return Ok(KeyPair {
             public_key: PublicKey {
-                id: Some(String::from(key_id)),
                 algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
             },
@@ -137,12 +141,8 @@ impl KeyPair {
         });
     }
 
-    pub fn id(&self) -> String {
-        if self.public_key.id.is_some() {
-            return self.public_key.id.as_ref().unwrap().clone();
-        }
-
-        return base64::encode_config(&self.public_key.bytes, base64::URL_SAFE_NO_PAD);
+    pub fn id(&self) -> Vec<u8> {
+        return self.public_key.id();
     }
 
     pub fn algorithm(&self) -> Algorithm {
@@ -181,13 +181,13 @@ mod tests {
     #[test]
     fn new() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
     }
 
     #[test]
     fn sign_verify() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().to_vec().len(), 32);
+        assert_eq!(skp.public().id().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();

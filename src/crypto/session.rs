@@ -114,8 +114,7 @@ impl Session {
         identity_key: &exchange::PublicKey,
         one_time_message: &[u8],
     ) -> Result<bool, SelfError> {
-        let identity_key_buf =
-            base64::encode_config(identity_key.to_vec(), base64::STANDARD_NO_PAD);
+        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
 
         unsafe {
             let result = olm_matches_inbound_session_from(
