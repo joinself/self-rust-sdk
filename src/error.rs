@@ -27,8 +27,10 @@ pub enum SelfError {
     KeyPairSignMissingSingingKey,
     KeyPairSignWrongKeypairType,
     KeyPairPublicKeyInvalidLength,
+    MessageNoPayload,
     MessageNoProtected,
     MessageNoSignature,
+    MessagePayloadInvalid,
     MessageEncodingInvalid,
     MessageDecodingInvalid,
     MessageSigningKeyInvalid,
@@ -119,13 +121,15 @@ impl fmt::Display for SelfError {
                 f,
                 "Keypair public key is an incorrect length",
             ),
+            SelfError::MessageNoPayload => write!(f, "Message has no payload"),
             SelfError::MessageNoProtected => write!(f, "Message has no protected header"),
             SelfError::MessageNoSignature => write!(f, "Message has no signature"),
+            SelfError::MessagePayloadInvalid => write!(f, "Message payload is not a map"),
             SelfError::MessageEncodingInvalid => {
-                write!(f, "Message could not be encoded to valid json")
+                write!(f, "Message could not be encoded to valid cbor")
             }
             SelfError::MessageDecodingInvalid => {
-                write!(f, "Message could not be decoded from invalid json")
+                write!(f, "Message could not be decoded from invalid cbor")
             }
             SelfError::MessageSigningKeyInvalid => {
                 write!(f, "Message can only be signed with an ed25519 keypair")
