@@ -181,20 +181,11 @@ impl Message {
             payload.as_ref(),
         );
 
-        let mut protected = Vec::new();
-
-        protected.push((
-            Label::Int(iana::HeaderParameter::Alg as i64),
-            coset::Algorithm::Assigned(iana::Algorithm::EdDSA)
-                .to_cbor_value()
-                .unwrap(),
-        ));
-
         self.signatures.push(Signature {
             iss: signer.public(),
             iat: Some(iat),
             exp: exp,
-            protected: protected,
+            protected: Vec::new(),
             signature: signature,
         });
     }
