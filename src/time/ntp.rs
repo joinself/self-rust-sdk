@@ -5,10 +5,6 @@ use chrono::prelude::*;
 static mut NTP_OFFSET: AtomicPtr<chrono::Duration> = AtomicPtr::new(std::ptr::null_mut());
 static mut LAST_CHECK: AtomicPtr<DateTime<Utc>> = AtomicPtr::new(std::ptr::null_mut());
 
-pub fn rfc3339() -> String {
-    return now().to_rfc3339();
-}
-
 pub fn unix() -> i64 {
     return now().timestamp();
 }
@@ -35,7 +31,9 @@ fn update_ntp_offset() {
     loop {
         let stime = chrono::Utc::now();
 
-        match ntp::request("time.google.com:123") {
+        let ntp_server = std::env::var("SELF_NTP").unwrap_or("time.google.com:123".to_string());
+
+        match ntp::request(ntp_server) {
             Ok(response) => {
                 // calculate the ntp offset
                 let dtime = chrono::Utc::now() - stime;
@@ -92,8 +90,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn get_rfc3339() {
-        rfc3339();
-        //println!("utc: {} - rfc: {}", chrono::Utc::now(), rfc3339());
+    fn get_unix() {
+        unix();
     }
 }
