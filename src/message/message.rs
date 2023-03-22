@@ -9,9 +9,23 @@ enum HeaderLabel {
     Exp,
 }
 
+const SUB: i64 = iana::CwtClaimName::Sub as i64;
+const AUD: i64 = iana::CwtClaimName::Aud as i64;
+const EXP: i64 = iana::CwtClaimName::Exp as i64;
+const IAT: i64 = iana::CwtClaimName::Iat as i64;
+const CTI: i64 = iana::CwtClaimName::Cti as i64;
+const TYP: i64 = -100000;
+const CNT: i64 = -100001;
+
 #[derive(Clone)]
 pub struct Message {
-    payload: Vec<(Value, Value)>,
+    sub: Option<Vec<u8>>,
+    aud: Option<Vec<u8>>,
+    cti: Option<Vec<u8>>,
+    typ: Option<String>,
+    iat: Option<i64>,
+    exp: Option<i64>,
+    content: Option<Vec<u8>>,
     signatures: Vec<Signature>,
 }
 
@@ -27,7 +41,13 @@ pub struct Signature {
 impl Message {
     pub fn new() -> Message {
         return Message {
-            payload: Vec::new(),
+            sub: None,
+            aud: None,
+            cti: None,
+            typ: None,
+            iat: None,
+            exp: None,
+            content: None,
             signatures: Vec::new(),
         };
     }
@@ -91,31 +111,91 @@ impl Message {
             None => return Err(SelfError::MessageNoPayload),
         };
 
-        let payload: Value = match ciborium::de::from_reader(encoded_payload.as_slice()) {
-            Ok(payload) => payload,
-            Err(_) => return Err(SelfError::MessageDecodingInvalid),
-        };
+        let payload: Value = ciborium::de::from_reader(&encoded_payload[..])
+            .map_err(|_| SelfError::MessagePayloadInvalid)?;
 
-        let payload_content = match payload.as_map() {
-            Some(payload_content) => payload_content,
-            None => return Err(SelfError::MessagePayloadInvalid),
-        };
+        for entry in payload.as_map().into_iter() {
+            if entry.len() < 1 {
+                continue;
+            }
 
-        for (key, value) in payload_content {
-            m.payload.push((key.to_owned(), value.to_owned()));
+            match &entry[0].0 {
+                x if x.eq(&Value::from(AUD)) => {
+                    m.aud = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                x if x.eq(&Value::from(SUB)) => {
+                    m.sub = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                x if x.eq(&Value::from(CTI)) => {
+                    m.cti = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                x if x.eq(&Value::from(TYP)) => {
+                    m.typ = Some(
+                        entry[0]
+                            .1
+                            .as_text()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .to_string(),
+                    );
+                }
+                x if x.eq(&Value::from(IAT)) => {
+                    m.iat = Some(
+                        entry[0]
+                            .1
+                            .as_integer()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .try_into()
+                            .map_err(|_| SelfError::MessageDecodingInvalid)?,
+                    );
+                }
+                x if x.eq(&Value::from(EXP)) => {
+                    m.exp = Some(
+                        entry[0]
+                            .1
+                            .as_integer()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .try_into()
+                            .map_err(|_| SelfError::MessageDecodingInvalid)?,
+                    );
+                }
+                x if x.eq(&Value::from(CNT)) => {
+                    m.content = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                _ => {}
+            }
         }
-
-        // TODO validate standard fields (if they exist)
 
         return Ok(m);
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
-        // construct and encode the payload
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(&self.payload, &mut payload).unwrap();
+        let encoded_payload = self.encode_payload()?;
 
-        let mut sm = coset::CoseSignBuilder::new().payload(payload);
+        let mut sm = coset::CoseSignBuilder::new().payload(encoded_payload);
 
         for sig in &self.signatures {
             // construct a header for the signer
@@ -130,14 +210,6 @@ impl Message {
             if let Some(exp) = sig.exp {
                 header = header.value(HeaderLabel::Exp as i64, Value::from(exp));
             }
-
-            /*
-            // TODO find the correct way to map any remaining protected fields
-            // to the signature
-            for (key, value) in &sig.protected {
-                header = header.(key., value);
-            }
-            */
 
             let signature = CoseSignatureBuilder::new()
                 .protected(header.build())
@@ -155,10 +227,9 @@ impl Message {
         return Ok(signed_message);
     }
 
-    pub fn sign(&mut self, signer: &KeyPair, exp: Option<i64>) {
+    pub fn sign(&mut self, signer: &KeyPair, exp: Option<i64>) -> Result<(), SelfError> {
         // construct and encode the payload
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(&self.payload, &mut payload).unwrap();
+        let encoded_payload = self.encode_payload()?;
 
         let iat = crate::time::unix();
 
@@ -172,7 +243,7 @@ impl Message {
             header = header.value(HeaderLabel::Exp as i64, Value::from(exp));
         }
 
-        let signature = coset::sig_structure_data(
+        let message = coset::sig_structure_data(
             coset::SignatureContext::CoseSignature,
             ProtectedHeader {
                 original_data: None,
@@ -183,8 +254,10 @@ impl Message {
                 header: header.build(),
             }),
             &Vec::new(),
-            payload.as_ref(),
+            encoded_payload.as_ref(),
         );
+
+        let signature = signer.sign(&message);
 
         self.signatures.push(Signature {
             iss: signer.public(),
@@ -193,56 +266,243 @@ impl Message {
             protected: Vec::new(),
             signature: signature,
         });
+
+        return Ok(());
+    }
+
+    fn encode_payload(&self) -> Result<Vec<u8>, SelfError> {
+        // construct and encode the payload
+        let mut payload: Vec<(Value, Value)> = Vec::new();
+        let mut encoded_payload = Vec::new();
+
+        // map all of the standard fields
+        if let Some(aud) = self.aud.as_ref() {
+            payload.push((Value::from(AUD), Value::from(aud.clone())));
+        }
+        if let Some(sub) = self.sub.as_ref() {
+            payload.push((Value::from(SUB), Value::from(sub.clone())));
+        }
+        if let Some(cti) = self.cti.as_ref() {
+            payload.push((Value::from(CTI), Value::from(cti.clone())));
+        }
+        if let Some(typ) = self.typ.as_ref() {
+            payload.push((Value::from(TYP), Value::from(typ.clone())));
+        }
+        if let Some(iat) = self.iat.as_ref() {
+            payload.push((Value::from(IAT), Value::from(iat.clone())));
+        }
+        if let Some(exp) = self.exp.as_ref() {
+            payload.push((Value::from(EXP), Value::from(exp.clone())));
+        }
+        if let Some(cnt) = self.content.as_ref() {
+            payload.push((Value::from(CNT), Value::from(cnt.clone())));
+        }
+
+        ciborium::ser::into_writer(&Value::Map(payload), &mut encoded_payload)
+            .map_err(|_| SelfError::MessageEncodingInvalid)?;
+
+        return Ok(encoded_payload);
+    }
+
+    pub fn audience_set(&mut self, aud: &[u8]) {
+        self.aud = Some(aud.to_vec());
+    }
+
+    pub fn audience_get(&self) -> Option<Vec<u8>> {
+        return self.aud.clone();
+    }
+
+    pub fn subject_set(&mut self, sub: &[u8]) {
+        self.sub = Some(sub.to_vec());
+    }
+
+    pub fn subject_get(&self) -> Option<Vec<u8>> {
+        return self.sub.clone();
+    }
+
+    pub fn cti_set(&mut self, cti: &[u8]) {
+        self.cti = Some(cti.to_vec());
+    }
+
+    pub fn cti_get(&self) -> Option<Vec<u8>> {
+        return self.cti.clone();
+    }
+
+    pub fn type_set(&mut self, typ: &str) {
+        self.typ = Some(typ.to_string());
+    }
+
+    pub fn type_get(&self) -> Option<String> {
+        return self.typ.clone();
+    }
+
+    pub fn issued_at_set(&mut self, iat: i64) {
+        self.iat = Some(iat);
+    }
+
+    pub fn issued_at_get(&self) -> Option<i64> {
+        return self.iat;
+    }
+
+    pub fn expires_at_set(&mut self, exp: i64) {
+        self.exp = Some(exp);
+    }
+
+    pub fn expires_at_get(&self) -> Option<i64> {
+        return self.exp;
+    }
+
+    pub fn content_set(&mut self, content: &[u8]) {
+        self.content = Some(content.to_vec());
+    }
+
+    pub fn content_get(&self) -> Option<Vec<u8>> {
+        return self.content.clone();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ciborium::value::Value;
 
     #[test]
-    fn to_cws() {
-        println!("new message");
+    fn audience() {
         let mut m = Message::new();
 
-        // add a field to the payload
-        m.payload.push((Value::from("typ"), Value::from(1)));
+        m.audience_set(&vec![0; 32]);
 
         // add a valid signature
         let kp = KeyPair::new();
-        println!("sign");
-        m.sign(&kp, None);
+        m.sign(&kp, None).unwrap();
 
-        println!("encode");
         // encode to cws
         let cws = m.encode().unwrap();
 
-        println!("decode");
         // decode from cws
         let m = Message::decode(&cws).unwrap();
-
-        println!("done");
-        // check payload field exists
-        assert!(m.payload.len() == 1);
-        assert!(m.signatures.len() == 1);
+        assert!(m.audience_get().unwrap().len() == 32);
     }
 
-    /*
     #[test]
-    fn to_jwt() {
-        let mut m = Message::new("auth.token", "me", "me", None, true);
+    fn subject() {
+        let mut m = Message::new();
 
-        // try to encode with no signatures
-        assert!(m.to_jws().is_err());
+        m.subject_set(&vec![0; 32]);
 
         // add a valid signature
         let kp = KeyPair::new();
-        assert!(m.sign(&kp).is_ok());
+        m.sign(&kp, None).unwrap();
 
-        // encode to jwt
-        let jwt = m.to_jws();
-        assert!(jwt.is_ok());
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert!(m.subject_get().unwrap().len() == 32);
     }
-    */
+
+    #[test]
+    fn cti() {
+        let mut m = Message::new();
+
+        m.cti_set(&vec![0; 20]);
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert!(m.cti_get().unwrap().len() == 20);
+    }
+
+    #[test]
+    fn message_type() {
+        let mut m = Message::new();
+
+        m.type_set("connections.req");
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert_eq!(m.type_get().unwrap(), "connections.req");
+    }
+
+    #[test]
+    fn issued_at() {
+        let mut m = Message::new();
+
+        m.issued_at_set(101);
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert_eq!(m.issued_at_get().unwrap(), 101);
+    }
+
+    #[test]
+    fn expires_at() {
+        let mut m = Message::new();
+
+        m.expires_at_set(101);
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+
+        assert_eq!(m.expires_at_get().unwrap(), 101);
+    }
+
+    #[test]
+    fn content() {
+        let kp = KeyPair::new();
+        let mut m = Message::new();
+
+        // add a field to the payload
+        let mut content = Vec::new();
+        let content_data = vec![(Value::from("my_field"), Value::from(128))];
+        ciborium::ser::into_writer(&Value::Map(content_data), &mut content).unwrap();
+
+        // set content and sign
+        m.content_set(&content);
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+
+        // decode the content
+        let content = m.content_get().unwrap();
+        let content_data: Value = ciborium::de::from_reader(&content[..]).unwrap();
+        let content_map = content_data.as_map().unwrap();
+        assert!(content_map.len() == 1);
+
+        let key = content_map[0].0.as_text().unwrap();
+        let value: i64 = content_map[0].1.as_integer().unwrap().try_into().unwrap();
+        assert_eq!(key, "my_field");
+        assert_eq!(value, 128);
+    }
 }
