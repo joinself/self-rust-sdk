@@ -77,14 +77,16 @@ impl KeyPair {
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
-        return match serde_cbor::from_slice(encoded_keypair) {
+        return match ciborium::de::from_reader(encoded_keypair) {
             Ok(keypair) => Ok(keypair),
             Err(_) => Err(SelfError::KeyPairDecodeInvalidData),
         };
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        return serde_cbor::to_vec(self).unwrap();
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(self, &mut encoded).unwrap();
+        return encoded;
     }
 
     pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {

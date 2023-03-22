@@ -20,14 +20,17 @@ pub enum SelfError {
     CryptoInputBufferTooSmall,
     CryptoSasTheirKeyNotSet,
     CryptoPickleExtraData,
+    CryptoGroupMessageInvalid,
     CryptoUnknown,
     KeyPairDecodeInvalidData,
     KeyPairSignFailure,
     KeyPairSignMissingSingingKey,
     KeyPairSignWrongKeypairType,
     KeyPairPublicKeyInvalidLength,
+    MessageNoPayload,
     MessageNoProtected,
     MessageNoSignature,
+    MessagePayloadInvalid,
     MessageEncodingInvalid,
     MessageDecodingInvalid,
     MessageSigningKeyInvalid,
@@ -103,6 +106,7 @@ impl fmt::Display for SelfError {
             SelfError::CryptoInputBufferTooSmall => write!(f, "Crypto function was provided an input buffer that's too small"),
             SelfError::CryptoSasTheirKeyNotSet => write!(f, "Crypto sas doesn't have their key set"),
             SelfError::CryptoPickleExtraData => write!(f, "Crypto pickled object was decoded successfully, but it contained junk data at the end"),
+            SelfError::CryptoGroupMessageInvalid => write!(f, "Crypto group message encoding is invalid"),
             SelfError::CryptoUnknown => write!(f, "Crypto unknown error"),
             SelfError::KeyPairDecodeInvalidData => write!(f, "Keypair could not be decoded"),
             SelfError::KeyPairSignFailure => write!(f, "Keypair signing failed"),
@@ -117,13 +121,15 @@ impl fmt::Display for SelfError {
                 f,
                 "Keypair public key is an incorrect length",
             ),
+            SelfError::MessageNoPayload => write!(f, "Message has no payload"),
             SelfError::MessageNoProtected => write!(f, "Message has no protected header"),
             SelfError::MessageNoSignature => write!(f, "Message has no signature"),
+            SelfError::MessagePayloadInvalid => write!(f, "Message payload is not a map"),
             SelfError::MessageEncodingInvalid => {
-                write!(f, "Message could not be encoded to valid json")
+                write!(f, "Message could not be encoded to valid cbor")
             }
             SelfError::MessageDecodingInvalid => {
-                write!(f, "Message could not be decoded from invalid json")
+                write!(f, "Message could not be decoded from invalid cbor")
             }
             SelfError::MessageSigningKeyInvalid => {
                 write!(f, "Message can only be signed with an ed25519 keypair")

@@ -1,431 +1,363 @@
 use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
-use std::collections::BTreeMap;
-use std::time::Duration;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_cbor::Value;
-use uuid::Builder;
+use ciborium::value::Value;
+use coset::{iana, CborSerializable, CoseSignatureBuilder, Label, ProtectedHeader};
 
-#[derive(Serialize, Deserialize, Clone)]
+enum HeaderLabel {
+    Iat = 100,
+    Exp,
+}
+
+const SUB: i64 = iana::CwtClaimName::Sub as i64;
+const AUD: i64 = iana::CwtClaimName::Aud as i64;
+const EXP: i64 = iana::CwtClaimName::Exp as i64;
+const IAT: i64 = iana::CwtClaimName::Iat as i64;
+const CTI: i64 = iana::CwtClaimName::Cti as i64;
+const TYP: i64 = -100000;
+const CNT: i64 = -100001;
+
+#[derive(Clone)]
 pub struct Message {
-    #[serde(serialize_with = "as_base64", deserialize_with = "from_base64")]
-    payload: BTreeMap<String, serde_cbor::Value>,
-    #[serde(
-        default,
-        serialize_with = "as_base64",
-        deserialize_with = "protected_optional_from_base64",
-        skip_serializing_if = "Option::is_none"
-    )]
-    protected: Option<BTreeMap<String, serde_cbor::Value>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    signature: Option<String>,
+    sub: Option<Vec<u8>>,
+    aud: Option<Vec<u8>>,
+    cti: Option<Vec<u8>>,
+    typ: Option<String>,
+    iat: Option<i64>,
+    exp: Option<i64>,
+    content: Option<Vec<u8>>,
     signatures: Vec<Signature>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Clone)]
 pub struct Signature {
-    #[serde(
-        default,
-        serialize_with = "as_base64",
-        deserialize_with = "protected_from_base64"
-    )]
-    pub protected: BTreeMap<String, serde_cbor::Value>,
-    pub signature: String,
-}
-
-fn as_base64<T, S>(buffer: &T, serializer: S) -> Result<S::Ok, S::Error>
-where
-    T: Serialize,
-    S: Serializer,
-{
-    let cbor = serde_cbor::to_vec(buffer).unwrap();
-    let encoded_cbor = base64::encode_config(&cbor, base64::URL_SAFE_NO_PAD);
-    serializer.serialize_str(&encoded_cbor)
-}
-
-fn from_base64<'de, D>(deserializer: D) -> Result<BTreeMap<String, serde_cbor::Value>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::Error;
-    String::deserialize(deserializer).and_then(|string| {
-        let decoded_cbor = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
-            Ok(decoded_cbor) => decoded_cbor,
-            Err(err) => return Err(Error::custom(err.to_string())),
-        };
-        serde_cbor::from_slice(&decoded_cbor).map_err(|err| Error::custom(err.to_string()))
-    })
-}
-
-fn protected_from_base64<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<String, serde_cbor::Value>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::Error;
-    String::deserialize(deserializer).and_then(|string| {
-        let decoded_cbor = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
-            Ok(decoded_cbor) => decoded_cbor,
-            Err(err) => return Err(Error::custom(err.to_string())),
-        };
-        serde_cbor::from_slice(&decoded_cbor).map_err(|err| Error::custom(err.to_string()))
-    })
-}
-
-fn protected_optional_from_base64<'de, D>(
-    deserializer: D,
-) -> Result<Option<BTreeMap<String, serde_cbor::Value>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::Error;
-    String::deserialize(deserializer).and_then(|string| {
-        let decoded_cbor = match base64::decode_config(string, base64::URL_SAFE_NO_PAD) {
-            Ok(decoded_cbor) => decoded_cbor,
-            Err(err) => return Err(Error::custom(err.to_string())),
-        };
-        serde_cbor::from_slice(&decoded_cbor).map_err(|err| Error::custom(err.to_string()))
-    })
+    pub iss: PublicKey,
+    pub iat: Option<i64>,
+    pub exp: Option<i64>,
+    pub protected: Vec<(Label, Value)>,
+    pub signature: Vec<u8>,
 }
 
 impl Message {
-    pub fn new(typ: &str, iss: &str, sub: &str, exp: Option<Duration>, unix: bool) -> Message {
-        let mut m = Message {
-            payload: BTreeMap::new(),
-            protected: None,
-            signature: None,
-            signatures: Vec::new(),
-        };
-
-        let mut rng_bytes: [u8; 16] = [0; 16];
-
-        unsafe {
-            sodium_sys::randombytes_buf(rng_bytes.as_mut_ptr() as *mut libc::c_void, 16);
-        }
-
-        let jti = Builder::from_random_bytes(rng_bytes)
-            .into_uuid()
-            .to_string();
-
-        // add default fields
-        m.payload
-            .insert(String::from("typ"), Value::from(String::from(typ)));
-        m.payload
-            .insert(String::from("iss"), Value::from(String::from(iss)));
-        m.payload
-            .insert(String::from("sub"), Value::from(String::from(sub)));
-        m.payload
-            .insert(String::from("typ"), Value::from(String::from(typ)));
-        m.payload
-            .insert(String::from("jti"), Value::from(String::from(jti)));
-
-        let now = crate::time::now();
-
-        if unix {
-            m.payload
-                .insert(String::from("iat"), Value::from(now.timestamp()));
-            if exp.is_some() {
-                let exp = (now + chrono::Duration::from_std(exp.unwrap()).unwrap()).timestamp();
-                m.payload.insert(String::from("exp"), Value::from(exp));
-            }
-        } else {
-            m.payload
-                .insert(String::from("iat"), Value::from(now.to_rfc3339()));
-            if exp.is_some() {
-                let exp = (now + chrono::Duration::from_std(exp.unwrap()).unwrap()).to_rfc3339();
-                m.payload.insert(String::from("exp"), Value::from(exp));
-            }
-        }
-
-        return m;
-    }
-
-    pub fn new_without_defaults() -> Message {
+    pub fn new() -> Message {
         return Message {
-            payload: BTreeMap::new(),
-            protected: None,
-            signature: None,
+            sub: None,
+            aud: None,
+            cti: None,
+            typ: None,
+            iat: None,
+            exp: None,
+            content: None,
             signatures: Vec::new(),
         };
     }
 
-    pub fn new_from_payload<T: Serialize>(custom_payload: &T) -> Result<Message, SelfError> {
-        // TODO this is not the right way to do this, but
-        // the most convenient/fastest way for now.
-        // Investigate if generic payload is possible,
-        // with a default of BTreeMap<String, Value>
-
-        let encoded_custom_payload = match serde_cbor::to_vec(custom_payload) {
-            Ok(encoded_custom_payload) => encoded_custom_payload,
-            Err(_) => return Err(SelfError::MessageEncodingInvalid),
-        };
-
-        let payload: BTreeMap<String, Value> = match serde_cbor::from_slice(&encoded_custom_payload)
-        {
-            Ok(payload) => payload,
-            Err(_) => return Err(SelfError::MessageDecodingInvalid),
-        };
-
-        return Ok(Message {
-            payload: payload,
-            protected: None,
-            signature: None,
-            signatures: Vec::new(),
-        });
-    }
-
-    pub fn to_custom_payload<T>(&self) -> Result<T, SelfError>
-    where
-        T: for<'a> Deserialize<'a>,
-    {
-        let encoded_payload = match serde_cbor::to_vec(&self.payload) {
-            Ok(encoded_payload) => encoded_payload,
-            Err(_) => return Err(SelfError::MessageEncodingInvalid),
-        };
-
-        let decoded_payload: T = match serde_cbor::from_slice(&encoded_payload) {
-            Ok(decoded_payload) => decoded_payload,
-            Err(_) => return Err(SelfError::MessageDecodingInvalid),
-        };
-
-        return Ok(decoded_payload);
-    }
-
-    pub fn from_jws(data: &[u8]) -> Result<Message, SelfError> {
-        let m: Message = match serde_cbor::from_slice(data) {
-            Ok(m) => m,
+    pub fn decode(data: &[u8]) -> Result<Message, SelfError> {
+        let sm: coset::CoseSign = match coset::CoseSign::from_slice(data) {
+            Ok(sm) => sm,
             Err(err) => {
-                println!("json error: {}", err);
+                println!("cbor error: {}", err);
                 return Err(SelfError::MessageDecodingInvalid);
             }
         };
 
-        if m.signatures.len() < 1 {
-            if m.protected.is_none() {
+        let mut m = Message::new();
+
+        // validate signatures
+        for (index, sig) in sm.signatures.iter().enumerate() {
+            if sig.protected.is_empty() {
                 return Err(SelfError::MessageNoProtected);
             }
 
-            if m.signature.is_none() {
-                return Err(SelfError::MessageNoSignature);
+            let alg = match sig.protected.header.alg.as_ref() {
+                Some(alg) => alg,
+                None => return Err(SelfError::MessageUnsupportedSignatureAlgorithm),
+            };
+
+            if !alg.eq(&coset::Algorithm::Assigned(coset::iana::Algorithm::EdDSA)) {
+                return Err(SelfError::MessageUnsupportedSignatureAlgorithm);
+            }
+
+            let signer = PublicKey::from_bytes(
+                &sig.protected.header.key_id,
+                crate::keypair::Algorithm::Ed25519,
+            )?;
+
+            sm.verify_signature(index, &Vec::new(), |sig, data| {
+                if signer.verify(data, sig) {
+                    return Ok(());
+                }
+                return Err(());
+            })
+            .map_err(|_| SelfError::MessageSignatureInvalid)?;
+
+            let mut msig = Signature {
+                iss: signer,
+                iat: None,
+                exp: None,
+                protected: Vec::new(),
+                signature: sig.signature.clone(),
+            };
+
+            for (key, value) in &sig.protected.header.rest {
+                msig.protected.push((key.to_owned(), value.to_owned()));
+            }
+
+            m.signatures.push(msig);
+        }
+
+        let encoded_payload = match sm.payload {
+            Some(payload) => payload,
+            None => return Err(SelfError::MessageNoPayload),
+        };
+
+        let payload: Value = ciborium::de::from_reader(&encoded_payload[..])
+            .map_err(|_| SelfError::MessagePayloadInvalid)?;
+
+        for entry in payload.as_map().into_iter() {
+            if entry.len() < 1 {
+                continue;
+            }
+
+            match &entry[0].0 {
+                x if x.eq(&Value::from(AUD)) => {
+                    m.aud = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                x if x.eq(&Value::from(SUB)) => {
+                    m.sub = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                x if x.eq(&Value::from(CTI)) => {
+                    m.cti = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                x if x.eq(&Value::from(TYP)) => {
+                    m.typ = Some(
+                        entry[0]
+                            .1
+                            .as_text()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .to_string(),
+                    );
+                }
+                x if x.eq(&Value::from(IAT)) => {
+                    m.iat = Some(
+                        entry[0]
+                            .1
+                            .as_integer()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .try_into()
+                            .map_err(|_| SelfError::MessageDecodingInvalid)?,
+                    );
+                }
+                x if x.eq(&Value::from(EXP)) => {
+                    m.exp = Some(
+                        entry[0]
+                            .1
+                            .as_integer()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .try_into()
+                            .map_err(|_| SelfError::MessageDecodingInvalid)?,
+                    );
+                }
+                x if x.eq(&Value::from(CNT)) => {
+                    m.content = Some(
+                        entry[0]
+                            .1
+                            .as_bytes()
+                            .ok_or(SelfError::MessageDecodingInvalid)?
+                            .clone(),
+                    );
+                }
+                _ => {}
             }
         }
 
         return Ok(m);
     }
 
-    pub fn from_jwt(data: &[u8]) -> Result<Message, SelfError> {
-        // TODO better way to do this?
-        let parts = data
-            .split(|byte| *byte == ".".as_bytes()[0])
-            .collect::<Vec<&[u8]>>();
+    pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
+        let encoded_payload = self.encode_payload()?;
 
-        if parts.len() < 3 {
-            return Err(SelfError::MessageDecodingInvalid);
+        let mut sm = coset::CoseSignBuilder::new().payload(encoded_payload);
+
+        for sig in &self.signatures {
+            // construct a header for the signer
+            let mut header = coset::HeaderBuilder::new()
+                .algorithm(iana::Algorithm::EdDSA)
+                .key_id(sig.iss.id());
+
+            if let Some(iat) = sig.iat {
+                header = header.value(HeaderLabel::Iat as i64, Value::from(iat));
+            }
+
+            if let Some(exp) = sig.exp {
+                header = header.value(HeaderLabel::Exp as i64, Value::from(exp));
+            }
+
+            let signature = CoseSignatureBuilder::new()
+                .protected(header.build())
+                .signature(sig.signature.clone())
+                .build();
+
+            sm = sm.add_signature(signature);
         }
 
-        let protected = base64::decode_config(parts[0], base64::URL_SAFE_NO_PAD)
-            .map_err(|_| SelfError::MessageDecodingInvalid)?;
-        let payload = base64::decode_config(parts[1], base64::URL_SAFE_NO_PAD)
-            .map_err(|_| SelfError::MessageDecodingInvalid)?;
+        let signed_message = sm
+            .build()
+            .to_vec()
+            .map_err(|_| SelfError::MessageEncodingInvalid)?;
 
-        let mut m = Message::new_without_defaults();
+        return Ok(signed_message);
+    }
 
-        m.protected =
-            serde_cbor::from_slice(&protected).map_err(|_| SelfError::MessageDecodingInvalid)?;
-        m.payload =
-            serde_cbor::from_slice(&payload).map_err(|_| SelfError::MessageDecodingInvalid)?;
-        m.signature = Some(
-            String::from_utf8(parts[2].to_vec()).map_err(|_| SelfError::MessageDecodingInvalid)?,
+    pub fn sign(&mut self, signer: &KeyPair, exp: Option<i64>) -> Result<(), SelfError> {
+        // construct and encode the payload
+        let encoded_payload = self.encode_payload()?;
+
+        let iat = crate::time::unix();
+
+        // construct a header for the signer
+        let mut header = coset::HeaderBuilder::new()
+            .algorithm(iana::Algorithm::EdDSA)
+            .value(HeaderLabel::Iat as i64, Value::from(iat))
+            .key_id(signer.id());
+
+        if let Some(exp) = exp {
+            header = header.value(HeaderLabel::Exp as i64, Value::from(exp));
+        }
+
+        let message = coset::sig_structure_data(
+            coset::SignatureContext::CoseSignature,
+            ProtectedHeader {
+                original_data: None,
+                header: coset::HeaderBuilder::new().build(),
+            },
+            Some(ProtectedHeader {
+                original_data: None,
+                header: header.build(),
+            }),
+            &Vec::new(),
+            encoded_payload.as_ref(),
         );
 
-        return Ok(m);
-    }
-
-    pub fn add_field_int(&mut self, key: &str, value: i32) {
-        self.payload.insert(String::from(key), Value::from(value));
-    }
-
-    pub fn add_field_string(&mut self, key: &str, value: &str) {
-        self.payload
-            .insert(String::from(key), Value::from(String::from(value)));
-    }
-
-    pub fn add_field_object(&mut self, key: &str, value: Value) {
-        self.payload.insert(String::from(key), value);
-    }
-
-    pub fn add_field_raw_json(&mut self, key: &str, value: &[u8]) -> Result<(), SelfError> {
-        let decoded_value: Value = match serde_cbor::from_slice(value) {
-            Ok(decoded_value) => decoded_value,
-            Err(_) => return Err(SelfError::MessageDecodingInvalid),
-        };
-
-        self.payload.insert(String::from(key), decoded_value);
-
-        return Ok(());
-    }
-
-    pub fn get_field(&self, key: &str) -> Option<&Value> {
-        return self.payload.get(key);
-    }
-
-    pub fn sign(&mut self, signing_key: &KeyPair) -> Result<(), SelfError> {
-        let mut protected = BTreeMap::new();
-        protected.insert(String::from("kid"), Value::String(signing_key.id()));
-        protected.insert(String::from("alg"), Value::String(String::from("EdDSA")));
-
-        let payload = match serde_cbor::to_string(&self.payload) {
-            Ok(payload) => payload,
-            Err(_) => return Err(SelfError::MessageEncodingInvalid),
-        };
-
-        let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
-        let encoded_protected = base64::encode_config(
-            serde_cbor::to_vec(&protected).unwrap(),
-            base64::URL_SAFE_NO_PAD,
-        );
-
-        let message = format!("{}.{}", encoded_protected, encoded_payload);
-
-        let signature = signing_key.sign(message.as_bytes());
-        let encoded_signature = base64::encode_config(signature, base64::URL_SAFE_NO_PAD);
+        let signature = signer.sign(&message);
 
         self.signatures.push(Signature {
-            protected: protected,
-            signature: encoded_signature,
+            iss: signer.public(),
+            iat: Some(iat),
+            exp: exp,
+            protected: Vec::new(),
+            signature: signature,
         });
 
         return Ok(());
     }
 
-    pub fn verify(&self, signing_key: &PublicKey) -> Result<(), SelfError> {
-        if self.protected.is_some() {
-            let protected = self.protected.as_ref().unwrap();
-            if protected["kid"] != signing_key.id() {
-                return Err(SelfError::MessageSignatureKeypairMismatch);
-            }
+    fn encode_payload(&self) -> Result<Vec<u8>, SelfError> {
+        // construct and encode the payload
+        let mut payload: Vec<(Value, Value)> = Vec::new();
+        let mut encoded_payload = Vec::new();
 
-            let encoded_signature = self.signature.as_ref().unwrap();
-
-            let decoded_signature =
-                match base64::decode_config(encoded_signature, base64::URL_SAFE_NO_PAD) {
-                    Ok(decoded_signature) => decoded_signature,
-                    Err(_) => return Err(SelfError::MessageSignatureEncodingInvalid),
-                };
-
-            let payload = serde_cbor::to_vec(&self.payload).unwrap();
-            let protected = serde_cbor::to_vec(&self.protected).unwrap();
-
-            let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
-            let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
-            let message = format!("{}.{}", encoded_protected, encoded_payload);
-
-            if !signing_key.verify(message.as_bytes(), &decoded_signature) {
-                return Err(SelfError::MessageSignatureInvalid);
-            }
-
-            return Ok(());
+        // map all of the standard fields
+        if let Some(aud) = self.aud.as_ref() {
+            payload.push((Value::from(AUD), Value::from(aud.clone())));
+        }
+        if let Some(sub) = self.sub.as_ref() {
+            payload.push((Value::from(SUB), Value::from(sub.clone())));
+        }
+        if let Some(cti) = self.cti.as_ref() {
+            payload.push((Value::from(CTI), Value::from(cti.clone())));
+        }
+        if let Some(typ) = self.typ.as_ref() {
+            payload.push((Value::from(TYP), Value::from(typ.clone())));
+        }
+        if let Some(iat) = self.iat.as_ref() {
+            payload.push((Value::from(IAT), Value::from(iat.clone())));
+        }
+        if let Some(exp) = self.exp.as_ref() {
+            payload.push((Value::from(EXP), Value::from(exp.clone())));
+        }
+        if let Some(cnt) = self.content.as_ref() {
+            payload.push((Value::from(CNT), Value::from(cnt.clone())));
         }
 
-        for s in &self.signatures {
-            if s.protected["kid"] != signing_key.id() {
-                continue;
-            }
+        ciborium::ser::into_writer(&Value::Map(payload), &mut encoded_payload)
+            .map_err(|_| SelfError::MessageEncodingInvalid)?;
 
-            let decoded_signature =
-                match base64::decode_config(&s.signature, base64::URL_SAFE_NO_PAD) {
-                    Ok(decoded_signature) => decoded_signature,
-                    Err(_) => return Err(SelfError::MessageSignatureEncodingInvalid),
-                };
-
-            let payload = serde_cbor::to_vec(&self.payload).unwrap();
-            let protected = serde_cbor::to_vec(&s.protected).unwrap();
-
-            let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
-            let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
-            let message = format!("{}.{}", encoded_protected, encoded_payload);
-
-            if !signing_key.verify(message.as_bytes(), &decoded_signature) {
-                return Err(SelfError::MessageSignatureInvalid);
-            }
-
-            return Ok(());
-        }
-
-        return Err(SelfError::MessageSignatureKeypairMismatch);
+        return Ok(encoded_payload);
     }
 
-    pub fn signing_key_ids(&self) -> Option<Vec<String>> {
-        let mut kids = Vec::new();
-
-        if self.protected.is_some() {
-            
-            
-            let kid = &self.protected.as_ref().unwrap()["kid"];
-            
-            kids.push(Vec::from(kid));
-        }
-
-        for sig in &self.signatures {
-            let kid = &sig.protected["kid"];
-
-            if kid.is_string() {
-                kids.push(String::from(kid.as_str().unwrap()));
-            }
-        }
-
-        if kids.len() < 1 {
-            return None;
-        }
-
-        return Some(kids);
+    pub fn audience_set(&mut self, aud: &[u8]) {
+        self.aud = Some(aud.to_vec());
     }
 
-    pub fn signatures(&self) -> Vec<Signature> {
-        if self.protected.is_some() && self.signature.is_some() {
-            return vec![Signature {
-                protected: self.protected.as_ref().unwrap().clone(),
-                signature: self.signature.as_ref().unwrap().clone(),
-            }];
-        }
-
-        return self.signatures.clone();
+    pub fn audience_get(&self) -> Option<Vec<u8>> {
+        return self.aud.clone();
     }
 
-    pub fn to_jws(&mut self) -> Result<String, SelfError> {
-        if self.signatures.len() < 1 {
-            return Err(SelfError::MessageNoSignature);
-        }
-
-        let cbor = match serde_cbor::to_string(self) {
-            Ok(json) => json,
-            Err(_) => return Err(SelfError::MessageEncodingInvalid),
-        };
-
-        return Ok(json);
+    pub fn subject_set(&mut self, sub: &[u8]) {
+        self.sub = Some(sub.to_vec());
     }
 
-    pub fn to_jwt(&self) -> Result<String, SelfError> {
-        if self.signatures.len() < 1 {
-            return Err(SelfError::MessageNoSignature);
-        }
+    pub fn subject_get(&self) -> Option<Vec<u8>> {
+        return self.sub.clone();
+    }
 
-        let payload = match serde_cbor::to_string(&self.payload) {
-            Ok(payload) => payload,
-            Err(_) => return Err(SelfError::MessageEncodingInvalid),
-        };
+    pub fn cti_set(&mut self, cti: &[u8]) {
+        self.cti = Some(cti.to_vec());
+    }
 
-        let protected = serde_cbor::to_vec(&self.signatures[0].protected).unwrap();
+    pub fn cti_get(&self) -> Option<Vec<u8>> {
+        return self.cti.clone();
+    }
 
-        let encoded_payload = base64::encode_config(payload, base64::URL_SAFE_NO_PAD);
-        let encoded_protected = base64::encode_config(protected, base64::URL_SAFE_NO_PAD);
+    pub fn type_set(&mut self, typ: &str) {
+        self.typ = Some(typ.to_string());
+    }
 
-        return Ok(format!(
-            "{}.{}.{}",
-            encoded_protected, encoded_payload, self.signatures[0].signature
-        ));
+    pub fn type_get(&self) -> Option<String> {
+        return self.typ.clone();
+    }
+
+    pub fn issued_at_set(&mut self, iat: i64) {
+        self.iat = Some(iat);
+    }
+
+    pub fn issued_at_get(&self) -> Option<i64> {
+        return self.iat;
+    }
+
+    pub fn expires_at_set(&mut self, exp: i64) {
+        self.exp = Some(exp);
+    }
+
+    pub fn expires_at_get(&self) -> Option<i64> {
+        return self.exp;
+    }
+
+    pub fn content_set(&mut self, content: &[u8]) {
+        self.content = Some(content.to_vec());
+    }
+
+    pub fn content_get(&self) -> Option<Vec<u8>> {
+        return self.content.clone();
     }
 }
 
@@ -434,40 +366,143 @@ mod tests {
     use super::*;
 
     #[test]
-    fn to_jws() {
-        let mut m = Message::new("auth.token", "me", "me", None, true);
+    fn audience() {
+        let mut m = Message::new();
 
-        // try to encode with no signatures
-        assert!(m.to_jws().is_err());
+        m.audience_set(&vec![0; 32]);
 
         // add a valid signature
         let kp = KeyPair::new();
-        assert!(m.sign(&kp).is_ok());
+        m.sign(&kp, None).unwrap();
 
-        // encode to jws
-        let jws = m.to_jws().unwrap();
+        // encode to cws
+        let cws = m.encode().unwrap();
 
-        // decode from jws
-        let bytes = jws.as_bytes();
-
-        let m = Message::from_jws(bytes).unwrap();
-        m.verify(&kp.public()).unwrap();
-        assert_eq!(m.signing_key_ids().unwrap().len(), 1);
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert!(m.audience_get().unwrap().len() == 32);
     }
 
     #[test]
-    fn to_jwt() {
-        let mut m = Message::new("auth.token", "me", "me", None, true);
+    fn subject() {
+        let mut m = Message::new();
 
-        // try to encode with no signatures
-        assert!(m.to_jws().is_err());
+        m.subject_set(&vec![0; 32]);
 
         // add a valid signature
         let kp = KeyPair::new();
-        assert!(m.sign(&kp).is_ok());
+        m.sign(&kp, None).unwrap();
 
-        // encode to jwt
-        let jwt = m.to_jws();
-        assert!(jwt.is_ok());
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert!(m.subject_get().unwrap().len() == 32);
+    }
+
+    #[test]
+    fn cti() {
+        let mut m = Message::new();
+
+        m.cti_set(&vec![0; 20]);
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert!(m.cti_get().unwrap().len() == 20);
+    }
+
+    #[test]
+    fn message_type() {
+        let mut m = Message::new();
+
+        m.type_set("connections.req");
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert_eq!(m.type_get().unwrap(), "connections.req");
+    }
+
+    #[test]
+    fn issued_at() {
+        let mut m = Message::new();
+
+        m.issued_at_set(101);
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+        assert_eq!(m.issued_at_get().unwrap(), 101);
+    }
+
+    #[test]
+    fn expires_at() {
+        let mut m = Message::new();
+
+        m.expires_at_set(101);
+
+        // add a valid signature
+        let kp = KeyPair::new();
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+
+        assert_eq!(m.expires_at_get().unwrap(), 101);
+    }
+
+    #[test]
+    fn content() {
+        let kp = KeyPair::new();
+        let mut m = Message::new();
+
+        // add a field to the payload
+        let mut content = Vec::new();
+        let content_data = vec![(Value::from("my_field"), Value::from(128))];
+        ciborium::ser::into_writer(&Value::Map(content_data), &mut content).unwrap();
+
+        // set content and sign
+        m.content_set(&content);
+        m.sign(&kp, None).unwrap();
+
+        // encode to cws
+        let cws = m.encode().unwrap();
+
+        // decode from cws
+        let m = Message::decode(&cws).unwrap();
+
+        // decode the content
+        let content = m.content_get().unwrap();
+        let content_data: Value = ciborium::de::from_reader(&content[..]).unwrap();
+        let content_map = content_data.as_map().unwrap();
+        assert!(content_map.len() == 1);
+
+        let key = content_map[0].0.as_text().unwrap();
+        let value: i64 = content_map[0].1.as_integer().unwrap().try_into().unwrap();
+        assert_eq!(key, "my_field");
+        assert_eq!(value, 128);
     }
 }

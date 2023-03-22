@@ -6,79 +6,82 @@ use crate::crypto::session::Session;
 use crate::error::SelfError;
 
 pub struct Group {
-    id: String,
+    id: Vec<u8>,
     participants: Vec<Participant>,
 }
 
 struct Participant {
-    id: String,
+    id: Vec<u8>,
     session: Session,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct GroupMessage {
-    recipients: HashMap<String, Message>,
-    ciphertext: String,
+    recipients: HashMap<Vec<u8>, Message>,
+    ciphertext: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Message {
     mtype: u64,
-    ciphertext: String,
+    ciphertext: Vec<u8>,
 }
 
 impl GroupMessage {
     fn new(ciphertext: &[u8]) -> GroupMessage {
         return GroupMessage {
             recipients: HashMap::new(),
-            ciphertext: base64::encode_config(ciphertext, base64::STANDARD_NO_PAD),
+            ciphertext: ciphertext.to_vec(),
         };
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> GroupMessage {
-        // TODO add error handling
-        serde_json::from_slice(bytes).unwrap()
+    pub fn decode(bytes: &[u8]) -> Result<GroupMessage, SelfError> {
+        return match ciborium::de::from_reader(bytes) {
+            Ok(keypair) => Ok(keypair),
+            Err(_) => Err(SelfError::CryptoGroupMessageInvalid),
+        };
     }
 
-    pub fn one_time_key_message(&self, recipient: &str) -> Option<Vec<u8>> {
+    fn encode(&self) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(self, &mut encoded).unwrap();
+        return encoded;
+    }
+
+    pub fn one_time_key_message(&self, recipient: &[u8]) -> Option<Vec<u8>> {
         match self.recipients.get(recipient) {
             Some(message) => {
                 if message.mtype != 0 {
                     return None;
                 }
-                return Some(message.ciphertext.to_owned().into_bytes());
+                return Some(message.ciphertext.clone());
             }
             None => None,
         }
     }
 
-    fn set_recipient_ciphertext(&mut self, id: &str, mtype: u64, ciphertext: &[u8]) {
+    fn set_recipient_ciphertext(&mut self, id: &[u8], mtype: u64, ciphertext: &[u8]) {
         self.recipients.insert(
-            String::from(id),
+            id.to_vec(),
             Message {
                 mtype,
-                ciphertext: String::from_utf8(ciphertext.to_vec()).unwrap(),
+                ciphertext: ciphertext.to_vec(),
             },
         );
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        // TODO error handle this
-        return serde_json::to_vec(self).unwrap();
     }
 }
 
 impl Group {
-    pub fn new(id: &str) -> Group {
+    pub fn new(id: &[u8]) -> Group {
         return Group {
-            id: String::from(id),
+            id: id.to_vec(),
             participants: Vec::new(),
         };
     }
 
-    pub fn add_participant(&mut self, id: &str, session: Session) {
+    pub fn add_participant(&mut self, id: &[u8], session: Session) {
         self.participants.push(Participant {
-            id: String::from(id),
+            id: id.to_vec(),
             session,
         });
     }
@@ -126,25 +129,24 @@ impl Group {
 
         for p in &mut self.participants {
             let (mtype, ciphertext) = p.session.encrypt(&key_and_nonce)?;
-
             group_message.set_recipient_ciphertext(&p.id, mtype, &ciphertext);
         }
 
         return Ok(group_message.encode());
     }
 
-    pub fn decrypt(&mut self, from: &str, ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {
-        let mut group_message = GroupMessage::from_bytes(ciphertext);
+    pub fn decrypt(&mut self, from: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {
+        let mut group_message = GroupMessage::decode(ciphertext)?;
         return self.decrypt_group_message(from, &mut group_message);
     }
 
     pub fn decrypt_group_message(
         &mut self,
-        from: &str,
+        from: &[u8],
         group_message: &mut GroupMessage,
     ) -> Result<Vec<u8>, SelfError> {
         // TODO error handling
-        let sender = match self.participants.iter().position(|p| p.id == from) {
+        let sender = match self.participants.iter().position(|p| p.id.eq(from)) {
             Some(p) => &mut self.participants[p],
             None => return Err(SelfError::CryptoUnknownGroupParticipant),
         };
@@ -156,20 +158,17 @@ impl Group {
             as u64;
         let mut plaintext_buf = vec![0u8; plaintext_len as usize].into_boxed_slice();
 
-        let mut decoded_ciphertext =
-            base64::decode_config(&group_message.ciphertext, base64::STANDARD_NO_PAD).unwrap();
-
         unsafe {
             let key_and_nonce = sender
                 .session
-                .decrypt(message.mtype, message.ciphertext.as_bytes_mut())?;
+                .decrypt(message.mtype, &mut message.ciphertext)?;
 
             let status = sodium_sys::crypto_aead_xchacha20poly1305_ietf_decrypt(
                 plaintext_buf.as_mut_ptr(),
                 &mut plaintext_len,
                 std::ptr::null_mut(),
-                decoded_ciphertext.as_mut_ptr(),
-                decoded_ciphertext.len() as u64,
+                group_message.ciphertext.as_mut_ptr(),
+                group_message.ciphertext.len() as u64,
                 std::ptr::null_mut(),
                 0 as u64,
                 key_and_nonce[32..56].as_ptr(),
@@ -255,19 +254,19 @@ mod tests {
             .expect("failed to create outbound session");
 
         // create a group with alice and carol
-        let mut group = Group::new("bob");
-        group.add_participant("alice", bobs_session_with_alice);
-        group.add_participant("carol", bobs_session_with_carol);
+        let mut group = Group::new(b"bob");
+        group.add_participant(b"alice", bobs_session_with_alice);
+        group.add_participant(b"carol", bobs_session_with_carol);
 
         let group_message = group
             .encrypt(b"hello alice and carol")
             .expect("failed to encrypt group message");
-        let mut alices_message_from_bob = GroupMessage::from_bytes(&group_message);
-        let mut carols_message_from_bob = GroupMessage::from_bytes(&group_message);
+        let mut alices_message_from_bob = GroupMessage::decode(&group_message).unwrap();
+        let mut carols_message_from_bob = GroupMessage::decode(&group_message).unwrap();
 
         // create alices session with bob
         let alices_one_time_message = alices_message_from_bob
-            .one_time_key_message("alice")
+            .one_time_key_message(b"alice")
             .expect("failed to find alice in the recipients");
         let alices_session_with_bob = alice_acc
             .create_inbound_session(&bob_curve25519_pk, &alices_one_time_message)
@@ -275,26 +274,26 @@ mod tests {
 
         // create carols session with bob
         let carols_one_time_message = carols_message_from_bob
-            .one_time_key_message("carol")
+            .one_time_key_message(b"carol")
             .expect("failed to find carol in the recipients");
         let carols_session_with_bob = carol_acc
             .create_inbound_session(&bob_curve25519_pk, &carols_one_time_message)
             .expect("failed to create carols session with bob");
 
         // attempt to decrypt the group message intended for alice
-        let mut alices_group = Group::new("alice");
-        alices_group.add_participant("bob", alices_session_with_bob);
+        let mut alices_group = Group::new(b"alice");
+        alices_group.add_participant(b"bob", alices_session_with_bob);
         let plaintext = alices_group
-            .decrypt_group_message("bob", &mut alices_message_from_bob)
+            .decrypt_group_message(b"bob", &mut alices_message_from_bob)
             .expect("failed to decrypt message from bob");
 
         assert_eq!(plaintext, b"hello alice and carol");
 
         // attempt to decrypt the group message intended for alice
-        let mut carols_group = Group::new("carol");
-        carols_group.add_participant("bob", carols_session_with_bob);
+        let mut carols_group = Group::new(b"carol");
+        carols_group.add_participant(b"bob", carols_session_with_bob);
         let plaintext = carols_group
-            .decrypt_group_message("bob", &mut carols_message_from_bob)
+            .decrypt_group_message(b"bob", &mut carols_message_from_bob)
             .expect("failed to decrypt message from bob");
 
         assert_eq!(plaintext, b"hello alice and carol");
