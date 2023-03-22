@@ -2,7 +2,12 @@ use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
 
 use ciborium::value::Value;
-use coset::{iana, AsCborValue, CborSerializable, CoseSignatureBuilder, Label, ProtectedHeader};
+use coset::{iana, CborSerializable, CoseSignatureBuilder, Label, ProtectedHeader};
+
+enum HeaderLabel {
+    Iat = 100,
+    Exp,
+}
 
 #[derive(Clone)]
 pub struct Message {
@@ -119,11 +124,11 @@ impl Message {
                 .key_id(sig.iss.id());
 
             if let Some(iat) = sig.iat {
-                header = header.value(iana::CwtClaimName::Iat as i64, Value::from(iat));
+                header = header.value(HeaderLabel::Iat as i64, Value::from(iat));
             }
 
             if let Some(exp) = sig.exp {
-                header = header.value(iana::CwtClaimName::Exp as i64, Value::from(exp));
+                header = header.value(HeaderLabel::Exp as i64, Value::from(exp));
             }
 
             /*
@@ -160,11 +165,11 @@ impl Message {
         // construct a header for the signer
         let mut header = coset::HeaderBuilder::new()
             .algorithm(iana::Algorithm::EdDSA)
-            .value(iana::CwtClaimName::Iat as i64, Value::from(iat))
+            .value(HeaderLabel::Iat as i64, Value::from(iat))
             .key_id(signer.id());
 
         if let Some(exp) = exp {
-            header = header.value(iana::CwtClaimName::Exp as i64, Value::from(exp));
+            header = header.value(HeaderLabel::Exp as i64, Value::from(exp));
         }
 
         let signature = coset::sig_structure_data(
