@@ -1,4 +1,4 @@
-namespace schema;
+namespace siggraph;
 
 // defines the algorithm of the key
 enum KeyAlgorithm : ubyte {
