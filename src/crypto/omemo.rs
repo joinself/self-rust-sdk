@@ -1,9 +1,10 @@
+use crate::crypto::session::Session;
+use crate::error::SelfError;
+
 use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
-
-use crate::crypto::session::Session;
-use crate::error::SelfError;
+use std::sync::{Arc, Mutex};
 
 pub struct Group {
     id: Vec<u8>,
@@ -12,7 +13,7 @@ pub struct Group {
 
 struct Participant {
     id: Vec<u8>,
-    session: Session,
+    session: Arc<Mutex<Session>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -79,7 +80,7 @@ impl Group {
         };
     }
 
-    pub fn add_participant(&mut self, id: &[u8], session: Session) {
+    pub fn add_participant(&mut self, id: &[u8], session: Arc<Mutex<Session>>) {
         self.participants.push(Participant {
             id: id.to_vec(),
             session,
@@ -128,7 +129,9 @@ impl Group {
         let key_and_nonce = [key_buf, nonce_buf].concat();
 
         for p in &mut self.participants {
-            let (mtype, ciphertext) = p.session.encrypt(&key_and_nonce)?;
+            let session = p.session.lock().map_err(|_| SelfError::CryptoUnknown)?;
+            let (mtype, ciphertext) = session.encrypt(&key_and_nonce)?;
+            drop(session);
             group_message.set_recipient_ciphertext(&p.id, mtype, &ciphertext);
         }
 
@@ -159,9 +162,12 @@ impl Group {
         let mut plaintext_buf = vec![0u8; plaintext_len as usize].into_boxed_slice();
 
         unsafe {
-            let key_and_nonce = sender
-                .session
-                .decrypt(message.mtype, &mut message.ciphertext)?;
+            let session = sender.session.lock().map_err(|_| SelfError::CryptoUnknown)?;
+            let key_and_nonce = session.decrypt(
+                message.mtype, 
+                &mut message.ciphertext
+            )?;
+            drop(session);
 
             let status = sodium_sys::crypto_aead_xchacha20poly1305_ietf_decrypt(
                 plaintext_buf.as_mut_ptr(),
@@ -255,8 +261,8 @@ mod tests {
 
         // create a group with alice and carol
         let mut group = Group::new(b"bob");
-        group.add_participant(b"alice", bobs_session_with_alice);
-        group.add_participant(b"carol", bobs_session_with_carol);
+        group.add_participant(b"alice", Arc::new(Mutex::new(bobs_session_with_alice)));
+        group.add_participant(b"carol", Arc::new(Mutex::new(bobs_session_with_carol)));
 
         let group_message = group
             .encrypt(b"hello alice and carol")
@@ -282,7 +288,7 @@ mod tests {
 
         // attempt to decrypt the group message intended for alice
         let mut alices_group = Group::new(b"alice");
-        alices_group.add_participant(b"bob", alices_session_with_bob);
+        alices_group.add_participant(b"bob", Arc::new(Mutex::new(alices_session_with_bob)));
         let plaintext = alices_group
             .decrypt_group_message(b"bob", &mut alices_message_from_bob)
             .expect("failed to decrypt message from bob");
@@ -291,7 +297,7 @@ mod tests {
 
         // attempt to decrypt the group message intended for alice
         let mut carols_group = Group::new(b"carol");
-        carols_group.add_participant(b"bob", carols_session_with_bob);
+        carols_group.add_participant(b"bob", Arc::new(Mutex::new(carols_session_with_bob)));
         let plaintext = carols_group
             .decrypt_group_message(b"bob", &mut carols_message_from_bob)
             .expect("failed to decrypt message from bob");

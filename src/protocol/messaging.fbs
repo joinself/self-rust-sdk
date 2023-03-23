@@ -28,8 +28,8 @@ table Payload {
 }
 
 table ProofOfWork {
- hash:      [ubyte]; // proof of work hash over the nonce + payload
- nonce:     ulong;   // random nonce used only for pow
+ hash:  [ubyte]; // proof of work hash over the nonce + payload
+ nonce: ulong;   // random nonce used only for pow
 }
 
 table Message {
