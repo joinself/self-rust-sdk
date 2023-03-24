@@ -4,6 +4,7 @@ use crate::keypair::{
     Algorithm,
 };
 
+#[derive(Clone)]
 pub enum Identifier {
     Owned(KeyPair),
     Referenced(PublicKey),

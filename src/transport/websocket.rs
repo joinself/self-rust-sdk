@@ -1,26 +1,24 @@
 use crossbeam::channel;
 use crossbeam::channel::{Receiver, Sender};
-//use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use tokio::runtime::Runtime;
-//use tokio::sync::Mutex;
-//use tokio_tungstenite::connect_async;
+use tokio::sync::Mutex;
+use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
-//use std::collections::HashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
-//use std::time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
 use crate::identifier::Identifier;
-use crate::keypair::signing::KeyPair;
 use crate::protocol;
 use crate::token::Token;
-//use crate::session::Session;
 
 enum Event {
     Message(
-        String,
+        Vec<u8>,
         Message,
         Option<Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>>,
     ),
@@ -40,15 +38,13 @@ pub struct Websocket {
     write_tx: Sender<Event>,
     write_rx: Receiver<Event>,
     runtime: Runtime,
-    inboxes: Vec<KeyPair>,
+    subscriptions: Vec<Subscription>,
 }
 
 impl Websocket {
     pub fn new(
         url: &str,
-        self_id: &str,
-        device_id: &str,
-        signing_key: KeyPair,
+        subscriptions: Vec<Subscription>,
     ) -> std::result::Result<Websocket, SelfError> {
         let endpoint = match Url::parse(url) {
             Ok(endpoint) => endpoint,
@@ -67,14 +63,13 @@ impl Websocket {
             write_tx: write_tx,
             write_rx: write_rx,
             runtime: runtime,
-            inboxes: Vec::new(),
+            subscriptions: subscriptions,
         };
 
         return Ok(ws);
     }
 
-    /*
-    pub fn connect(&mut self, offset: i64) -> std::result::Result<(), SelfError> {
+    pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
         let handle = self.runtime.handle();
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
@@ -85,7 +80,7 @@ impl Websocket {
 
         let (tx, rx) = channel::bounded(1);
         let requests: Arc<
-            Mutex<HashMap<String, Arc<dyn Fn(Result<(), SelfError>) + Send + Sync>>>,
+            Mutex<HashMap<Vec<u8>, Arc<dyn Fn(Result<(), SelfError>) + Send + Sync>>>,
         > = Arc::new(Mutex::new(HashMap::new()));
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
@@ -133,13 +128,9 @@ impl Websocket {
                     let event = crate::protocol::root_as_event(&data)
                         .expect("Failed to process websocket event");
 
-                    /*
                     match event.type_() {
-                        crate::protocol::MsgType::ACK => {
-                            let notification = crate::protocol::root_as_notification(&data)
-                                .expect("Failed to process notification event");
-
-                            if let Some(id) = notification.id() {
+                        protocol::ContentType::ACKNOWLEDGEMENT => {
+                            if let Some(id) = event.id() {
                                 let lock = requests_rx.lock().await;
 
                                 if let Some(callback) = lock.get(id) {
@@ -149,35 +140,52 @@ impl Websocket {
                                 drop(lock);
                             }
                         }
-                        crate::protocol::MsgType::ERR => {
-                            let notification = crate::protocol::root_as_notification(&data)
-                                .expect("Failed to process notification event");
+                        protocol::ContentType::ERROR => {
+                            let error = match event.content() {
+                                Some(content) => flatbuffers::root::<protocol::Error>(content)
+                                    .expect("Failed to process websocket error content"),
+                                None => continue,
+                            };
 
-                            if let Some(id) = notification.id() {
-                                let lock = requests_rx.lock().await;
+                            println!("code: {} message: {:?}", error.code().0, error.error());
 
-                                if let Some(callback) = lock.get(id) {
-                                    // TODO implement correct error handling here
-                                    callback(Err(SelfError::RestRequestConnectionFailed));
-                                }
+                            let event_id = match event.id() {
+                                Some(id) => id,
+                                None => continue,
+                            };
 
-                                drop(lock);
+                            let lock = requests_rx.lock().await;
+
+                            if let Some(callback) = lock.get(event_id) {
+                                // TODO replace this with a proper error
+                                callback(Err(SelfError::WebsocketProtocolErrorUnknown));
                             }
-                        }
-                        crate::protocol::MsgType::MSG => {
-                            let message = crate::protocol::root_as_message(&data)
-                                .expect("Failed to process message event");
 
-                            read_tx
-                                .send((
-                                    message.sender().unwrap().as_bytes().to_vec(),
-                                    message.ciphertext().unwrap().to_vec(),
-                                ))
-                                .unwrap_or_else(|_| return);
+                            drop(lock);
+                        }
+                        protocol::ContentType::MESSAGE => {
+                            if let Some(content) = event.content() {
+                                let message = flatbuffers::root::<protocol::Message>(content)
+                                    .expect("Failed to process websocket message content");
+
+                                let payload = match message.payload() {
+                                    Some(payload) => {
+                                        flatbuffers::root::<protocol::Payload>(payload)
+                                            .expect("Failed to process websocket message content")
+                                    }
+                                    None => continue,
+                                };
+
+                                read_tx
+                                    .send((
+                                        payload.sender().unwrap().to_vec(),
+                                        payload.content().unwrap().to_vec(),
+                                    ))
+                                    .unwrap_or_else(|_| return);
+                            }
                         }
                         _ => {}
                     }
-                     */
                 }
             }
         });
@@ -204,7 +212,9 @@ impl Websocket {
         });
 
         let (tx, rx) = channel::bounded(1);
-        //let (event_id, auth_message) = self.authenticate_message(offset)?;
+
+        let (event_id, event_subscribe) = self.assemble_subscription(&self.subscriptions)?;
+
         let deadline = Instant::now() + Duration::from_secs(5);
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {
@@ -215,7 +225,7 @@ impl Websocket {
         self.write_tx
             .send(Event::Message(
                 event_id,
-                Message::Binary(auth_message),
+                Message::Binary(event_subscribe),
                 Some(callback),
             ))
             .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
@@ -234,55 +244,40 @@ impl Websocket {
 
     pub fn send(
         &self,
-        recipients: Vec<&str>,
-        message_type: &str,
-        priority: u32,
-        ciphertext: &[u8],
+        from: &Identifier,
+        to: &Identifier,
+        sequence: u64,
+        content: &[u8],
+        tokens: Option<Vec<Token>>,
         callback: Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>,
     ) {
-        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-
-        for recipient in &recipients {
-            builder.reset();
-
-            let event_id = crate::transport::uuid();
-
-            let id = builder.create_string(&event_id);
-            let sender = builder.create_string(&self.sender_id);
-            let recipient = builder.create_string(&recipient);
-            let message_type = builder.create_vector(message_type.as_bytes());
-            let ciphertext = builder.create_vector(ciphertext);
-
-            let message = protocol::Message::create(
-                &mut builder,
-                &protocol::MessageArgs {
-                    id: Some(id),
-                    msgtype: protocol::MsgType::MSG,
-                    subtype: protocol::MsgSubType::Unknown,
-                    sender: Some(sender),
-                    recipient: Some(recipient),
-                    message_type: Some(message_type),
-                    ciphertext: Some(ciphertext),
-                    priority: priority,
-                    collapse_key: None,
-                    notification_payload: None,
-                    metadata: Some(&protocol::Metadata::new(0, 0)),
-                },
-            );
-
-            builder.finish(message, None);
-
-            let msg = Vec::from(builder.finished_data());
-
-            let event = Event::Message(event_id, Message::Binary(msg), Some(Arc::clone(&callback)));
-
-            if let Err(_) = self.write_tx.send(event) {
-                // TODO handle this error properly
-                callback(Err(SelfError::RestRequestConnectionTimeout));
+        let payload = match self.assemble_payload(from, to, sequence, content) {
+            Ok(payload) => payload,
+            Err(err) => {
+                callback(Err(err));
+                return;
             }
+        };
+
+        let (event_id, event_message) = match self.assemble_message(from, &payload, tokens) {
+            Ok(event) => event,
+            Err(err) => {
+                callback(Err(err));
+                return;
+            }
+        };
+
+        let event = Event::Message(
+            event_id,
+            Message::Binary(event_message),
+            Some(Arc::clone(&callback)),
+        );
+
+        if let Err(_) = self.write_tx.send(event) {
+            // TODO handle this error properly
+            callback(Err(SelfError::RestRequestConnectionTimeout));
         }
     }
-    */
 
     pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
         return self
@@ -465,8 +460,7 @@ impl Websocket {
 
             builder.reset();
 
-            let signer = builder.create_vector(&subscription.identifier.id());
-            let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf));
+            let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf[1..]));
 
             let mut sigs = Vec::new();
 
@@ -474,7 +468,7 @@ impl Websocket {
                 &mut builder,
                 &protocol::SignatureArgs {
                     type_: protocol::SignatureType::PAYLOAD,
-                    signer: Some(signer),
+                    signer: None,
                     signature: Some(sig),
                 },
             ));
@@ -541,10 +535,9 @@ impl Websocket {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
-    use crate::protocol::MsgSubType;
+    use crate::{keypair::signing::PublicKey, protocol};
 
     use super::*;
     use futures_util::stream::SplitSink;
@@ -556,24 +549,23 @@ mod tests {
     use tokio_tungstenite::tungstenite::protocol::Message;
     use tokio_tungstenite::{accept_async, WebSocketStream};
 
-    async fn ack<S>(socket_tx: &mut SplitSink<WebSocketStream<S>, Message>, id: &str)
+    async fn ack<S>(socket_tx: &mut SplitSink<WebSocketStream<S>, Message>, id: &[u8])
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-        let id = builder.create_string(id);
+        let id = builder.create_vector(id);
 
-        let notification = protocol::Notification::create(
+        let event = protocol::Event::create(
             &mut builder,
-            &protocol::NotificationArgs {
-                msgtype: protocol::MsgType::ACK,
+            &protocol::EventArgs {
                 id: Some(id),
-                error: None,
-                errtype: crate::protocol::ErrType::ErrACL, // TODO define an ErrNone
+                type_: protocol::ContentType::ACKNOWLEDGEMENT,
+                content: None,
             },
         );
 
-        builder.finish(notification, None);
+        builder.finish(event, None);
 
         (*socket_tx)
             .send(Message::binary(builder.finished_data()))
@@ -581,25 +573,42 @@ mod tests {
             .expect("Failed to send ACK");
     }
 
-    async fn err<S>(socket_tx: &mut SplitSink<WebSocketStream<S>, Message>, id: &str, reason: &str)
-    where
+    async fn err<S>(
+        socket_tx: &mut SplitSink<WebSocketStream<S>, Message>,
+        id: &[u8],
+        reason: &[u8],
+    ) where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-        let id = builder.create_string(id);
-        let err = builder.create_string(reason);
 
-        let notification = protocol::Notification::create(
+        let reason = builder.create_vector(reason);
+
+        let error = protocol::Error::create(
             &mut builder,
-            &protocol::NotificationArgs {
-                msgtype: protocol::MsgType::ERR,
-                id: Some(id),
-                error: Some(err),
-                errtype: crate::protocol::ErrType::ErrConnection, // TODO define an ErrNone
+            &protocol::ErrorArgs {
+                code: protocol::StatusCode::BADAUTH,
+                error: Some(reason),
             },
         );
 
-        builder.finish(notification, None);
+        builder.finish(error, None);
+        let content = builder.finished_data().to_vec();
+        builder.reset();
+
+        let id = builder.create_vector(id);
+        let content = builder.create_vector(&content);
+
+        let event = protocol::Event::create(
+            &mut builder,
+            &protocol::EventArgs {
+                id: Some(id),
+                type_: protocol::ContentType::ACKNOWLEDGEMENT,
+                content: Some(content),
+            },
+        );
+
+        builder.finish(event, None);
 
         (*socket_tx)
             .send(Message::binary(builder.finished_data()))
@@ -609,36 +618,91 @@ mod tests {
 
     async fn msg<S>(
         socket_tx: &mut SplitSink<WebSocketStream<S>, Message>,
-        sender: &str,
-        recipient: &str,
-        ciphertext: &str,
+        from: &Identifier,
+        to: &Identifier,
+        sequence: u64,
+        content: &[u8],
     ) where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-        let id = builder.create_string(&crate::transport::uuid());
-        let sender = builder.create_string(sender);
-        let recipient = builder.create_string(recipient);
-        let ciphertext = builder.create_vector(ciphertext.as_bytes());
 
-        let message = protocol::Message::create(
+        let owned_identifier = match from {
+            Identifier::Owned(owned) => owned,
+            _ => return,
+        };
+
+        // TODO pool/reuse these builders
+        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+        let sender = builder.create_vector(&from.id());
+        let recipient = builder.create_vector(&to.id());
+        let content = builder.create_vector(content);
+
+        let payload = protocol::Payload::create(
             &mut builder,
-            &protocol::MessageArgs {
-                msgtype: protocol::MsgType::MSG,
-                id: Some(id),
+            &protocol::PayloadArgs {
                 sender: Some(sender),
                 recipient: Some(recipient),
-                ciphertext: Some(ciphertext),
-                subtype: MsgSubType::Unknown,
-                priority: 0,
-                message_type: None,
-                collapse_key: None,
-                notification_payload: None,
-                metadata: Some(&protocol::Metadata::new(0, 0)),
+                content: Some(content),
+                sequence: sequence,
+                timestamp: crate::time::unix(),
             },
         );
 
-        builder.finish(message, None);
+        builder.finish(payload, None);
+        let payload = builder.finished_data().to_vec();
+        builder.reset();
+
+        let mut payload_sig_buf = vec![0; payload.len() + 1];
+        payload_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+        payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
+        let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
+
+        let mut signatures = Vec::new();
+
+        signatures.push(protocol::Signature::create(
+            &mut builder,
+            &protocol::SignatureArgs {
+                type_: protocol::SignatureType::PAYLOAD,
+                signer: None,
+                signature: Some(sig),
+            },
+        ));
+
+        let pld = builder.create_vector(&payload);
+        let sigs = builder.create_vector(&signatures);
+
+        let msg = protocol::Message::create(
+            &mut builder,
+            &protocol::MessageArgs {
+                payload: Some(pld),
+                signatures: Some(sigs),
+                pow: None,
+            },
+        );
+
+        builder.finish(msg, None);
+
+        let content = builder.finished_data().to_vec();
+
+        builder.reset();
+
+        let event_id = crate::crypto::random_id();
+
+        let eid = builder.create_vector(&event_id);
+        let cnt = builder.create_vector(&content);
+
+        let event = protocol::Event::create(
+            &mut builder,
+            &protocol::EventArgs {
+                id: Some(eid),
+                type_: protocol::ContentType::MESSAGE,
+                content: Some(cnt),
+            },
+        );
+
+        builder.finish(event, None);
 
         (*socket_tx)
             .send(Message::binary(builder.finished_data()))
@@ -654,51 +718,92 @@ mod tests {
     {
         let (mut socket_tx, mut socket_rx) = connection.split();
 
-        let auth_message = socket_rx
+        let event = socket_rx
             .next()
             .await
             .unwrap()
             .expect("Failed to read message");
 
-        if !auth_message.is_binary() {
+        if !event.is_binary() {
             println!("Wrong message type received");
             socket_tx.close().await.expect("Closing socket failed");
             return;
         }
 
-        let auth_message = auth_message.into_data();
-        let auth_message =
-            crate::protocol::root_as_auth(&auth_message).expect("Failed to read auth message");
+        let event = event.into_data();
+        let event = protocol::root_as_event(&event).expect("Failed to read auth message");
+        let content = event.content().expect("Subscribe event missing content");
+        let subscribe =
+            flatbuffers::root::<protocol::Subscribe>(content).expect("Subscribe event invalid");
 
-        let auth_token = auth_message
-            .token()
-            .expect("Auth message was missing token");
-        let auth_token = crate::message::Message::from_jwt(auth_token.as_bytes())
-            .expect("Auth token was invalid");
+        for subscription in subscribe
+            .subscriptions()
+            .expect("Subscribe subscriptions empty")
+        {
+            let details_buf = subscription.details().expect("Subscription details empty");
+            let details_len = details_buf.len();
+            let signatures = subscription
+                .signatures()
+                .expect("Subscription signatures empty");
 
-        // we default to the public key as the signing key id for keys generated with this library, so no need to lookup
-        let signing_key_id = auth_token.signing_key_ids().unwrap();
-        let signing_key_id = signing_key_id.first().unwrap();
-        let signing_key = crate::keypair::signing::PublicKey::import(
-            signing_key_id,
-            crate::keypair::Algorithm::Ed25519,
-            signing_key_id,
-        )
-        .expect("Invalid auth token signing key");
+            let details = flatbuffers::root::<protocol::SubscriptionDetails>(details_buf)
+                .expect("Subscription details invalid");
+            let inbox = details.inbox().expect("Subscription inbox missing");
 
-        if auth_token.verify(&signing_key).is_err() {
-            err(
-                &mut socket_tx,
-                auth_message.id().unwrap(),
-                "invalid token signature",
-            )
-            .await;
-            socket_tx.close().await.expect("Closing socket failed");
-            return;
-        };
+            let (mut authenticated, mut authorized) = (false, false);
+            let mut subscriber: Option<&[u8]> = None;
 
-        ack(&mut socket_tx, auth_message.id().unwrap()).await;
+            // validate the subscriptions signatures
+            for signature in signatures {
+                let sig = signature.signature().expect("Subscription signature empty");
 
+                match signature.type_() {
+                    protocol::SignatureType::PAYLOAD => {
+                        // authenticate the subscriber over the subscriptions details
+                        let signer = signature
+                            .signer()
+                            .expect("Subscription payload signer missing");
+
+                        let mut details_sig_buf = vec![0; details_len + 1];
+                        details_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+                        details_sig_buf[1..details_len + 1].copy_from_slice(details_buf);
+
+                        let pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)
+                            .expect("Subscription signer invalid");
+                        assert!(pk.verify(&details_sig_buf, sig));
+
+                        if inbox == signer {
+                            (authenticated, authorized) = (true, true);
+                            break;
+                        }
+
+                        subscriber = Some(signer);
+
+                        authenticated = true;
+                    }
+                    protocol::SignatureType::SUBSCRIPTION => {
+                        let mut subscription_sig_buf = vec![0; 65];
+                        subscription_sig_buf[0] = protocol::SignatureType::SUBSCRIPTION.0 as u8;
+                        subscription_sig_buf[1..33].copy_from_slice(inbox);
+                        subscription_sig_buf[33..65]
+                            .copy_from_slice(subscriber.expect("Subscriber empty"));
+
+                        let pk = PublicKey::from_bytes(inbox, crate::keypair::Algorithm::Ed25519)
+                            .expect("Subscription signer invalid");
+                        assert!(pk.verify(&subscription_sig_buf, sig));
+
+                        authorized = true;
+                    }
+                    _ => continue, // skip other signature types for now
+                }
+            }
+
+            assert!(authenticated && authorized);
+        }
+
+        ack(&mut socket_tx, event.id().unwrap()).await;
+
+        /*
         let self_id = auth_token.get_field("iss").unwrap().as_str().unwrap();
         let device_id = auth_message.device().unwrap();
         let recipient = format!("{}:{}", self_id, device_id);
@@ -706,6 +811,7 @@ mod tests {
         for _ in 0..auth_message.offset() {
             msg(&mut socket_tx, "alice:device", &recipient, "test message").await;
         }
+        */
 
         let mut messages = vec![];
 
@@ -715,11 +821,21 @@ mod tests {
             if m.is_binary() {
                 let data = m.into_data().clone();
 
-                let m = crate::protocol::root_as_message(&data).expect("Failed to parse message");
+                let event = protocol::root_as_event(&data).expect("Event invalid");
+                let content = event.content().expect("Event content missing");
+                let message = flatbuffers::root::<protocol::Message>(content)
+                    .expect("Failed to process websocket message content");
 
-                if m.recipient().unwrap() == "alice:device" {
-                    ack(&mut socket_tx, m.id().unwrap()).await;
-                    messages.push(m.ciphertext().unwrap().to_vec());
+                let payload = match message.payload() {
+                    Some(payload) => flatbuffers::root::<protocol::Payload>(payload)
+                        .expect("Failed to process websocket message content"),
+                    None => continue,
+                };
+
+                // TODO validate message authentication and authorization
+                if payload.recipient().is_some() {
+                    ack(&mut socket_tx, event.id().unwrap()).await;
+                    messages.push(payload.content().unwrap().to_vec());
                 }
             }
         }
@@ -754,19 +870,29 @@ mod tests {
     fn send_and_receive() {
         let (rt, msg_rx) = test_server();
 
-        let kp = KeyPair::new();
+        let alice_kp = crate::keypair::signing::KeyPair::new();
+        let alice_id = Identifier::Owned(alice_kp);
+        let subs = vec![Subscription {
+            identifier: alice_id.clone(),
+            from: crate::time::unix(),
+            token: None,
+        }];
+
+        let bob_kp = crate::keypair::signing::KeyPair::new();
+        let bob_id = Identifier::Referenced(bob_kp.public());
 
         // connect
-        let mut ws = Websocket::new("ws://localhost:12345", "self_id", "device_id", kp).unwrap();
-        ws.connect(1).unwrap();
+        let mut ws = Websocket::new("ws://localhost:12345", subs).unwrap();
+        ws.connect().unwrap();
 
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
 
         ws.send(
-            vec!["alice:device"],
-            "chat.message",
+            &alice_id,
+            &bob_id,
             0,
-            "test-message".as_bytes(),
+            b"test-message",
+            None,
             Arc::new(move |result: Result<(), SelfError>| {
                 response_tx.send(result).expect("Failed to send result");
             }),
@@ -786,14 +912,13 @@ mod tests {
         assert_eq!(msgs.len(), 1);
 
         let msg = msgs.get(0).unwrap().clone();
-        assert_eq!(msg, Vec::from("test-message"));
+        assert_eq!(msg, Vec::from("test message"));
 
         let (sender, ciphertext) = ws.receive().expect("Failed to receive message");
 
-        assert_eq!(sender, Vec::from("alice:device"));
+        assert_eq!(sender, alice_id.id());
         assert_eq!(ciphertext, Vec::from("test message"));
 
         rt.shutdown_background();
     }
 }
-*/
