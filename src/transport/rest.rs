@@ -1,3 +1,4 @@
+use chrono::Duration;
 use reqwest::blocking::{Client, Request};
 use reqwest::Url;
 
@@ -6,7 +7,6 @@ use crate::keypair::signing::KeyPair;
 
 pub struct Rest {
     client: reqwest::blocking::Client,
-    identity: String,
     signing_key: KeyPair,
 }
 
@@ -16,10 +16,9 @@ pub struct Response {
 }
 
 impl Rest {
-    pub fn new(identity: &str, signing_key: KeyPair) -> Rest {
+    pub fn new(signing_key: KeyPair) -> Rest {
         return Rest {
             client: Client::new(),
-            identity: String::from(identity),
             signing_key: signing_key,
         };
     }
@@ -41,18 +40,23 @@ impl Rest {
     }
 
     fn authorization(&self, headers: &mut reqwest::header::HeaderMap) {
-        let mut token = crate::message::Message::new(
-            "auth.token",
-            &self.identity,
-            &self.identity,
-            Some(std::time::Duration::from_secs(30)),
-            true,
-        );
+        let mut token = crate::message::Message::new();
 
-        token.sign(&self.signing_key).expect("wont fail");
-        let jwt = token.to_jwt().unwrap();
+        token.subject_set(&self.signing_key.id());
+        token.type_set("authorization");
+        token.cti_set(&crate::crypto::random_id());
 
-        let authorization = reqwest::header::HeaderValue::from_str(&jwt);
+        token
+            .sign(
+                &self.signing_key,
+                Some((crate::time::now() + Duration::seconds(10)).timestamp()),
+            )
+            .expect("signing token failed unexpectedly");
+
+        let cws = token.encode().expect("encoding tokne failed unexpectedly");
+        let cws_encoded = base64::encode_config(cws, base64::URL_SAFE_NO_PAD);
+
+        let authorization = reqwest::header::HeaderValue::from_str(&cws_encoded);
         headers.insert("Authorization", authorization.unwrap());
     }
 
@@ -138,7 +142,7 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new("my-self-identity", kp);
+        let client = Rest::new(kp);
 
         let url = server.url_str("/v1/identities");
 
@@ -170,7 +174,7 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new("my-self-identity", kp);
+        let client = Rest::new(kp);
 
         let url = server.url_str("/v1/identities");
 
@@ -202,7 +206,7 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new("my-self-identity", kp);
+        let client = Rest::new(kp);
 
         let url = server.url_str("/v1/identities");
 
@@ -233,7 +237,7 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new("my-self-identity", kp);
+        let client = Rest::new(kp);
 
         let url = server.url_str("/v1/identities");
 

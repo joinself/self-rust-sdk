@@ -129,7 +129,7 @@ impl Group {
         let key_and_nonce = [key_buf, nonce_buf].concat();
 
         for p in &mut self.participants {
-            let session = p.session.lock().map_err(|_| SelfError::CryptoUnknown)?;
+            let mut session = p.session.lock().map_err(|_| SelfError::CryptoUnknown)?;
             let (mtype, ciphertext) = session.encrypt(&key_and_nonce)?;
             drop(session);
             group_message.set_recipient_ciphertext(&p.id, mtype, &ciphertext);
@@ -162,7 +162,7 @@ impl Group {
         let mut plaintext_buf = vec![0u8; plaintext_len as usize].into_boxed_slice();
 
         unsafe {
-            let session = sender
+            let mut session = sender
                 .session
                 .lock()
                 .map_err(|_| SelfError::CryptoUnknown)?;

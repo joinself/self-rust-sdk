@@ -1,19 +1,22 @@
 use crossbeam::channel;
 use crossbeam::channel::{Receiver, Sender};
-use futures_util::{SinkExt, StreamExt};
+//use futures_util::{SinkExt, StreamExt};
 use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
-use tokio_tungstenite::connect_async;
+//use tokio::sync::Mutex;
+//use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
-use std::collections::HashMap;
+//use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+//use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
+use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
 use crate::protocol;
+use crate::token::Token;
+//use crate::session::Session;
 
 enum Event {
     Message(
@@ -26,15 +29,12 @@ enum Event {
 
 pub struct Websocket {
     endpoint: Url,
-    self_id: String,
-    device_id: String,
-    sender_id: String,
-    signing_key: KeyPair,
     read_tx: Sender<(Vec<u8>, Vec<u8>)>,
     read_rx: Receiver<(Vec<u8>, Vec<u8>)>,
     write_tx: Sender<Event>,
     write_rx: Receiver<Event>,
     runtime: Runtime,
+    inboxes: Vec<KeyPair>,
 }
 
 impl Websocket {
@@ -56,20 +56,18 @@ impl Websocket {
 
         let ws = Websocket {
             endpoint: endpoint,
-            self_id: String::from(self_id),
-            device_id: String::from(device_id),
-            sender_id: format!("{}:{}", self_id, device_id),
-            signing_key: signing_key,
             read_tx: read_tx,
             read_rx: read_rx,
             write_tx: write_tx,
             write_rx: write_rx,
             runtime: runtime,
+            inboxes: Vec::new(),
         };
 
         return Ok(ws);
     }
 
+    /*
     pub fn connect(&mut self, offset: i64) -> std::result::Result<(), SelfError> {
         let handle = self.runtime.handle();
         let endpoint = self.endpoint.clone();
@@ -126,10 +124,11 @@ impl Websocket {
                 if event.is_binary() {
                     let data = event.into_data();
 
-                    let header = crate::protocol::root_as_header(&data)
+                    let event = crate::protocol::root_as_event(&data)
                         .expect("Failed to process websocket event");
 
-                    match header.msgtype() {
+                    /*
+                    match event.type_() {
                         crate::protocol::MsgType::ACK => {
                             let notification = crate::protocol::root_as_notification(&data)
                                 .expect("Failed to process notification event");
@@ -172,6 +171,7 @@ impl Websocket {
                         }
                         _ => {}
                     }
+                     */
                 }
             }
         });
@@ -198,7 +198,7 @@ impl Websocket {
         });
 
         let (tx, rx) = channel::bounded(1);
-        let (event_id, auth_message) = self.authenticate_message(offset)?;
+        //let (event_id, auth_message) = self.authenticate_message(offset)?;
         let deadline = Instant::now() + Duration::from_secs(5);
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {
@@ -224,43 +224,6 @@ impl Websocket {
             .write_tx
             .send(Event::Done)
             .map_err(|_| SelfError::RestRequestConnectionFailed);
-    }
-
-    fn authenticate_message(&mut self, offset: i64) -> Result<(String, Vec<u8>), SelfError> {
-        let mut token = crate::message::Message::new(
-            "auth.token",
-            &self.self_id,
-            &self.self_id,
-            Some(std::time::Duration::from_secs(5)),
-            true,
-        );
-
-        token.sign(&self.signing_key)?;
-        let token = token.to_jwt()?;
-
-        let event_id = crate::transport::uuid();
-
-        // TODO avoid allocating these each time
-        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-
-        let id = builder.create_string(&event_id);
-        let token = builder.create_string(&token);
-        let device = builder.create_string(&self.device_id);
-
-        let auth = protocol::Auth::create(
-            &mut builder,
-            &protocol::AuthArgs {
-                msgtype: protocol::MsgType::AUTH,
-                id: Some(id),
-                device: Some(device),
-                token: Some(token),
-                offset: offset,
-            },
-        );
-
-        builder.finish(auth, None);
-
-        return Ok((event_id, Vec::from(builder.finished_data())));
     }
 
     pub fn send(
@@ -313,6 +276,148 @@ impl Websocket {
             }
         }
     }
+    */
+
+    pub fn assemble_payload(
+        &self,
+        from: &Identifier,
+        to: &Identifier,
+        sequence: u64,
+        content: &[u8],
+    ) -> Result<Vec<u8>, SelfError> {
+        match from {
+            Identifier::Owned(_) => {}
+            _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
+        }
+
+        // TODO pool/reuse these builders
+        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+        let sender = builder.create_vector(&from.id());
+        let recipient = builder.create_vector(&to.id());
+        let content = builder.create_vector(content);
+
+        let payload = protocol::Payload::create(
+            &mut builder,
+            &protocol::PayloadArgs {
+                sender: Some(sender),
+                recipient: Some(recipient),
+                content: Some(content),
+                sequence: sequence,
+                timestamp: crate::time::unix(),
+            },
+        );
+
+        builder.finish(payload, None);
+
+        return Ok(builder.finished_data().to_vec());
+    }
+
+    pub fn assemble_message(
+        &self,
+        from: &Identifier,
+        payload: &[u8],
+        tokens: Option<Vec<Token>>,
+    ) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+        let owned_identifier = match from {
+            Identifier::Owned(owned) => owned,
+            _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
+        };
+
+        // TODO pool/reuse these builders
+        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+        let mut payload_sig_buf = vec![0; payload.len() + 1];
+        payload_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+        payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
+        let payload_sig = owned_identifier.sign(&payload_sig_buf);
+
+        let mut signatures = Vec::new();
+
+        let sig = builder.create_vector(&payload_sig);
+
+        signatures.push(protocol::Signature::create(
+            &mut builder,
+            &protocol::SignatureArgs {
+                type_: protocol::SignatureType::PAYLOAD,
+                signer: None,
+                signature: Some(sig),
+            },
+        ));
+
+        if let Some(tokens) = tokens {
+            for token in &tokens {
+                match token {
+                    Token::Authorization(auth) => {
+                        let sig = builder.create_vector(&auth.token);
+
+                        signatures.push(protocol::Signature::create(
+                            &mut builder,
+                            &protocol::SignatureArgs {
+                                type_: protocol::SignatureType::AUTH,
+                                signer: None,
+                                signature: Some(sig),
+                            },
+                        ));
+                    }
+                    Token::Delegation(delegation) => {
+                        let sig = builder.create_vector(&delegation.token);
+                        let iss = builder.create_vector(&delegation.issuer.id());
+
+                        signatures.push(protocol::Signature::create(
+                            &mut builder,
+                            &protocol::SignatureArgs {
+                                type_: protocol::SignatureType::AUTH,
+                                signer: Some(iss),
+                                signature: Some(sig),
+                            },
+                        ));
+                    }
+                    _ => {
+                        return Err(SelfError::WebsocketTokenUnsupported);
+                    }
+                }
+            }
+        } else {
+            // TODO generate proof of work ...
+        }
+
+        let pld = builder.create_vector(payload);
+        let sigs = builder.create_vector(&signatures);
+
+        let msg = protocol::Message::create(
+            &mut builder,
+            &protocol::MessageArgs {
+                payload: Some(pld),
+                signatures: Some(sigs),
+                pow: None,
+            },
+        );
+
+        builder.finish(msg, None);
+
+        let content = builder.finished_data().to_vec();
+
+        builder.reset();
+
+        let event_id = crate::crypto::random_id();
+
+        let eid = builder.create_vector(&event_id);
+        let cnt = builder.create_vector(&content);
+
+        let event = protocol::Event::create(
+            &mut builder,
+            &protocol::EventArgs {
+                id: Some(eid),
+                type_: protocol::ContentType::MESSAGE,
+                content: Some(cnt),
+            },
+        );
+
+        builder.finish(event, None);
+
+        return Ok((event_id, builder.finished_data().to_vec()));
+    }
 
     pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
         return self
@@ -322,6 +427,7 @@ impl Websocket {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use crate::protocol::MsgSubType;
@@ -576,3 +682,4 @@ mod tests {
         rt.shutdown_background();
     }
 }
+*/
