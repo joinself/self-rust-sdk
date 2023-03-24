@@ -162,11 +162,11 @@ impl Group {
         let mut plaintext_buf = vec![0u8; plaintext_len as usize].into_boxed_slice();
 
         unsafe {
-            let session = sender.session.lock().map_err(|_| SelfError::CryptoUnknown)?;
-            let key_and_nonce = session.decrypt(
-                message.mtype, 
-                &mut message.ciphertext
-            )?;
+            let session = sender
+                .session
+                .lock()
+                .map_err(|_| SelfError::CryptoUnknown)?;
+            let key_and_nonce = session.decrypt(message.mtype, &mut message.ciphertext)?;
             drop(session);
 
             let status = sodium_sys::crypto_aead_xchacha20poly1305_ietf_decrypt(
