@@ -27,6 +27,12 @@ enum Event {
     Done,
 }
 
+pub struct Subscription {
+    pub identifier: Identifier,
+    pub from: i64,
+    pub token: Option<Token>,
+}
+
 pub struct Websocket {
     endpoint: Url,
     read_tx: Sender<(Vec<u8>, Vec<u8>)>,
@@ -278,6 +284,13 @@ impl Websocket {
     }
     */
 
+    pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+        return self
+            .read_rx
+            .recv()
+            .map_err(|_| SelfError::RestRequestConnectionTimeout);
+    }
+
     pub fn assemble_payload(
         &self,
         from: &Identifier,
@@ -330,11 +343,9 @@ impl Websocket {
         let mut payload_sig_buf = vec![0; payload.len() + 1];
         payload_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
         payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
-        let payload_sig = owned_identifier.sign(&payload_sig_buf);
+        let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
 
         let mut signatures = Vec::new();
-
-        let sig = builder.create_vector(&payload_sig);
 
         signatures.push(protocol::Signature::create(
             &mut builder,
@@ -419,11 +430,114 @@ impl Websocket {
         return Ok((event_id, builder.finished_data().to_vec()));
     }
 
-    pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
-        return self
-            .read_rx
-            .recv()
-            .map_err(|_| SelfError::RestRequestConnectionTimeout);
+    fn assemble_subscription(
+        &self,
+        subscriptions: &[Subscription],
+    ) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+        let mut subs = Vec::new();
+        let now = crate::time::unix();
+
+        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+        for subscription in subscriptions {
+            let owned_identifier = match &subscription.identifier {
+                Identifier::Owned(owned) => owned,
+                _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
+            };
+
+            let inbox = builder.create_vector(&subscription.identifier.id());
+
+            let details = protocol::SubscriptionDetails::create(
+                &mut builder,
+                &protocol::SubscriptionDetailsArgs {
+                    inbox: Some(inbox),
+                    issued: now,
+                    from: subscription.from,
+                },
+            );
+
+            builder.finish(details, None);
+
+            let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
+            details_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+            details_sig_buf[1..builder.finished_data().len() + 1]
+                .copy_from_slice(builder.finished_data());
+
+            builder.reset();
+
+            let signer = builder.create_vector(&subscription.identifier.id());
+            let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf));
+
+            let mut sigs = Vec::new();
+
+            sigs.push(protocol::Signature::create(
+                &mut builder,
+                &protocol::SignatureArgs {
+                    type_: protocol::SignatureType::PAYLOAD,
+                    signer: Some(signer),
+                    signature: Some(sig),
+                },
+            ));
+
+            if let Some(token) = &subscription.token {
+                let subscription_token = match token {
+                    Token::Subscription(subscription_token) => subscription_token,
+                    _ => return Err(SelfError::WebsocketTokenUnsupported),
+                };
+
+                let sig = builder.create_vector(&subscription_token.token);
+
+                sigs.push(protocol::Signature::create(
+                    &mut builder,
+                    &protocol::SignatureArgs {
+                        type_: protocol::SignatureType::SUBSCRIPTION,
+                        signer: None,
+                        signature: Some(sig),
+                    },
+                ));
+            }
+
+            let signatures = builder.create_vector(&sigs);
+            let details = builder.create_vector(&details_sig_buf);
+
+            subs.push(protocol::Subscription::create(
+                &mut builder,
+                &protocol::SubscriptionArgs {
+                    details: Some(details),
+                    signatures: Some(signatures),
+                },
+            ))
+        }
+
+        let subs = builder.create_vector(&subs);
+
+        let subscribe = protocol::Subscribe::create(
+            &mut builder,
+            &protocol::SubscribeArgs {
+                subscriptions: Some(subs),
+            },
+        );
+
+        builder.finish(subscribe, None);
+
+        let content = builder.finished_data().to_vec();
+        let event_id = crate::crypto::random_id();
+
+        let eid = builder.create_vector(&event_id);
+        let cnt = builder.create_vector(&content);
+
+        let event = protocol::Event::create(
+            &mut builder,
+            &protocol::EventArgs {
+                id: Some(eid),
+                type_: protocol::ContentType::MESSAGE,
+                content: Some(cnt),
+            },
+        );
+
+        builder.finish(event, None);
+
+        return Ok((event_id, builder.finished_data().to_vec()));
     }
 }
 
