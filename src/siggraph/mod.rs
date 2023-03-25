@@ -2,7 +2,7 @@
 
 pub mod graph;
 mod node;
-mod schema;
+mod siggraph;
 
 pub use self::graph::*;
-pub use self::schema::schema::*;
+pub use self::siggraph::siggraph::*;

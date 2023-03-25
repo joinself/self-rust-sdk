@@ -81,6 +81,10 @@ pub enum SelfError {
     StorageTransactionCreationFailed,
     StorageTransactionCommitFailed,
     StorageTransactionRollbackFailed,
+    WebsocketSenderIdentifierNotOwned,
+    WebsocketTokenUnsupported,
+    WebsocketProtocolEncodingInvalid,
+    WebsocketProtocolErrorUnknown,
 }
 
 impl std::error::Error for SelfError {}
@@ -189,6 +193,10 @@ impl fmt::Display for SelfError {
             SelfError::StorageTransactionCreationFailed => write!(f, "Storage transaction creation failed"),
             SelfError::StorageTransactionCommitFailed => write!(f, "Storage transaction commit failed"),
             SelfError::StorageTransactionRollbackFailed => write!(f, "Storage transaction rollback failed"),
+            SelfError::WebsocketSenderIdentifierNotOwned => write!(f, "Websocket cannot send from an identifier that does not belong to this account"),
+            SelfError::WebsocketTokenUnsupported => write!(f, "Websocket send attempted with an unsupported token"),
+            SelfError::WebsocketProtocolEncodingInvalid => write!(f, "Websocket protocol event could not be decoded"),
+            SelfError::WebsocketProtocolErrorUnknown => write!(f, "Websocket protocol error code is unknown"),
         }
     }
 }

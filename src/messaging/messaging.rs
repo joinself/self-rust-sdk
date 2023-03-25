@@ -13,9 +13,9 @@ pub struct Messaging {
     storage: Storage,
     websocket: Websocket,
     //rest: Rest,
-    //lock: Mutex<()>,
-    gcache: HashMap<Vec<u8>, Group>,
-    // scache: HashMap<Vec<u8>, Session>,
+    lock: Mutex<()>,
+    gcache: HashMap<Identifier, Group>,
+    scache: HashMap<Identifier, Session>,
 }
 
 impl Messaging {
@@ -25,14 +25,14 @@ impl Messaging {
             storage,
             websocket,
             //rest,
-            //lock: Mutex::new(()),
+            lock: Mutex::new(()),
             gcache: HashMap::new(),
-            //scache: HashMap::new(),
+            scache: HashMap::new(),
         };
     }
 
     pub fn send(&mut self, group: &[u8], plaintext: &[u8]) -> Result<(), SelfError> {
-        //let lock = self.lock.lock().as_ref().unwrap();
+        let lock = self.lock.lock().as_ref().unwrap();
 
         let group = match self.gcache.get_mut(group) {
             Some(group) => group,
@@ -54,7 +54,6 @@ impl Messaging {
             }),
         );
 
-        //drop(lock);
 
         return Ok(());
     }

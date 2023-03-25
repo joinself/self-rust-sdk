@@ -15,7 +15,9 @@ pub fn now() -> DateTime<Utc> {
     unsafe {
         let last_check = LAST_CHECK.load(Ordering::SeqCst);
 
-        if last_check == std::ptr::null_mut() || (*last_check).time() < ts.time() {
+        if last_check == std::ptr::null_mut()
+            || (*last_check).time() < ts.time() - chrono::Duration::hours(1)
+        {
             if update_last_checked(last_check, ts) {
                 update_ntp_offset();
             }

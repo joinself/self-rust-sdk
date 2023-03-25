@@ -7,7 +7,7 @@ extern crate flatbuffers;
 use self::flatbuffers::{EndianScalar, Follow};
 
 #[allow(unused_imports, dead_code)]
-pub mod schema {
+pub mod siggraph {
 
     use std::cmp::Ordering;
     use std::mem;
@@ -1568,4 +1568,4 @@ pub mod schema {
     ) {
         fbb.finish_size_prefixed(root, None);
     }
-} // pub mod schema
+} // pub mod siggraph
