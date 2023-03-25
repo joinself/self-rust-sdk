@@ -1,7 +1,4 @@
-use std::{
-    ptr,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use chrono::prelude::*;
 

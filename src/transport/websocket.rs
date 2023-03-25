@@ -460,7 +460,7 @@ impl Websocket {
 
             builder.reset();
 
-            let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf[1..]));
+            let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf));
 
             let mut sigs = Vec::new();
 
@@ -492,7 +492,7 @@ impl Websocket {
             }
 
             let signatures = builder.create_vector(&sigs);
-            let details = builder.create_vector(&details_sig_buf);
+            let details = builder.create_vector(&details_sig_buf[1..]);
 
             subs.push(protocol::Subscription::create(
                 &mut builder,
@@ -517,6 +517,8 @@ impl Websocket {
         let content = builder.finished_data().to_vec();
         let event_id = crate::crypto::random_id();
 
+        builder.reset();
+
         let eid = builder.create_vector(&event_id);
         let cnt = builder.create_vector(&content);
 
@@ -537,7 +539,10 @@ impl Websocket {
 
 #[cfg(test)]
 mod tests {
-    use crate::{keypair::signing::PublicKey, protocol};
+    use crate::{
+        keypair::signing::{KeyPair, PublicKey},
+        protocol,
+    };
 
     use super::*;
     use futures_util::stream::SplitSink;
@@ -625,8 +630,6 @@ mod tests {
     ) where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-
         let owned_identifier = match from {
             Identifier::Owned(owned) => owned,
             _ => return,
@@ -736,6 +739,8 @@ mod tests {
         let subscribe =
             flatbuffers::root::<protocol::Subscribe>(content).expect("Subscribe event invalid");
 
+        let mut subscriptions = Vec::new();
+
         for subscription in subscribe
             .subscriptions()
             .expect("Subscribe subscriptions empty")
@@ -760,9 +765,7 @@ mod tests {
                 match signature.type_() {
                     protocol::SignatureType::PAYLOAD => {
                         // authenticate the subscriber over the subscriptions details
-                        let signer = signature
-                            .signer()
-                            .expect("Subscription payload signer missing");
+                        let signer = signature.signer().unwrap_or(inbox);
 
                         let mut details_sig_buf = vec![0; details_len + 1];
                         details_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
@@ -770,7 +773,13 @@ mod tests {
 
                         let pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)
                             .expect("Subscription signer invalid");
-                        assert!(pk.verify(&details_sig_buf, sig));
+
+                        if !(pk.verify(&details_sig_buf, sig)) {
+                            err(&mut socket_tx, event.id().unwrap(), b"bad auth").await;
+                            return;
+                        };
+
+                        subscriptions.push(inbox.clone());
 
                         if inbox == signer {
                             (authenticated, authorized) = (true, true);
@@ -790,7 +799,11 @@ mod tests {
 
                         let pk = PublicKey::from_bytes(inbox, crate::keypair::Algorithm::Ed25519)
                             .expect("Subscription signer invalid");
-                        assert!(pk.verify(&subscription_sig_buf, sig));
+
+                        if !pk.verify(&subscription_sig_buf, sig) {
+                            err(&mut socket_tx, event.id().unwrap(), b"bad auth").await;
+                            return;
+                        };
 
                         authorized = true;
                     }
@@ -803,15 +816,15 @@ mod tests {
 
         ack(&mut socket_tx, event.id().unwrap()).await;
 
-        /*
-        let self_id = auth_token.get_field("iss").unwrap().as_str().unwrap();
-        let device_id = auth_message.device().unwrap();
-        let recipient = format!("{}:{}", self_id, device_id);
+        let sender = Identifier::Owned(KeyPair::new());
 
-        for _ in 0..auth_message.offset() {
-            msg(&mut socket_tx, "alice:device", &recipient, "test message").await;
+        for subscription in subscriptions {
+            let recipient = Identifier::Referenced(
+                PublicKey::from_bytes(&subscription, crate::keypair::Algorithm::Ed25519)
+                    .expect("Invalid subscription public key"),
+            );
+            msg(&mut socket_tx, &sender, &recipient, 0, b"test message").await;
         }
-        */
 
         let mut messages = vec![];
 
@@ -891,7 +904,7 @@ mod tests {
             &alice_id,
             &bob_id,
             0,
-            b"test-message",
+            b"test message",
             None,
             Arc::new(move |result: Result<(), SelfError>| {
                 response_tx.send(result).expect("Failed to send result");
@@ -914,9 +927,7 @@ mod tests {
         let msg = msgs.get(0).unwrap().clone();
         assert_eq!(msg, Vec::from("test message"));
 
-        let (sender, ciphertext) = ws.receive().expect("Failed to receive message");
-
-        assert_eq!(sender, alice_id.id());
+        let (_, ciphertext) = ws.receive().expect("Failed to receive message");
         assert_eq!(ciphertext, Vec::from("test message"));
 
         rt.shutdown_background();
