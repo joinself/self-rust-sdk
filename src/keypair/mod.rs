@@ -9,5 +9,5 @@ pub enum Algorithm {
     Curve25519,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum Role {}
+//#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+//pub enum Role {}

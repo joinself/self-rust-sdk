@@ -7,7 +7,7 @@ use crate::protocol::siggraph::{
     root_as_signed_operation, Action, Actionable, CreateKey, KeyAlgorithm, KeyRole, Operation,
     Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
 };
-use crate::siggraph::node::Node;
+use crate::siggraph::{node::Node, operation::OperationBuilder};
 
 use std::borrow::Borrow;
 use std::cell::RefCell;
@@ -55,22 +55,33 @@ impl SignatureGraph {
         return Ok(sg);
     }
 
-    /*
     pub fn create(&self) -> OperationBuilder {
-        return OperationBuilder{
+        let mut ob = OperationBuilder::new();
 
-        };
+        ob.sequence(self.operations.len() as u32)
+            .timestamp(crate::time::unix());
+
+        if let Some(id) = &self.id {
+            ob.id(id);
+        }
+
+        if let Some(last_op) = self.operations.last() {
+            // compute the hash of the last operation
+            ob.previous(&crate::crypto::hash::blake2b(last_op));
+        }
+
+        return ob;
     }
-    */
 
     pub fn execute(&mut self, operation: Vec<u8>) -> Result<(), SelfError> {
         self.execute_operation(operation.to_owned(), true)
     }
 
     fn execute_operation(&mut self, operation: Vec<u8>, verify: bool) -> Result<(), SelfError> {
-        //let operation_copy: &'a [u8] = &operation;
         let signed_op = root_as_signed_operation(&operation)
             .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
+
+        let signed_op_hash = crate::crypto::hash::blake2b(&operation);
 
         let op_bytes = signed_op
             .operation()
@@ -79,11 +90,10 @@ impl SignatureGraph {
         let op = flatbuffers::root::<Operation>(op_bytes)
             .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
 
-        let op_hash = crate::crypto::hash::blake2b(op_bytes);
-
         let mut signers = HashSet::new();
 
         if verify {
+            let op_hash = crate::crypto::hash::blake2b(&op_bytes);
             // copy the operation hash to our temporary buffer we
             // will use to calculate signatures for each signer
             self.sig_buf[32..64].copy_from_slice(&op_hash);
@@ -103,7 +113,7 @@ impl SignatureGraph {
 
         self.execute_actions(&op, &actions, &signers)?;
 
-        self.hashes.insert(op_hash, self.operations.len());
+        self.hashes.insert(signed_op_hash, self.operations.len());
         self.operations.push(operation);
 
         return Ok(());
@@ -799,7 +809,9 @@ mod tests {
 
         fn_builder.finish(signed_op, None);
 
-        return (fn_builder.finished_data().to_vec(), op_hash);
+        let signed_op_hash = crate::crypto::hash::blake2b(fn_builder.finished_data());
+
+        return (fn_builder.finished_data().to_vec(), signed_op_hash);
     }
 
     fn test_execute<'a>(test_history: &mut Vec<TestOperation>) -> SignatureGraph {

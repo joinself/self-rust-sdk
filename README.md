@@ -5,9 +5,9 @@ A Rust SDK for interact with the self network
 # development
 To update the flatbuffer definitions:
 ```sh
-cd protocol
+cd protocol/messaging
 flatc --rust --filename-suffix "" messaging.fbs
-cd siggraph
+cd protocol/siggraph
 flatc --rust --filename-suffix "" siggraph.fbs
 ```
 

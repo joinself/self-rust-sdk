@@ -2,12 +2,12 @@ use chrono::Duration;
 use reqwest::blocking::{Client, Request};
 use reqwest::Url;
 
+use crate::crypto::pow::ProofOfWork;
 use crate::error::SelfError;
 use crate::keypair::signing::KeyPair;
 
 pub struct Rest {
     client: reqwest::blocking::Client,
-    signing_key: KeyPair,
 }
 
 pub struct Response {
@@ -16,39 +16,60 @@ pub struct Response {
 }
 
 impl Rest {
-    pub fn new(signing_key: KeyPair) -> Rest {
+    pub fn new() -> Rest {
         return Rest {
             client: Client::new(),
-            signing_key: signing_key,
         };
     }
 
-    pub fn get(&self, url: &str) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::GET, url, None);
+    pub fn get(
+        &self,
+        url: &str,
+        signing_key: Option<&KeyPair>,
+        pow: bool,
+    ) -> Result<Response, SelfError> {
+        return self.request(reqwest::Method::GET, url, None, signing_key, pow);
     }
 
-    pub fn post(&self, url: &str, body: Vec<u8>) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::POST, url, Some(body));
+    pub fn post(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        signing_key: Option<&KeyPair>,
+        pow: bool,
+    ) -> Result<Response, SelfError> {
+        return self.request(reqwest::Method::POST, url, Some(body), signing_key, pow);
     }
 
-    pub fn put(&self, url: &str, body: Vec<u8>) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::PUT, url, Some(body));
+    pub fn put(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        signing_key: Option<&KeyPair>,
+        pow: bool,
+    ) -> Result<Response, SelfError> {
+        return self.request(reqwest::Method::PUT, url, Some(body), signing_key, pow);
     }
 
-    pub fn delete(&self, url: &str) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::DELETE, url, None);
+    pub fn delete(
+        &self,
+        url: &str,
+        signing_key: Option<&KeyPair>,
+        pow: bool,
+    ) -> Result<Response, SelfError> {
+        return self.request(reqwest::Method::DELETE, url, None, signing_key, pow);
     }
 
-    fn authorization(&self, headers: &mut reqwest::header::HeaderMap) {
+    fn authorization(&self, signing_key: &KeyPair, headers: &mut reqwest::header::HeaderMap) {
         let mut token = crate::message::Message::new();
 
-        token.subject_set(&self.signing_key.id());
+        token.subject_set(&signing_key.id());
         token.type_set("authorization");
         token.cti_set(&crate::crypto::random_id());
 
         token
             .sign(
-                &self.signing_key,
+                &signing_key,
                 Some((crate::time::now() + Duration::seconds(10)).timestamp()),
             )
             .expect("signing token failed unexpectedly");
@@ -65,6 +86,8 @@ impl Rest {
         method: reqwest::Method,
         url: &str,
         body: Option<Vec<u8>>,
+        signing_key: Option<&KeyPair>,
+        pow: bool,
     ) -> Result<Response, SelfError> {
         let target = match Url::parse(url) {
             Ok(target) => target,
@@ -75,10 +98,15 @@ impl Rest {
         };
 
         let mut request = Request::new(method, target);
-        self.authorization(request.headers_mut());
 
-        if body.is_some() {
-            *request.body_mut() = Some(reqwest::blocking::Body::from(body.unwrap()));
+        if let Some(sk) = signing_key {
+            self.authorization(sk, request.headers_mut());
+        }
+
+        if let Some(bd) = body {
+            if pow {}
+
+            *request.body_mut() = Some(reqwest::blocking::Body::from(bd));
         }
 
         let response = self.client.execute(request);
@@ -99,6 +127,19 @@ impl Rest {
                 return Err(SelfError::RestRequestInvalid);
             }
         };
+    }
+
+    fn proof_of_work(&self, body: &[u8], headers: &mut reqwest::header::HeaderMap) {
+        // compute proof of work hash over operation
+        // TODO load pow difficulty from some other sourcee
+        let (hash, nonce) = ProofOfWork::new(20).calculate(body);
+
+        let hash_encoded = base64::encode_config(&hash, base64::URL_SAFE_NO_PAD);
+
+        let pow_hash = reqwest::header::HeaderValue::from_str(&hash_encoded);
+        let pow_nonce = reqwest::header::HeaderValue::from_str(&nonce.to_string());
+        headers.insert("X-Self-POW-Hash", pow_hash.unwrap());
+        headers.insert("X-Self-POW-Nonce", pow_nonce.unwrap());
     }
 }
 
@@ -142,11 +183,11 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new(kp);
+        let client = Rest::new();
 
         let url = server.url_str("/v1/identities");
 
-        let response = client.get(&url);
+        let response = client.get(&url, Some(&kp), false);
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();
@@ -174,11 +215,16 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new(kp);
+        let client = Rest::new();
 
         let url = server.url_str("/v1/identities");
 
-        let response = client.post(&url, "{\"history\":[]\"}".as_bytes().to_vec());
+        let response = client.post(
+            &url,
+            "{\"history\":[]\"}".as_bytes().to_vec(),
+            Some(&kp),
+            false,
+        );
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();
@@ -206,11 +252,16 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new(kp);
+        let client = Rest::new();
 
         let url = server.url_str("/v1/identities");
 
-        let response = client.put(&url, "{\"history\":[]\"}".as_bytes().to_vec());
+        let response = client.put(
+            &url,
+            "{\"history\":[]\"}".as_bytes().to_vec(),
+            Some(&kp),
+            false,
+        );
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();
@@ -237,11 +288,11 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new(kp);
+        let client = Rest::new();
 
         let url = server.url_str("/v1/identities");
 
-        let response = client.delete(&url);
+        let response = client.delete(&url, Some(&kp), false);
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();

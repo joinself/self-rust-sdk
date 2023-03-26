@@ -1,3 +1,3 @@
-pub mod account;
+mod account;
 
 pub use self::account::*;
