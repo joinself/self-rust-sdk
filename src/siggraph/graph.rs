@@ -3,11 +3,11 @@ use flatbuffers::{ForwardsUOffset, Vector};
 use crate::error::SelfError;
 use crate::keypair::signing::PublicKey;
 use crate::keypair::Algorithm;
-use crate::siggraph::node::Node;
-use crate::siggraph::{
+use crate::protocol::siggraph::{
     root_as_signed_operation, Action, Actionable, CreateKey, KeyAlgorithm, KeyRole, Operation,
     Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
 };
+use crate::siggraph::node::Node;
 
 use std::borrow::Borrow;
 use std::cell::RefCell;
@@ -25,7 +25,19 @@ pub struct SignatureGraph {
 }
 
 impl SignatureGraph {
-    pub fn new(history: &[Vec<u8>]) -> Result<SignatureGraph, SelfError> {
+    pub fn new() -> SignatureGraph {
+        return SignatureGraph {
+            id: None,
+            root: None,
+            keys: HashMap::new(),
+            hashes: HashMap::new(),
+            operations: Vec::new(),
+            recovery_key: None,
+            sig_buf: vec![0; 96],
+        };
+    }
+
+    pub fn load(history: &[Vec<u8>], verify: bool) -> Result<SignatureGraph, SelfError> {
         let mut sg = SignatureGraph {
             id: None,
             root: None,
@@ -37,29 +49,19 @@ impl SignatureGraph {
         };
 
         for operation in history {
-            sg.execute_operation(operation.to_owned(), true)?
+            sg.execute_operation(operation.to_owned(), verify)?
         }
 
         return Ok(sg);
     }
 
-    pub fn load(history: &[Vec<u8>]) -> Result<SignatureGraph, SelfError> {
-        let mut sg = SignatureGraph {
-            id: None,
-            root: None,
-            keys: HashMap::new(),
-            hashes: HashMap::new(),
-            operations: Vec::new(),
-            recovery_key: None,
-            sig_buf: vec![0; 96],
+    /*
+    pub fn create(&self) -> OperationBuilder {
+        return OperationBuilder{
+
         };
-
-        for operation in history {
-            sg.execute_operation(operation.to_owned(), false)?
-        }
-
-        return Ok(sg);
     }
+    */
 
     pub fn execute(&mut self, operation: Vec<u8>) -> Result<(), SelfError> {
         self.execute_operation(operation.to_owned(), true)
@@ -608,13 +610,13 @@ mod tests {
     use crate::{
         error::SelfError,
         keypair::signing::KeyPair,
-        siggraph::{
-            Action, ActionArgs, Actionable, CreateKey, CreateKeyArgs, KeyRole, OperationArgs,
-            Recover, RecoverArgs, RevokeKey, RevokeKeyArgs, Signature, SignatureArgs,
-            SignatureGraph, SignatureHeader, SignatureHeaderArgs, SignedOperation,
+        protocol::siggraph::{
+            Action, ActionArgs, Actionable, CreateKey, CreateKeyArgs, KeyAlgorithm, KeyRole,
+            Operation, OperationArgs, Recover, RecoverArgs, RevokeKey, RevokeKeyArgs, Signature,
+            SignatureArgs, SignatureHeader, SignatureHeaderArgs, SignedOperation,
             SignedOperationArgs,
         },
-        siggraph::{KeyAlgorithm, Operation},
+        siggraph::SignatureGraph,
     };
 
     struct TestSigner {
@@ -801,7 +803,7 @@ mod tests {
     }
 
     fn test_execute<'a>(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
-        let mut sg = SignatureGraph::new(&Vec::new()).unwrap();
+        let mut sg = SignatureGraph::new();
         let mut previous_hash: Option<Vec<u8>> = None;
 
         for mut test_op in test_history {
