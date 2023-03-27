@@ -530,18 +530,10 @@ pub mod siggraph {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct RevokeKeyArgs<'a> {
         pub key: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub effective_from: i64,
-    }
-    impl<'a> Default for RevokeKeyArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            RevokeKeyArgs {
-                key: None,
-                effective_from: 0,
-            }
-        }
     }
 
     pub struct RevokeKeyBuilder<'a: 'b, 'b> {
@@ -637,14 +629,9 @@ pub mod siggraph {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct RecoverArgs {
         pub effective_from: i64,
-    }
-    impl<'a> Default for RecoverArgs {
-        #[inline]
-        fn default() -> Self {
-            RecoverArgs { effective_from: 0 }
-        }
     }
 
     pub struct RecoverBuilder<'a: 'b, 'b> {
@@ -996,6 +983,7 @@ pub mod siggraph {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct OperationArgs<'a> {
         pub version: u8,
         pub sequence: u32,
@@ -1006,18 +994,6 @@ pub mod siggraph {
                 flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Action<'a>>>,
             >,
         >,
-    }
-    impl<'a> Default for OperationArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            OperationArgs {
-                version: 0,
-                sequence: 0,
-                previous: None,
-                timestamp: 0,
-                actions: None,
-            }
-        }
     }
 
     pub struct OperationBuilder<'a: 'b, 'b> {
@@ -1147,14 +1123,9 @@ pub mod siggraph {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct SignatureHeaderArgs<'a> {
         pub signer: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
-    }
-    impl<'a> Default for SignatureHeaderArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            SignatureHeaderArgs { signer: None }
-        }
     }
 
     pub struct SignatureHeaderBuilder<'a: 'b, 'b> {
@@ -1273,18 +1244,10 @@ pub mod siggraph {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct SignatureArgs<'a> {
         pub header: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub signature: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
-    }
-    impl<'a> Default for SignatureArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            SignatureArgs {
-                header: None,
-                signature: None,
-            }
-        }
     }
 
     pub struct SignatureBuilder<'a: 'b, 'b> {
@@ -1407,6 +1370,7 @@ pub mod siggraph {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct SignedOperationArgs<'a> {
         pub operation: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub signatures: Option<
@@ -1414,15 +1378,6 @@ pub mod siggraph {
                 flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Signature<'a>>>,
             >,
         >,
-    }
-    impl<'a> Default for SignedOperationArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            SignedOperationArgs {
-                operation: None,
-                signatures: None,
-            }
-        }
     }
 
     pub struct SignedOperationBuilder<'a: 'b, 'b> {

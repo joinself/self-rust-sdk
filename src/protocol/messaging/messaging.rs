@@ -595,24 +595,13 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct PayloadArgs<'a> {
         pub sequence: u64,
         pub timestamp: i64,
         pub sender: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub recipient: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub content: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
-    }
-    impl<'a> Default for PayloadArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            PayloadArgs {
-                sequence: 0,
-                timestamp: 0,
-                sender: None,
-                recipient: None,
-                content: None,
-            }
-        }
     }
 
     pub struct PayloadBuilder<'a: 'b, 'b> {
@@ -750,18 +739,10 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct ProofOfWorkArgs<'a> {
         pub hash: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub nonce: u64,
-    }
-    impl<'a> Default for ProofOfWorkArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            ProofOfWorkArgs {
-                hash: None,
-                nonce: 0,
-            }
-        }
     }
 
     pub struct ProofOfWorkBuilder<'a: 'b, 'b> {
@@ -898,6 +879,7 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct MessageArgs<'a> {
         pub payload: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub signatures: Option<
@@ -906,16 +888,6 @@ pub mod messaging {
             >,
         >,
         pub pow: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
-    }
-    impl<'a> Default for MessageArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            MessageArgs {
-                payload: None,
-                signatures: None,
-                pow: None,
-            }
-        }
     }
 
     pub struct MessageBuilder<'a: 'b, 'b> {
@@ -1013,13 +985,8 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct AcknowledgementArgs {}
-    impl<'a> Default for AcknowledgementArgs {
-        #[inline]
-        fn default() -> Self {
-            AcknowledgementArgs {}
-        }
-    }
 
     pub struct AcknowledgementBuilder<'a: 'b, 'b> {
         fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a>,
@@ -1256,20 +1223,11 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct SubscriptionDetailsArgs<'a> {
         pub inbox: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub issued: i64,
         pub from: i64,
-    }
-    impl<'a> Default for SubscriptionDetailsArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            SubscriptionDetailsArgs {
-                inbox: None,
-                issued: 0,
-                from: 0,
-            }
-        }
     }
 
     pub struct SubscriptionDetailsBuilder<'a: 'b, 'b> {
@@ -1399,6 +1357,7 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct SubscriptionArgs<'a> {
         pub details: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub signatures: Option<
@@ -1406,15 +1365,6 @@ pub mod messaging {
                 flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Signature<'a>>>,
             >,
         >,
-    }
-    impl<'a> Default for SubscriptionArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            SubscriptionArgs {
-                details: None,
-                signatures: None,
-            }
-        }
     }
 
     pub struct SubscriptionBuilder<'a: 'b, 'b> {
@@ -1529,20 +1479,13 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct SubscribeArgs<'a> {
         pub subscriptions: Option<
             flatbuffers::WIPOffset<
                 flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Subscription<'a>>>,
             >,
         >,
-    }
-    impl<'a> Default for SubscribeArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            SubscribeArgs {
-                subscriptions: None,
-            }
-        }
     }
 
     pub struct SubscribeBuilder<'a: 'b, 'b> {
@@ -1675,20 +1618,11 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct OpenDetailsArgs<'a> {
         pub inbox: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub nonce: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub issued: i64,
-    }
-    impl<'a> Default for OpenDetailsArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            OpenDetailsArgs {
-                inbox: None,
-                nonce: None,
-                issued: 0,
-            }
-        }
     }
 
     pub struct OpenDetailsBuilder<'a: 'b, 'b> {
@@ -1831,20 +1765,11 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct OpenArgs<'a> {
         pub details: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub pow: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub signature: Option<flatbuffers::WIPOffset<Signature<'a>>>,
-    }
-    impl<'a> Default for OpenArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            OpenArgs {
-                details: None,
-                pow: None,
-                signature: None,
-            }
-        }
     }
 
     pub struct OpenBuilder<'a: 'b, 'b> {
@@ -1970,18 +1895,10 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct CloseDetailsArgs<'a> {
         pub inbox: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub issued: i64,
-    }
-    impl<'a> Default for CloseDetailsArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            CloseDetailsArgs {
-                inbox: None,
-                issued: 0,
-            }
-        }
     }
 
     pub struct CloseDetailsBuilder<'a: 'b, 'b> {
@@ -2102,18 +2019,10 @@ pub mod messaging {
             Ok(())
         }
     }
+    #[derive(Default)]
     pub struct CloseArgs<'a> {
         pub details: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub signature: Option<flatbuffers::WIPOffset<Signature<'a>>>,
-    }
-    impl<'a> Default for CloseArgs<'a> {
-        #[inline]
-        fn default() -> Self {
-            CloseArgs {
-                details: None,
-                signature: None,
-            }
-        }
     }
 
     pub struct CloseBuilder<'a: 'b, 'b> {

@@ -12,5 +12,5 @@ pub fn blake2b(data: &[u8]) -> Vec<u8> {
         );
     }
 
-    return h;
+    h
 }

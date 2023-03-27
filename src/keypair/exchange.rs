@@ -32,19 +32,19 @@ impl PublicKey {
             return Err(SelfError::KeyPairPublicKeyInvalidLength);
         }
 
-        return Ok(PublicKey {
+        Ok(PublicKey {
             id: Some(String::from(id)),
-            algorithm: algorithm,
+            algorithm,
             bytes: decoded_public_key,
-        });
+        })
     }
 
     pub fn id(&self) -> Vec<u8> {
-        return self.bytes.clone();
+        self.bytes.clone()
     }
 
     pub fn encoded_id(&self) -> String {
-        return self.bytes.encode_hex();
+        self.bytes.encode_hex()
     }
 }
 
@@ -64,7 +64,7 @@ impl KeyPair {
             sodium_sys::crypto_box_keypair(curve25519_pk.as_mut_ptr(), curve25519_sk.as_mut_ptr());
         }
 
-        return KeyPair {
+        KeyPair {
             public_key: PublicKey {
                 id: None,
                 algorithm: Algorithm::Curve25519,
@@ -73,20 +73,20 @@ impl KeyPair {
             secret_key: SecretKey {
                 bytes: curve25519_sk.to_vec(),
             },
-        };
+        }
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
-        return match ciborium::de::from_reader(encoded_keypair) {
+        match ciborium::de::from_reader(encoded_keypair) {
             Ok(keypair) => Ok(keypair),
             Err(_) => Err(SelfError::KeyPairDecodeInvalidData),
-        };
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(self, &mut encoded).unwrap();
-        return encoded;
+        encoded
     }
 
     pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {
@@ -113,7 +113,7 @@ impl KeyPair {
             );
         }
 
-        return Ok(KeyPair {
+        Ok(KeyPair {
             public_key: PublicKey {
                 id: Some(String::from(key_id)),
                 algorithm: Algorithm::Curve25519,
@@ -122,7 +122,7 @@ impl KeyPair {
             secret_key: SecretKey {
                 bytes: curve25519_sk.to_vec(),
             },
-        });
+        })
     }
 
     pub fn id(&self) -> String {
@@ -130,19 +130,19 @@ impl KeyPair {
             return self.public_key.id.as_ref().unwrap().clone();
         }
 
-        return base64::encode_config(&self.public_key.bytes, base64::URL_SAFE_NO_PAD);
+        base64::encode_config(&self.public_key.bytes, base64::URL_SAFE_NO_PAD)
     }
 
     pub fn algorithm(&self) -> Algorithm {
-        return self.public_key.algorithm;
+        self.public_key.algorithm
     }
 
     pub fn public(&self) -> PublicKey {
-        return self.public_key.clone();
+        self.public_key.clone()
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
-        return self.secret_key.bytes.clone();
+        self.secret_key.bytes.clone()
     }
 }
 

@@ -57,16 +57,16 @@ impl Websocket {
         let runtime = Runtime::new().unwrap();
 
         let ws = Websocket {
-            endpoint: endpoint,
-            read_tx: read_tx,
-            read_rx: read_rx,
-            write_tx: write_tx,
-            write_rx: write_rx,
-            runtime: runtime,
-            subscriptions: subscriptions,
+            endpoint,
+            read_tx,
+            read_rx,
+            write_tx,
+            write_rx,
+            runtime,
+            subscriptions,
         };
 
-        return Ok(ws);
+        Ok(ws)
     }
 
     pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
@@ -181,7 +181,7 @@ impl Websocket {
                                         payload.sender().unwrap().to_vec(),
                                         payload.content().unwrap().to_vec(),
                                     ))
-                                    .unwrap_or_else(|_| return);
+                                    .unwrap_or(());
                             }
                         }
                         _ => {
@@ -234,16 +234,14 @@ impl Websocket {
             ))
             .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
 
-        return rx
-            .recv_deadline(deadline)
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
+        rx.recv_deadline(deadline)
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
     }
 
     pub fn disconnect(&mut self) -> Result<(), SelfError> {
-        return self
-            .write_tx
+        self.write_tx
             .send(Event::Done)
-            .map_err(|_| SelfError::RestRequestConnectionFailed);
+            .map_err(|_| SelfError::RestRequestConnectionFailed)
     }
 
     pub fn send(
@@ -284,10 +282,9 @@ impl Websocket {
     }
 
     pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
-        return self
-            .read_rx
+        self.read_rx
             .recv()
-            .map_err(|_| SelfError::RestRequestConnectionTimeout);
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)
     }
 
     pub fn assemble_payload(
@@ -315,7 +312,7 @@ impl Websocket {
                 sender: Some(sender),
                 recipient: Some(recipient),
                 content: Some(content),
-                sequence: sequence,
+                sequence,
                 timestamp: crate::time::unix(),
             },
         );
@@ -341,7 +338,7 @@ impl Websocket {
 
         let mut payload_sig_buf = vec![0; payload.len() + 1];
         payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-        payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
+        payload_sig_buf[1..payload.len() + 1].copy_from_slice(payload);
         let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
 
         let mut signatures = Vec::new();
@@ -652,7 +649,7 @@ mod tests {
                 sender: Some(sender),
                 recipient: Some(recipient),
                 content: Some(content),
-                sequence: sequence,
+                sequence,
                 timestamp: crate::time::unix(),
             },
         );
@@ -824,7 +821,7 @@ mod tests {
 
         for subscription in subscriptions {
             let recipient = Identifier::Referenced(
-                PublicKey::from_bytes(&subscription, crate::keypair::Algorithm::Ed25519)
+                PublicKey::from_bytes(subscription, crate::keypair::Algorithm::Ed25519)
                     .expect("Invalid subscription public key"),
             );
             msg(&mut socket_tx, &sender, &recipient, 0, b"test message").await;
@@ -882,7 +879,7 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        return (rt, msg_rx);
+        (rt, msg_rx)
     }
 
     #[test]

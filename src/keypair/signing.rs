@@ -27,10 +27,10 @@ impl PublicKey {
             return Err(SelfError::KeyPairPublicKeyInvalidLength);
         }
 
-        return Ok(PublicKey {
-            algorithm: algorithm,
+        Ok(PublicKey {
+            algorithm,
             bytes: decoded_public_key,
-        });
+        })
     }
 
     pub fn from_bytes(bytes: &[u8], algorithm: Algorithm) -> Result<PublicKey, SelfError> {
@@ -38,32 +38,32 @@ impl PublicKey {
             return Err(SelfError::KeyPairPublicKeyInvalidLength);
         }
 
-        return Ok(PublicKey {
-            algorithm: algorithm,
+        Ok(PublicKey {
+            algorithm,
             bytes: bytes.to_vec(),
-        });
+        })
     }
 
     pub fn id(&self) -> Vec<u8> {
-        return self.bytes.clone();
+        self.bytes.clone()
     }
 
     pub fn encoded_id(&self) -> String {
-        return self.bytes.encode_hex();
+        self.bytes.encode_hex()
     }
 
     pub fn eq(&self, bytes: &[u8]) -> bool {
-        return self.bytes.eq(bytes);
+        self.bytes.eq(bytes)
     }
 
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
         unsafe {
-            return sodium_sys::crypto_sign_ed25519_verify_detached(
+            sodium_sys::crypto_sign_ed25519_verify_detached(
                 signature.as_ptr(),
                 message.as_ptr(),
                 message.len() as u64,
                 self.bytes.as_ptr(),
-            ) == 0;
+            ) == 0
         }
     }
 }
@@ -84,7 +84,7 @@ impl KeyPair {
             sodium_sys::crypto_sign_keypair(ed25519_pk.as_mut_ptr(), ed25519_sk.as_mut_ptr());
         }
 
-        return KeyPair {
+        KeyPair {
             public_key: PublicKey {
                 algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
@@ -92,20 +92,20 @@ impl KeyPair {
             secret_key: SecretKey {
                 bytes: ed25519_sk.to_vec(),
             },
-        };
+        }
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
-        return match ciborium::de::from_reader(encoded_keypair) {
+        match ciborium::de::from_reader(encoded_keypair) {
             Ok(keypair) => Ok(keypair),
             Err(_) => Err(SelfError::KeyPairDecodeInvalidData),
-        };
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(self, &mut encoded).unwrap();
-        return encoded;
+        encoded
     }
 
     pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {
@@ -132,7 +132,7 @@ impl KeyPair {
             );
         }
 
-        return Ok(KeyPair {
+        Ok(KeyPair {
             public_key: PublicKey {
                 algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
@@ -140,19 +140,19 @@ impl KeyPair {
             secret_key: SecretKey {
                 bytes: ed25519_sk.to_vec(),
             },
-        });
+        })
     }
 
     pub fn id(&self) -> Vec<u8> {
-        return self.public_key.id();
+        self.public_key.id()
     }
 
     pub fn algorithm(&self) -> Algorithm {
-        return self.public_key.algorithm;
+        self.public_key.algorithm
     }
 
     pub fn public(&self) -> PublicKey {
-        return self.public_key.clone();
+        self.public_key.clone()
     }
 
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
@@ -168,11 +168,11 @@ impl KeyPair {
             );
         }
 
-        return signature.to_vec();
+        signature.to_vec()
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
-        return self.secret_key.bytes.clone();
+        self.secret_key.bytes.clone()
     }
 }
 

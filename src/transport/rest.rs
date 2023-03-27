@@ -17,9 +17,9 @@ pub struct Response {
 
 impl Rest {
     pub fn new() -> Rest {
-        return Rest {
+        Rest {
             client: Client::new(),
-        };
+        }
     }
 
     pub fn get(
@@ -28,7 +28,7 @@ impl Rest {
         signing_key: Option<&KeyPair>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::GET, url, None, signing_key, pow);
+        self.request(reqwest::Method::GET, url, None, signing_key, pow)
     }
 
     pub fn post(
@@ -38,7 +38,7 @@ impl Rest {
         signing_key: Option<&KeyPair>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::POST, url, Some(body), signing_key, pow);
+        self.request(reqwest::Method::POST, url, Some(body), signing_key, pow)
     }
 
     pub fn put(
@@ -48,7 +48,7 @@ impl Rest {
         signing_key: Option<&KeyPair>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::PUT, url, Some(body), signing_key, pow);
+        self.request(reqwest::Method::PUT, url, Some(body), signing_key, pow)
     }
 
     pub fn delete(
@@ -57,7 +57,7 @@ impl Rest {
         signing_key: Option<&KeyPair>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        return self.request(reqwest::Method::DELETE, url, None, signing_key, pow);
+        self.request(reqwest::Method::DELETE, url, None, signing_key, pow)
     }
 
     fn authorization(&self, signing_key: &KeyPair, headers: &mut reqwest::header::HeaderMap) {
@@ -69,7 +69,7 @@ impl Rest {
 
         token
             .sign(
-                &signing_key,
+                signing_key,
                 Some((crate::time::now() + Duration::seconds(10)).timestamp()),
             )
             .expect("signing token failed unexpectedly");
@@ -136,7 +136,7 @@ impl Rest {
         // TODO load pow difficulty from some other sourcee
         let (hash, nonce) = ProofOfWork::new(20).calculate(body);
 
-        let hash_encoded = base64::encode_config(&hash, base64::URL_SAFE_NO_PAD);
+        let hash_encoded = base64::encode_config(hash, base64::URL_SAFE_NO_PAD);
 
         let pow_hash = reqwest::header::HeaderValue::from_str(&hash_encoded);
         let pow_nonce = reqwest::header::HeaderValue::from_str(&nonce.to_string());
@@ -159,7 +159,7 @@ fn handle_error(e: reqwest::Error) -> SelfError {
         return SelfError::RestRequestConnectionTimeout;
     }
 
-    return SelfError::RestRequestUnknown;
+    SelfError::RestRequestUnknown
 }
 
 #[cfg(test)]

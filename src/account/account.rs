@@ -15,11 +15,11 @@ pub struct Account {
 
 impl Account {
     pub fn new() -> Account {
-        return Account {
+        Account {
             rest: Rest::new(),
             storage: Storage::new().unwrap(),
             server: Url::parse("https://api.joinself.com").expect("url parse shouldn't fail"),
-        };
+        }
     }
 
     pub fn register(&mut self, recovery_kp: &KeyPair) -> Result<Identifier, SelfError> {
@@ -46,7 +46,7 @@ impl Account {
             .server
             .join("/v2/identities")
             .map_err(|_| SelfError::RestRequestURLInvalid)?;
-        self.rest.post(&url.to_string(), operation, None, true)?;
+        self.rest.post(url.as_ref(), operation, None, true)?;
 
         // persist account keys to keychain
         self.storage
@@ -74,12 +74,12 @@ impl Account {
             })
             .unwrap();
 
-        return Ok(identifier);
+        Ok(identifier)
     }
 
     pub fn server_set(&mut self, url: &str) -> Result<(), SelfError> {
         self.server = Url::parse(url).map_err(|_| SelfError::RestRequestURLInvalid)?;
-        return Ok(());
+        Ok(())
     }
 }
 

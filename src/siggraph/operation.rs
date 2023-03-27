@@ -34,35 +34,35 @@ impl<'a> OperationBuilder<'a> {
     }
 
     pub fn id(&mut self, id: &[u8]) -> &mut OperationBuilder<'a> {
-        self.sig_buf[..32].copy_from_slice(&id);
-        return self;
+        self.sig_buf[..32].copy_from_slice(id);
+        self
     }
 
     pub fn sequence(&mut self, sequence: u32) -> &mut OperationBuilder<'a> {
         self.sequence = Some(sequence);
-        return self;
+        self
     }
 
     pub fn timestamp(&mut self, timestamp: i64) -> &mut OperationBuilder<'a> {
         self.timestamp = Some(timestamp);
-        return self;
+        self
     }
 
     pub fn previous(&mut self, hash: &[u8]) -> &mut OperationBuilder<'a> {
         self.previous = Some(hash.to_vec());
-        return self;
+        self
     }
 
     pub fn key_create_signing(&mut self, pk: &PublicKey) -> &mut OperationBuilder<'a> {
         self.create
             .push((siggraph::KeyRole::Signing, pk.to_owned()));
-        return self;
+        self
     }
 
     pub fn key_create_recovery(&mut self, pk: &PublicKey) -> &mut OperationBuilder<'a> {
         self.create
             .push((siggraph::KeyRole::Recovery, pk.to_owned()));
-        return self;
+        self
     }
 
     pub fn key_revoke(
@@ -71,12 +71,12 @@ impl<'a> OperationBuilder<'a> {
         effective_from: Option<i64>,
     ) -> &mut OperationBuilder<'a> {
         self.revoke.push((pk.to_owned(), effective_from));
-        return self;
+        self
     }
 
     pub fn recovery(&mut self, effective_from: Option<i64>) -> &mut OperationBuilder<'a> {
         self.recover.push(effective_from);
-        return self;
+        self
     }
 
     pub fn sign(&mut self, kp: &KeyPair) -> &mut OperationBuilder<'a> {
@@ -104,7 +104,7 @@ impl<'a> OperationBuilder<'a> {
 
         self.signatures.push((header_bytes, signature));
 
-        return self;
+        self
     }
 
     pub fn build(&mut self) -> Result<Vec<u8>, SelfError> {
@@ -112,7 +112,7 @@ impl<'a> OperationBuilder<'a> {
             return Err(SelfError::SiggraphOperationDecodingInvalid);
         }
 
-        if self.signatures.len() < 1 {
+        if self.signatures.is_empty() {
             return Err(SelfError::SiggraphOperationNotEnoughSigners);
         }
 
@@ -132,9 +132,7 @@ impl<'a> OperationBuilder<'a> {
         }
 
         let op_signatures = self.builder.create_vector(&signatures);
-        let op_data = self
-            .builder
-            .create_vector(&self.operation.as_ref().unwrap());
+        let op_data = self.builder.create_vector(self.operation.as_ref().unwrap());
 
         let signed_op = siggraph::SignedOperation::create(
             &mut self.builder,
@@ -148,7 +146,7 @@ impl<'a> OperationBuilder<'a> {
 
         let signed_op_bytes = self.builder.finished_data().to_vec();
 
-        return Ok(signed_op_bytes);
+        Ok(signed_op_bytes)
     }
 
     fn build_operation(&mut self) {
@@ -160,9 +158,7 @@ impl<'a> OperationBuilder<'a> {
 
             let rk = siggraph::Recover::create(
                 &mut self.builder,
-                &siggraph::RecoverArgs {
-                    effective_from: effective_from,
-                },
+                &siggraph::RecoverArgs { effective_from },
             );
 
             let ac = siggraph::Action::create(
@@ -185,7 +181,7 @@ impl<'a> OperationBuilder<'a> {
                 &mut self.builder,
                 &siggraph::RevokeKeyArgs {
                     key: Some(kb),
-                    effective_from: effective_from,
+                    effective_from,
                 },
             );
 
@@ -228,7 +224,7 @@ impl<'a> OperationBuilder<'a> {
         let previous = self
             .previous
             .as_ref()
-            .and_then(|hash| Some(self.builder.create_vector(&hash)));
+            .map(|hash| self.builder.create_vector(hash));
 
         let op = siggraph::Operation::create(
             &mut self.builder,
@@ -236,7 +232,7 @@ impl<'a> OperationBuilder<'a> {
                 version: 2,
                 sequence: self.sequence.unwrap(),
                 timestamp: self.timestamp.unwrap(),
-                previous: previous,
+                previous,
                 actions: Some(actions_vec),
             },
         );

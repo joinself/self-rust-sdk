@@ -30,23 +30,23 @@ struct Message {
 
 impl GroupMessage {
     fn new(ciphertext: &[u8]) -> GroupMessage {
-        return GroupMessage {
+        GroupMessage {
             recipients: HashMap::new(),
             ciphertext: ciphertext.to_vec(),
-        };
+        }
     }
 
     pub fn decode(bytes: &[u8]) -> Result<GroupMessage, SelfError> {
-        return match ciborium::de::from_reader(bytes) {
+        match ciborium::de::from_reader(bytes) {
             Ok(keypair) => Ok(keypair),
             Err(_) => Err(SelfError::CryptoGroupMessageInvalid),
-        };
+        }
     }
 
     fn encode(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(self, &mut encoded).unwrap();
-        return encoded;
+        encoded
     }
 
     pub fn one_time_key_message(&self, recipient: &[u8]) -> Option<Vec<u8>> {
@@ -55,7 +55,7 @@ impl GroupMessage {
                 if message.mtype != 0 {
                     return None;
                 }
-                return Some(message.ciphertext.clone());
+                Some(message.ciphertext.clone())
             }
             None => None,
         }
@@ -74,10 +74,10 @@ impl GroupMessage {
 
 impl Group {
     pub fn new(id: &[u8]) -> Group {
-        return Group {
+        Group {
             id: id.to_vec(),
             participants: Vec::new(),
-        };
+        }
     }
 
     pub fn add_participant(&mut self, id: &[u8], session: Arc<Mutex<Session>>) {
@@ -115,7 +115,7 @@ impl Group {
                 plaintext.as_ptr(),
                 plaintext.len() as u64,
                 std::ptr::null(),
-                0 as u64,
+                0_u64,
                 std::ptr::null_mut(),
                 nonce_buf.as_mut_ptr(),
                 key_buf.as_mut_ptr(),
@@ -135,12 +135,12 @@ impl Group {
             group_message.set_recipient_ciphertext(&p.id, mtype, &ciphertext);
         }
 
-        return Ok(group_message.encode());
+        Ok(group_message.encode())
     }
 
     pub fn decrypt(&mut self, from: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {
         let mut group_message = GroupMessage::decode(ciphertext)?;
-        return self.decrypt_group_message(from, &mut group_message);
+        self.decrypt_group_message(from, &mut group_message)
     }
 
     pub fn decrypt_group_message(
@@ -176,7 +176,7 @@ impl Group {
                 group_message.ciphertext.as_mut_ptr(),
                 group_message.ciphertext.len() as u64,
                 std::ptr::null_mut(),
-                0 as u64,
+                0_u64,
                 key_and_nonce[32..56].as_ptr(),
                 key_and_nonce[0..32].as_ptr(),
             );
@@ -188,7 +188,7 @@ impl Group {
             let mut plaintext = plaintext_buf.to_vec();
             plaintext.set_len(plaintext_len as usize);
 
-            return Ok(plaintext);
+            Ok(plaintext)
         }
     }
 }
@@ -205,17 +205,17 @@ mod tests {
     fn encrypt_and_decrypt() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let alice_curve25519_pk = alice_ekp.public().clone();
+        let alice_curve25519_pk = alice_ekp.public();
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let bob_curve25519_pk = bob_ekp.public().clone();
+        let bob_curve25519_pk = bob_ekp.public();
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
 
         let carol_skp = crate::keypair::signing::KeyPair::new();
         let carol_ekp = crate::keypair::exchange::KeyPair::new();
-        let carol_curve25519_pk = carol_ekp.public().clone();
+        let carol_curve25519_pk = carol_ekp.public();
         let mut carol_acc = Account::new(carol_skp, carol_ekp);
 
         // generate one time keys or alice and get one for bob to use

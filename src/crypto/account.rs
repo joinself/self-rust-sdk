@@ -18,7 +18,7 @@ impl Account {
 
         unsafe {
             let account_len = olm_account_size() as usize;
-            let account_buf = vec![0 as u8; account_len].into_boxed_slice();
+            let account_buf = vec![0_u8; account_len].into_boxed_slice();
             let account = olm_account(Box::into_raw(account_buf) as *mut libc::c_void);
 
             olm_import_account(
@@ -29,25 +29,21 @@ impl Account {
                 curve25519_public_key.as_mut_ptr() as *mut libc::c_void,
             );
 
-            return Account { account };
+            Account { account }
         }
     }
 
     pub fn from_pickle(pickle: &mut [u8], password: Option<&[u8]>) -> Result<Account, SelfError> {
         unsafe {
             let account_len = olm_account_size() as usize;
-            let account_buf = vec![0 as u8; account_len].into_boxed_slice();
+            let account_buf = vec![0_u8; account_len].into_boxed_slice();
             let account = olm_account(Box::into_raw(account_buf) as *mut libc::c_void);
 
-            let password_len = password
-                .and_then(|pwd| Some(pwd.len()))
-                .or_else(|| Some(0))
-                .unwrap();
+            let password_len = password.map(|pwd| pwd.len()).unwrap_or(0);
 
             let password_buf = password
-                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
-                .or_else(|| Some(std::ptr::null()))
-                .unwrap();
+                .map(|pwd| pwd as *const [u8] as *const libc::c_void)
+                .unwrap_or(std::ptr::null());
 
             olm_unpickle_account(
                 account,
@@ -57,19 +53,18 @@ impl Account {
                 pickle.len() as u64,
             );
 
-            let account = Account { account: account };
+            let account = Account { account };
 
             account.last_error()?;
 
-            return Ok(account);
+            Ok(account)
         }
     }
 
     pub fn one_time_keys(&self) -> Vec<u8> {
         unsafe {
             let mut one_time_keys_len = olm_account_one_time_keys_length(self.account);
-            let mut one_time_keys_buf =
-                vec![0 as u8; one_time_keys_len as usize].into_boxed_slice();
+            let mut one_time_keys_buf = vec![0_u8; one_time_keys_len as usize].into_boxed_slice();
 
             one_time_keys_len = olm_account_one_time_keys(
                 self.account,
@@ -77,7 +72,7 @@ impl Account {
                 one_time_keys_len,
             );
 
-            return one_time_keys_buf[0..one_time_keys_len as usize].to_vec();
+            one_time_keys_buf[0..one_time_keys_len as usize].to_vec()
         }
     }
 
@@ -89,7 +84,7 @@ impl Account {
 
             let random_len =
                 olm_account_generate_one_time_keys_random_length(self.account, count as u64);
-            let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
+            let mut random_buf = vec![0_u8; random_len as usize].into_boxed_slice();
             sodium_sys::randombytes_buf(random_buf.as_mut_ptr() as *mut libc::c_void, random_len);
 
             olm_account_generate_one_time_keys(
@@ -100,7 +95,7 @@ impl Account {
             );
         }
 
-        return self.last_error();
+        self.last_error()
     }
 
     pub fn remove_one_time_keys(&mut self, session: &Session) -> Result<(), SelfError> {
@@ -108,21 +103,20 @@ impl Account {
             olm_remove_one_time_keys(self.account, session.as_mut_ptr());
         }
 
-        return self.last_error();
+        self.last_error()
     }
 
     pub fn mark_keys_as_published(&mut self) -> Result<(), SelfError> {
         unsafe {
             olm_account_mark_keys_as_published(self.account);
         }
-        return self.last_error();
+        self.last_error()
     }
 
     pub fn identity_keys(&self) -> Vec<u8> {
         unsafe {
             let mut identity_keys_len = olm_account_identity_keys_length(self.account);
-            let mut identity_keys_buf =
-                vec![0 as u8; identity_keys_len as usize].into_boxed_slice();
+            let mut identity_keys_buf = vec![0_u8; identity_keys_len as usize].into_boxed_slice();
 
             identity_keys_len = olm_account_identity_keys(
                 self.account,
@@ -130,25 +124,20 @@ impl Account {
                 identity_keys_len,
             );
 
-            return identity_keys_buf[0..identity_keys_len as usize].to_vec();
+            identity_keys_buf[0..identity_keys_len as usize].to_vec()
         }
     }
 
     pub fn pickle(&self, password: Option<&[u8]>) -> Result<Vec<u8>, SelfError> {
         unsafe {
             let mut account_pickle_len = olm_pickle_account_length(self.account);
-            let mut account_pickle_buf =
-                vec![0 as u8; account_pickle_len as usize].into_boxed_slice();
+            let mut account_pickle_buf = vec![0_u8; account_pickle_len as usize].into_boxed_slice();
 
-            let password_len = password
-                .and_then(|pwd| Some(pwd.len()))
-                .or_else(|| Some(0))
-                .unwrap();
+            let password_len = password.map(|pwd| pwd.len()).unwrap_or(0);
 
             let password_buf = password
-                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
-                .or_else(|| Some(std::ptr::null()))
-                .unwrap();
+                .map(|pwd| pwd as *const [u8] as *const libc::c_void)
+                .unwrap_or(std::ptr::null());
 
             account_pickle_len = olm_pickle_account(
                 self.account,
@@ -160,7 +149,7 @@ impl Account {
 
             self.last_error()?;
 
-            return Ok(account_pickle_buf[0..account_pickle_len as usize].to_vec());
+            Ok(account_pickle_buf[0..account_pickle_len as usize].to_vec())
         }
     }
 
@@ -187,7 +176,7 @@ impl Account {
 
             session.last_error()?;
 
-            return Ok(session);
+            Ok(session)
         }
     }
 
@@ -202,7 +191,7 @@ impl Account {
 
         unsafe {
             let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());
-            let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
+            let mut random_buf = vec![0_u8; random_len as usize].into_boxed_slice();
             sodium_sys::randombytes_buf(random_buf.as_mut_ptr() as *mut libc::c_void, random_len);
 
             olm_create_outbound_session(
@@ -218,7 +207,7 @@ impl Account {
 
             session.last_error()?;
 
-            return Ok(session);
+            Ok(session)
         }
     }
 
