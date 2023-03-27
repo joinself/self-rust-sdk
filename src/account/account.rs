@@ -5,9 +5,12 @@ use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::transport::rest::Rest;
 
+use reqwest::Url;
+
 pub struct Account {
     rest: Rest,
     storage: Storage,
+    server: Url,
 }
 
 impl Account {
@@ -15,6 +18,7 @@ impl Account {
         return Account {
             rest: Rest::new(),
             storage: Storage::new().unwrap(),
+            server: Url::parse("https://api.joinself.com").expect("url parse shouldn't fail"),
         };
     }
 
@@ -38,7 +42,11 @@ impl Account {
             .build()?;
 
         // submit public key operation to api
-        self.rest.post("/v2/identities", operation, None, true)?;
+        let url = self
+            .server
+            .join("/v2/identities")
+            .map_err(|_| SelfError::RestRequestURLInvalid)?;
+        self.rest.post(&url.to_string(), operation, None, true)?;
 
         // persist account keys to keychain
         self.storage
@@ -68,17 +76,41 @@ impl Account {
 
         return Ok(identifier);
     }
+
+    pub fn server_set(&mut self, url: &str) -> Result<(), SelfError> {
+        self.server = Url::parse(url).map_err(|_| SelfError::RestRequestURLInvalid)?;
+        return Ok(());
+    }
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use httptest::{matchers::*, responders::*, Expectation, Server};
 
     #[test]
     fn register() {
+        let server = Server::run();
+
+        let m = all_of![
+            request::method_path("POST", "/v2/identities"),
+            request::headers(contains(key("x-self-pow-hash"))),
+            request::headers(contains(key("x-self-pow-nonce"))),
+        ];
+
+        server.expect(
+            Expectation::matching(m)
+                .respond_with(status_code(201).body("{\"status\":\"success\"}")),
+        );
+
         let recovery_key = KeyPair::new();
         let mut account = Account::new();
+
+        account
+            .server_set(&server.url_str("/"))
+            .expect("failed to set server url");
+
         let identifier = account.register(&recovery_key).expect("failed to register");
         assert!(identifier.id().len() == 32);
     }

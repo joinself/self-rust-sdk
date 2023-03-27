@@ -104,7 +104,9 @@ impl Rest {
         }
 
         if let Some(bd) = body {
-            if pow {}
+            if pow {
+                self.proof_of_work(&bd, request.headers_mut());
+            }
 
             *request.body_mut() = Some(reqwest::blocking::Body::from(bd));
         }
