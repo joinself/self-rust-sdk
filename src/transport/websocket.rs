@@ -876,6 +876,8 @@ mod tests {
             .recv_deadline(std::time::Instant::now() + std::time::Duration::from_secs(1))
             .expect("Server not ready");
 
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
         return (rt, msg_rx);
     }
 
