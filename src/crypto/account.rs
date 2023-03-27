@@ -272,7 +272,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn import_acocunt() {
+    fn import_account() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
         Account::new(skp, ekp);

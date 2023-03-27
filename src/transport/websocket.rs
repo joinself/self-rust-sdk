@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
 use crate::identifier::Identifier;
-use crate::protocol;
+use crate::protocol::messaging;
 use crate::token::Token;
 
 enum Event {
@@ -125,11 +125,11 @@ impl Websocket {
                 if event.is_binary() {
                     let data = event.into_data();
 
-                    let event = crate::protocol::root_as_event(&data)
-                        .expect("Failed to process websocket event");
+                    let event =
+                        messaging::root_as_event(&data).expect("Failed to process websocket event");
 
                     match event.type_() {
-                        protocol::ContentType::ACKNOWLEDGEMENT => {
+                        messaging::ContentType::ACKNOWLEDGEMENT => {
                             if let Some(id) = event.id() {
                                 let lock = requests_rx.lock().await;
 
@@ -140,9 +140,9 @@ impl Websocket {
                                 drop(lock);
                             }
                         }
-                        protocol::ContentType::ERROR => {
+                        messaging::ContentType::ERROR => {
                             let error = match event.content() {
-                                Some(content) => flatbuffers::root::<protocol::Error>(content)
+                                Some(content) => flatbuffers::root::<messaging::Error>(content)
                                     .expect("Failed to process websocket error content"),
                                 None => continue,
                             };
@@ -163,14 +163,14 @@ impl Websocket {
 
                             drop(lock);
                         }
-                        protocol::ContentType::MESSAGE => {
+                        messaging::ContentType::MESSAGE => {
                             if let Some(content) = event.content() {
-                                let message = flatbuffers::root::<protocol::Message>(content)
+                                let message = flatbuffers::root::<messaging::Message>(content)
                                     .expect("Failed to process websocket message content");
 
                                 let payload = match message.payload() {
                                     Some(payload) => {
-                                        flatbuffers::root::<protocol::Payload>(payload)
+                                        flatbuffers::root::<messaging::Payload>(payload)
                                             .expect("Failed to process websocket message content")
                                     }
                                     None => continue,
@@ -184,7 +184,9 @@ impl Websocket {
                                     .unwrap_or_else(|_| return);
                             }
                         }
-                        _ => {}
+                        _ => {
+                            println!("unknown event...");
+                        }
                     }
                 }
             }
@@ -203,7 +205,9 @@ impl Websocket {
                         socket_tx.send(msg).await
                     } {
                         Ok(_) => continue,
-                        Err(_) => break,
+                        Err(_) => {
+                            break;
+                        }
                     },
                     Event::Done => break,
                 }
@@ -305,9 +309,9 @@ impl Websocket {
         let recipient = builder.create_vector(&to.id());
         let content = builder.create_vector(content);
 
-        let payload = protocol::Payload::create(
+        let payload = messaging::Payload::create(
             &mut builder,
-            &protocol::PayloadArgs {
+            &messaging::PayloadArgs {
                 sender: Some(sender),
                 recipient: Some(recipient),
                 content: Some(content),
@@ -336,16 +340,16 @@ impl Websocket {
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
         let mut payload_sig_buf = vec![0; payload.len() + 1];
-        payload_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+        payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
         payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
         let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
 
         let mut signatures = Vec::new();
 
-        signatures.push(protocol::Signature::create(
+        signatures.push(messaging::Signature::create(
             &mut builder,
-            &protocol::SignatureArgs {
-                type_: protocol::SignatureType::PAYLOAD,
+            &messaging::SignatureArgs {
+                type_: messaging::SignatureType::PAYLOAD,
                 signer: None,
                 signature: Some(sig),
             },
@@ -357,10 +361,10 @@ impl Websocket {
                     Token::Authorization(auth) => {
                         let sig = builder.create_vector(&auth.token);
 
-                        signatures.push(protocol::Signature::create(
+                        signatures.push(messaging::Signature::create(
                             &mut builder,
-                            &protocol::SignatureArgs {
-                                type_: protocol::SignatureType::AUTH,
+                            &messaging::SignatureArgs {
+                                type_: messaging::SignatureType::AUTH,
                                 signer: None,
                                 signature: Some(sig),
                             },
@@ -370,10 +374,10 @@ impl Websocket {
                         let sig = builder.create_vector(&delegation.token);
                         let iss = builder.create_vector(&delegation.issuer.id());
 
-                        signatures.push(protocol::Signature::create(
+                        signatures.push(messaging::Signature::create(
                             &mut builder,
-                            &protocol::SignatureArgs {
-                                type_: protocol::SignatureType::AUTH,
+                            &messaging::SignatureArgs {
+                                type_: messaging::SignatureType::AUTH,
                                 signer: Some(iss),
                                 signature: Some(sig),
                             },
@@ -391,9 +395,9 @@ impl Websocket {
         let pld = builder.create_vector(payload);
         let sigs = builder.create_vector(&signatures);
 
-        let msg = protocol::Message::create(
+        let msg = messaging::Message::create(
             &mut builder,
-            &protocol::MessageArgs {
+            &messaging::MessageArgs {
                 payload: Some(pld),
                 signatures: Some(sigs),
                 pow: None,
@@ -411,11 +415,11 @@ impl Websocket {
         let eid = builder.create_vector(&event_id);
         let cnt = builder.create_vector(&content);
 
-        let event = protocol::Event::create(
+        let event = messaging::Event::create(
             &mut builder,
-            &protocol::EventArgs {
+            &messaging::EventArgs {
                 id: Some(eid),
-                type_: protocol::ContentType::MESSAGE,
+                type_: messaging::ContentType::MESSAGE,
                 content: Some(cnt),
             },
         );
@@ -442,9 +446,9 @@ impl Websocket {
 
             let inbox = builder.create_vector(&subscription.identifier.id());
 
-            let details = protocol::SubscriptionDetails::create(
+            let details = messaging::SubscriptionDetails::create(
                 &mut builder,
-                &protocol::SubscriptionDetailsArgs {
+                &messaging::SubscriptionDetailsArgs {
                     inbox: Some(inbox),
                     issued: now,
                     from: subscription.from,
@@ -454,7 +458,7 @@ impl Websocket {
             builder.finish(details, None);
 
             let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
-            details_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+            details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
             details_sig_buf[1..builder.finished_data().len() + 1]
                 .copy_from_slice(builder.finished_data());
 
@@ -464,10 +468,10 @@ impl Websocket {
 
             let mut sigs = Vec::new();
 
-            sigs.push(protocol::Signature::create(
+            sigs.push(messaging::Signature::create(
                 &mut builder,
-                &protocol::SignatureArgs {
-                    type_: protocol::SignatureType::PAYLOAD,
+                &messaging::SignatureArgs {
+                    type_: messaging::SignatureType::PAYLOAD,
                     signer: None,
                     signature: Some(sig),
                 },
@@ -481,10 +485,10 @@ impl Websocket {
 
                 let sig = builder.create_vector(&subscription_token.token);
 
-                sigs.push(protocol::Signature::create(
+                sigs.push(messaging::Signature::create(
                     &mut builder,
-                    &protocol::SignatureArgs {
-                        type_: protocol::SignatureType::SUBSCRIPTION,
+                    &messaging::SignatureArgs {
+                        type_: messaging::SignatureType::SUBSCRIPTION,
                         signer: None,
                         signature: Some(sig),
                     },
@@ -494,9 +498,9 @@ impl Websocket {
             let signatures = builder.create_vector(&sigs);
             let details = builder.create_vector(&details_sig_buf[1..]);
 
-            subs.push(protocol::Subscription::create(
+            subs.push(messaging::Subscription::create(
                 &mut builder,
-                &protocol::SubscriptionArgs {
+                &messaging::SubscriptionArgs {
                     details: Some(details),
                     signatures: Some(signatures),
                 },
@@ -505,9 +509,9 @@ impl Websocket {
 
         let subs = builder.create_vector(&subs);
 
-        let subscribe = protocol::Subscribe::create(
+        let subscribe = messaging::Subscribe::create(
             &mut builder,
-            &protocol::SubscribeArgs {
+            &messaging::SubscribeArgs {
                 subscriptions: Some(subs),
             },
         );
@@ -522,11 +526,11 @@ impl Websocket {
         let eid = builder.create_vector(&event_id);
         let cnt = builder.create_vector(&content);
 
-        let event = protocol::Event::create(
+        let event = messaging::Event::create(
             &mut builder,
-            &protocol::EventArgs {
+            &messaging::EventArgs {
                 id: Some(eid),
-                type_: protocol::ContentType::MESSAGE,
+                type_: messaging::ContentType::MESSAGE,
                 content: Some(cnt),
             },
         );
@@ -541,12 +545,12 @@ impl Websocket {
 mod tests {
     use crate::{
         keypair::signing::{KeyPair, PublicKey},
-        protocol,
+        protocol::messaging,
     };
 
     use super::*;
     use futures_util::stream::SplitSink;
-    //use futures_util::{SinkExt, StreamExt};
+    use futures_util::{SinkExt, StreamExt};
     use tokio::{
         io::{AsyncRead, AsyncWrite},
         net::TcpListener,
@@ -561,11 +565,11 @@ mod tests {
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
         let id = builder.create_vector(id);
 
-        let event = protocol::Event::create(
+        let event = messaging::Event::create(
             &mut builder,
-            &protocol::EventArgs {
+            &messaging::EventArgs {
                 id: Some(id),
-                type_: protocol::ContentType::ACKNOWLEDGEMENT,
+                type_: messaging::ContentType::ACKNOWLEDGEMENT,
                 content: None,
             },
         );
@@ -589,10 +593,10 @@ mod tests {
 
         let reason = builder.create_vector(reason);
 
-        let error = protocol::Error::create(
+        let error = messaging::Error::create(
             &mut builder,
-            &protocol::ErrorArgs {
-                code: protocol::StatusCode::BADAUTH,
+            &messaging::ErrorArgs {
+                code: messaging::StatusCode::BADAUTH,
                 error: Some(reason),
             },
         );
@@ -604,11 +608,11 @@ mod tests {
         let id = builder.create_vector(id);
         let content = builder.create_vector(&content);
 
-        let event = protocol::Event::create(
+        let event = messaging::Event::create(
             &mut builder,
-            &protocol::EventArgs {
+            &messaging::EventArgs {
                 id: Some(id),
-                type_: protocol::ContentType::ACKNOWLEDGEMENT,
+                type_: messaging::ContentType::ACKNOWLEDGEMENT,
                 content: Some(content),
             },
         );
@@ -642,9 +646,9 @@ mod tests {
         let recipient = builder.create_vector(&to.id());
         let content = builder.create_vector(content);
 
-        let payload = protocol::Payload::create(
+        let payload = messaging::Payload::create(
             &mut builder,
-            &protocol::PayloadArgs {
+            &messaging::PayloadArgs {
                 sender: Some(sender),
                 recipient: Some(recipient),
                 content: Some(content),
@@ -658,16 +662,16 @@ mod tests {
         builder.reset();
 
         let mut payload_sig_buf = vec![0; payload.len() + 1];
-        payload_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+        payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
         payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
         let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
 
         let mut signatures = Vec::new();
 
-        signatures.push(protocol::Signature::create(
+        signatures.push(messaging::Signature::create(
             &mut builder,
-            &protocol::SignatureArgs {
-                type_: protocol::SignatureType::PAYLOAD,
+            &messaging::SignatureArgs {
+                type_: messaging::SignatureType::PAYLOAD,
                 signer: None,
                 signature: Some(sig),
             },
@@ -676,9 +680,9 @@ mod tests {
         let pld = builder.create_vector(&payload);
         let sigs = builder.create_vector(&signatures);
 
-        let msg = protocol::Message::create(
+        let msg = messaging::Message::create(
             &mut builder,
-            &protocol::MessageArgs {
+            &messaging::MessageArgs {
                 payload: Some(pld),
                 signatures: Some(sigs),
                 pow: None,
@@ -696,11 +700,11 @@ mod tests {
         let eid = builder.create_vector(&event_id);
         let cnt = builder.create_vector(&content);
 
-        let event = protocol::Event::create(
+        let event = messaging::Event::create(
             &mut builder,
-            &protocol::EventArgs {
+            &messaging::EventArgs {
                 id: Some(eid),
-                type_: protocol::ContentType::MESSAGE,
+                type_: messaging::ContentType::MESSAGE,
                 content: Some(cnt),
             },
         );
@@ -734,10 +738,10 @@ mod tests {
         }
 
         let event = event.into_data();
-        let event = protocol::root_as_event(&event).expect("Failed to read auth message");
+        let event = messaging::root_as_event(&event).expect("Failed to read auth message");
         let content = event.content().expect("Subscribe event missing content");
         let subscribe =
-            flatbuffers::root::<protocol::Subscribe>(content).expect("Subscribe event invalid");
+            flatbuffers::root::<messaging::Subscribe>(content).expect("Subscribe event invalid");
 
         let mut subscriptions = Vec::new();
 
@@ -751,7 +755,7 @@ mod tests {
                 .signatures()
                 .expect("Subscription signatures empty");
 
-            let details = flatbuffers::root::<protocol::SubscriptionDetails>(details_buf)
+            let details = flatbuffers::root::<messaging::SubscriptionDetails>(details_buf)
                 .expect("Subscription details invalid");
             let inbox = details.inbox().expect("Subscription inbox missing");
 
@@ -763,12 +767,12 @@ mod tests {
                 let sig = signature.signature().expect("Subscription signature empty");
 
                 match signature.type_() {
-                    protocol::SignatureType::PAYLOAD => {
+                    messaging::SignatureType::PAYLOAD => {
                         // authenticate the subscriber over the subscriptions details
                         let signer = signature.signer().unwrap_or(inbox);
 
                         let mut details_sig_buf = vec![0; details_len + 1];
-                        details_sig_buf[0] = protocol::SignatureType::PAYLOAD.0 as u8;
+                        details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
                         details_sig_buf[1..details_len + 1].copy_from_slice(details_buf);
 
                         let pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)
@@ -790,9 +794,9 @@ mod tests {
 
                         authenticated = true;
                     }
-                    protocol::SignatureType::SUBSCRIPTION => {
+                    messaging::SignatureType::SUBSCRIPTION => {
                         let mut subscription_sig_buf = vec![0; 65];
-                        subscription_sig_buf[0] = protocol::SignatureType::SUBSCRIPTION.0 as u8;
+                        subscription_sig_buf[0] = messaging::SignatureType::SUBSCRIPTION.0 as u8;
                         subscription_sig_buf[1..33].copy_from_slice(inbox);
                         subscription_sig_buf[33..65]
                             .copy_from_slice(subscriber.expect("Subscriber empty"));
@@ -834,13 +838,13 @@ mod tests {
             if m.is_binary() {
                 let data = m.into_data().clone();
 
-                let event = protocol::root_as_event(&data).expect("Event invalid");
+                let event = messaging::root_as_event(&data).expect("Event invalid");
                 let content = event.content().expect("Event content missing");
-                let message = flatbuffers::root::<protocol::Message>(content)
+                let message = flatbuffers::root::<messaging::Message>(content)
                     .expect("Failed to process websocket message content");
 
                 let payload = match message.payload() {
-                    Some(payload) => flatbuffers::root::<protocol::Payload>(payload)
+                    Some(payload) => flatbuffers::root::<messaging::Payload>(payload)
                         .expect("Failed to process websocket message content"),
                     None => continue,
                 };
@@ -875,6 +879,8 @@ mod tests {
         con_rx
             .recv_deadline(std::time::Instant::now() + std::time::Duration::from_secs(1))
             .expect("Server not ready");
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         return (rt, msg_rx);
     }

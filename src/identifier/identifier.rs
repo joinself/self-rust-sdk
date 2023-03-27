@@ -1,8 +1,12 @@
+use hex::ToHex;
+
 use crate::error::SelfError;
 use crate::keypair::{
     signing::{KeyPair, PublicKey},
     Algorithm,
 };
+
+use std::fmt;
 
 #[derive(Clone)]
 pub enum Identifier {
@@ -28,5 +32,20 @@ impl Identifier {
             Self::Owned(kp) => kp.public(),
             Self::Referenced(pk) => pk.clone(),
         };
+    }
+}
+
+impl fmt::Debug for Identifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Identifier::Owned(_) => f
+                .debug_struct("Owned")
+                .field("id", &self.id().encode_hex::<String>())
+                .finish(),
+            Identifier::Referenced(_) => f
+                .debug_struct("Referenced")
+                .field("id", &self.id().encode_hex::<String>())
+                .finish(),
+        }
     }
 }

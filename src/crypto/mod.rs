@@ -1,6 +1,7 @@
 pub mod account;
 pub mod hash;
 pub mod omemo;
+pub mod pow;
 pub mod random;
 pub mod session;
 

@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::keypair::signing::PublicKey;
-use crate::siggraph::KeyRole;
+use crate::protocol::siggraph::KeyRole;
 
 #[derive(Debug)]
 pub struct Node {

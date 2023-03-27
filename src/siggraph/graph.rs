@@ -3,11 +3,11 @@ use flatbuffers::{ForwardsUOffset, Vector};
 use crate::error::SelfError;
 use crate::keypair::signing::PublicKey;
 use crate::keypair::Algorithm;
-use crate::siggraph::node::Node;
-use crate::siggraph::{
+use crate::protocol::siggraph::{
     root_as_signed_operation, Action, Actionable, CreateKey, KeyAlgorithm, KeyRole, Operation,
     Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
 };
+use crate::siggraph::{node::Node, operation::OperationBuilder};
 
 use std::borrow::Borrow;
 use std::cell::RefCell;
@@ -25,7 +25,19 @@ pub struct SignatureGraph {
 }
 
 impl SignatureGraph {
-    pub fn new(history: &[Vec<u8>]) -> Result<SignatureGraph, SelfError> {
+    pub fn new() -> SignatureGraph {
+        return SignatureGraph {
+            id: None,
+            root: None,
+            keys: HashMap::new(),
+            hashes: HashMap::new(),
+            operations: Vec::new(),
+            recovery_key: None,
+            sig_buf: vec![0; 96],
+        };
+    }
+
+    pub fn load(history: &[Vec<u8>], verify: bool) -> Result<SignatureGraph, SelfError> {
         let mut sg = SignatureGraph {
             id: None,
             root: None,
@@ -37,28 +49,28 @@ impl SignatureGraph {
         };
 
         for operation in history {
-            sg.execute_operation(operation.to_owned(), true)?
+            sg.execute_operation(operation.to_owned(), verify)?
         }
 
         return Ok(sg);
     }
 
-    pub fn load(history: &[Vec<u8>]) -> Result<SignatureGraph, SelfError> {
-        let mut sg = SignatureGraph {
-            id: None,
-            root: None,
-            keys: HashMap::new(),
-            hashes: HashMap::new(),
-            operations: Vec::new(),
-            recovery_key: None,
-            sig_buf: vec![0; 96],
-        };
+    pub fn create(&self) -> OperationBuilder {
+        let mut ob = OperationBuilder::new();
 
-        for operation in history {
-            sg.execute_operation(operation.to_owned(), false)?
+        ob.sequence(self.operations.len() as u32)
+            .timestamp(crate::time::unix());
+
+        if let Some(id) = &self.id {
+            ob.id(id);
         }
 
-        return Ok(sg);
+        if let Some(last_op) = self.operations.last() {
+            // compute the hash of the last operation
+            ob.previous(&crate::crypto::hash::blake2b(last_op));
+        }
+
+        return ob;
     }
 
     pub fn execute(&mut self, operation: Vec<u8>) -> Result<(), SelfError> {
@@ -66,9 +78,10 @@ impl SignatureGraph {
     }
 
     fn execute_operation(&mut self, operation: Vec<u8>, verify: bool) -> Result<(), SelfError> {
-        //let operation_copy: &'a [u8] = &operation;
         let signed_op = root_as_signed_operation(&operation)
             .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
+
+        let signed_op_hash = crate::crypto::hash::blake2b(&operation);
 
         let op_bytes = signed_op
             .operation()
@@ -77,11 +90,10 @@ impl SignatureGraph {
         let op = flatbuffers::root::<Operation>(op_bytes)
             .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
 
-        let op_hash = crate::crypto::hash::blake2b(op_bytes);
-
         let mut signers = HashSet::new();
 
         if verify {
+            let op_hash = crate::crypto::hash::blake2b(&op_bytes);
             // copy the operation hash to our temporary buffer we
             // will use to calculate signatures for each signer
             self.sig_buf[32..64].copy_from_slice(&op_hash);
@@ -101,7 +113,7 @@ impl SignatureGraph {
 
         self.execute_actions(&op, &actions, &signers)?;
 
-        self.hashes.insert(op_hash, self.operations.len());
+        self.hashes.insert(signed_op_hash, self.operations.len());
         self.operations.push(operation);
 
         return Ok(());
@@ -608,13 +620,13 @@ mod tests {
     use crate::{
         error::SelfError,
         keypair::signing::KeyPair,
-        siggraph::{
-            Action, ActionArgs, Actionable, CreateKey, CreateKeyArgs, KeyRole, OperationArgs,
-            Recover, RecoverArgs, RevokeKey, RevokeKeyArgs, Signature, SignatureArgs,
-            SignatureGraph, SignatureHeader, SignatureHeaderArgs, SignedOperation,
+        protocol::siggraph::{
+            Action, ActionArgs, Actionable, CreateKey, CreateKeyArgs, KeyAlgorithm, KeyRole,
+            Operation, OperationArgs, Recover, RecoverArgs, RevokeKey, RevokeKeyArgs, Signature,
+            SignatureArgs, SignatureHeader, SignatureHeaderArgs, SignedOperation,
             SignedOperationArgs,
         },
-        siggraph::{KeyAlgorithm, Operation},
+        siggraph::SignatureGraph,
     };
 
     struct TestSigner {
@@ -797,11 +809,13 @@ mod tests {
 
         fn_builder.finish(signed_op, None);
 
-        return (fn_builder.finished_data().to_vec(), op_hash);
+        let signed_op_hash = crate::crypto::hash::blake2b(fn_builder.finished_data());
+
+        return (fn_builder.finished_data().to_vec(), signed_op_hash);
     }
 
     fn test_execute<'a>(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
-        let mut sg = SignatureGraph::new(&Vec::new()).unwrap();
+        let mut sg = SignatureGraph::new();
         let mut previous_hash: Option<Vec<u8>> = None;
 
         for mut test_op in test_history {
