@@ -104,15 +104,12 @@ impl Websocket {
 
         handle.spawn(async move {
             while let Some(event) = socket_rx.next().await {
-                println!("event is err?... {}", event.is_err());
-
                 let event = match event {
                     Ok(event) => event,
                     Err(_) => return,
                 };
 
                 if event.is_close() {
-                    println!("exit here 1...");
                     write_tx.send(Event::Done).unwrap();
                     return;
                 }
@@ -167,7 +164,6 @@ impl Websocket {
                             drop(lock);
                         }
                         messaging::ContentType::MESSAGE => {
-                            println!("got msg...");
                             if let Some(content) = event.content() {
                                 let message = flatbuffers::root::<messaging::Message>(content)
                                     .expect("Failed to process websocket message content");
@@ -205,16 +201,13 @@ impl Websocket {
                             let mut lock = requests_tx.lock().await;
                             lock.insert(id, cb);
                             drop(lock);
-                        } else {
-                            println!("callback not found")
                         }
                         socket_tx.send(msg).await
                     } {
                         Ok(_) => continue,
                         Err(_) => {
-                            println!("write failed, exit...");
                             break;
-                        },
+                        }
                     },
                     Event::Done => break,
                 }

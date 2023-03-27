@@ -96,8 +96,6 @@ mod tests {
 
         let (hash, nonce) = p.calculate(&data);
 
-        println!("hash: {:?} nonce: {}", hash, nonce);
-
         assert!(p.validate(&data, &hash, nonce));
     }
 }
