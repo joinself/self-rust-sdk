@@ -119,16 +119,16 @@ impl Rest {
         let successful_response = response.unwrap();
         let status = successful_response.status().as_u16();
 
-        return match successful_response.bytes() {
+        match successful_response.bytes() {
             Ok(bytes) => Ok(Response {
                 code: status,
                 data: bytes.to_vec(),
             }),
             Err(err) => {
                 println!("{}", err);
-                return Err(SelfError::RestRequestInvalid);
+                Err(SelfError::RestRequestInvalid)
             }
-        };
+        }
     }
 
     fn proof_of_work(&self, body: &[u8], headers: &mut reqwest::header::HeaderMap) {
