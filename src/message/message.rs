@@ -361,6 +361,12 @@ impl Message {
     }
 }
 
+impl Default for Message {
+    fn default() -> Self {
+        Message::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

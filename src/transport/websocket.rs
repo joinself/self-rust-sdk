@@ -16,12 +16,10 @@ use crate::identifier::Identifier;
 use crate::protocol::messaging;
 use crate::token::Token;
 
+pub type Response = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+
 enum Event {
-    Message(
-        Vec<u8>,
-        Message,
-        Option<Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>>,
-    ),
+    Message(Vec<u8>, Message, Option<Response>),
     Done,
 }
 
@@ -79,9 +77,7 @@ impl Websocket {
         // TODO cleanup old sockets!
 
         let (tx, rx) = channel::bounded(1);
-        let requests: Arc<
-            Mutex<HashMap<Vec<u8>, Arc<dyn Fn(Result<(), SelfError>) + Send + Sync>>>,
-        > = Arc::new(Mutex::new(HashMap::new()));
+        let requests: Arc<Mutex<HashMap<Vec<u8>, Response>>> = Arc::new(Mutex::new(HashMap::new()));
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
 
@@ -275,7 +271,7 @@ impl Websocket {
             Some(Arc::clone(&callback)),
         );
 
-        if let Err(_) = self.write_tx.send(event) {
+        if self.write_tx.send(event).is_err() {
             // TODO handle this error properly
             callback(Err(SelfError::RestRequestConnectionTimeout));
         }
@@ -663,16 +659,14 @@ mod tests {
         payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
         let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
 
-        let mut signatures = Vec::new();
-
-        signatures.push(messaging::Signature::create(
+        let signatures = vec![messaging::Signature::create(
             &mut builder,
             &messaging::SignatureArgs {
                 type_: messaging::SignatureType::PAYLOAD,
                 signer: None,
                 signature: Some(sig),
             },
-        ));
+        )];
 
         let pld = builder.create_vector(&payload);
         let sigs = builder.create_vector(&signatures);
@@ -780,7 +774,7 @@ mod tests {
                             return;
                         };
 
-                        subscriptions.push(inbox.clone());
+                        subscriptions.push(inbox.to_vec());
 
                         if inbox == signer {
                             (authenticated, authorized) = (true, true);
@@ -821,7 +815,7 @@ mod tests {
 
         for subscription in subscriptions {
             let recipient = Identifier::Referenced(
-                PublicKey::from_bytes(subscription, crate::keypair::Algorithm::Ed25519)
+                PublicKey::from_bytes(&subscription, crate::keypair::Algorithm::Ed25519)
                     .expect("Invalid subscription public key"),
             );
             msg(&mut socket_tx, &sender, &recipient, 0, b"test message").await;

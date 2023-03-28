@@ -6,7 +6,6 @@ use std::mem;
 extern crate flatbuffers;
 use self::flatbuffers::{EndianScalar, Follow};
 
-#[allow(unused_imports, dead_code)]
 pub mod messaging {
 
     use std::cmp::Ordering;

@@ -145,6 +145,12 @@ impl Rest {
     }
 }
 
+impl Default for Rest {
+    fn default() -> Self {
+        Rest::new()
+    }
+}
+
 fn handle_error(e: reqwest::Error) -> SelfError {
     println!("reqwest err: {}", e);
     if e.is_redirect() {

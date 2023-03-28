@@ -46,6 +46,9 @@ impl Session {
         }
     }
 
+    /// # Safety
+    ///
+    /// This function should only be called internally by olm messages.
     pub unsafe fn as_mut_ptr(&self) -> *mut OlmSession {
         self.session
     }
@@ -188,6 +191,12 @@ impl Session {
     }
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Session::new()
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         unsafe {
@@ -270,7 +279,7 @@ mod tests {
 
         // check it's intended for the session alice currently has with bob
         let matches = alices_session_with_bob
-            .matches_inbound_session(&bob_curve25519_pk, &mut bobs_message_to_alice_2)
+            .matches_inbound_session(&bob_curve25519_pk, &bobs_message_to_alice_2)
             .expect("failed to check if one time key message matches session");
 
         assert!(matches);

@@ -173,7 +173,7 @@ impl<'a> OperationBuilder<'a> {
         }
 
         for revoke in &self.revoke {
-            let effective_from = revoke.1.unwrap_or(self.timestamp.unwrap());
+            let effective_from = revoke.1.unwrap_or_else(|| self.timestamp.unwrap());
 
             let kb = self.builder.create_vector(&revoke.0.id());
 
@@ -248,5 +248,11 @@ impl<'a> OperationBuilder<'a> {
         self.sig_buf[32..64].copy_from_slice(&op_hash);
 
         self.operation = Some(op_bytes);
+    }
+}
+
+impl Default for OperationBuilder<'_> {
+    fn default() -> Self {
+        OperationBuilder::new()
     }
 }

@@ -83,6 +83,12 @@ impl Account {
     }
 }
 
+impl Default for Account {
+    fn default() -> Self {
+        Account::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
 

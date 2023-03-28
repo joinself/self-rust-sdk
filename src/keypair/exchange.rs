@@ -146,6 +146,12 @@ impl KeyPair {
     }
 }
 
+impl Default for KeyPair {
+    fn default() -> Self {
+        KeyPair::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

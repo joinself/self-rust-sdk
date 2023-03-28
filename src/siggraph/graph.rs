@@ -301,10 +301,10 @@ impl SignatureGraph {
         let mut signing_keys = 0;
         let mut recovery_keys = 0;
 
-        for (_, key) in &active_keys {
-            if *key == KeyRole::Signing {
+        for role in active_keys.values() {
+            if *role == KeyRole::Signing {
                 signing_keys += 1;
-            } else if *key == KeyRole::Recovery {
+            } else if *role == KeyRole::Recovery {
                 recovery_keys += 1;
             }
         }
@@ -588,7 +588,7 @@ impl SignatureGraph {
             return false;
         }
 
-        if k.ca == at && k.ra == 0 || k.ca < at && k.ra == 0 {
+        if !(k.ra != 0 || k.ca != at && k.ca >= at) {
             return true;
         }
 
@@ -596,7 +596,7 @@ impl SignatureGraph {
             return false;
         }
 
-        if k.ca == at && k.ra > at || k.ca < at && k.ra > at {
+        if !(k.ra <= at || k.ca != at && k.ca >= at) {
             return true;
         }
 
@@ -609,6 +609,12 @@ impl SignatureGraph {
         let op_bytes = signed_op.operation().unwrap();
 
         return flatbuffers::root::<Operation>(op_bytes).unwrap();
+    }
+}
+
+impl Default for SignatureGraph {
+    fn default() -> Self {
+        SignatureGraph::new()
     }
 }
 
@@ -814,13 +820,15 @@ mod tests {
         return (fn_builder.finished_data().to_vec(), signed_op_hash);
     }
 
-    fn test_execute<'a>(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
+    fn test_execute(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
         let mut sg = SignatureGraph::new();
         let mut previous_hash: Option<Vec<u8>> = None;
 
         for mut test_op in test_history {
-            if test_op.previous.is_empty() && previous_hash.is_some() {
-                test_op.previous = previous_hash.unwrap();
+            if test_op.previous.is_empty() {
+                if let Some(previous) = previous_hash {
+                    test_op.previous = previous;
+                }
             }
 
             let (signed_op, previous) = test_operation(test_op);

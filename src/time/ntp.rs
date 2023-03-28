@@ -15,8 +15,7 @@ pub fn now() -> DateTime<Utc> {
     unsafe {
         let last_check = LAST_CHECK.load(Ordering::SeqCst);
 
-        if (last_check == std::ptr::null_mut()
-            || (*last_check).time() < ts.time() - chrono::Duration::hours(1))
+        if (last_check.is_null() || (*last_check).time() < ts.time() - chrono::Duration::hours(1))
             && update_last_checked(last_check, ts)
         {
             update_ntp_offset();
@@ -32,7 +31,8 @@ fn update_ntp_offset() {
     loop {
         let stime = chrono::Utc::now();
 
-        let ntp_server = std::env::var("SELF_NTP").unwrap_or("time.google.com:123".to_string());
+        let ntp_server =
+            std::env::var("SELF_NTP").unwrap_or_else(|_| "time.google.com:123".to_string());
 
         match ntp::request(ntp_server) {
             Ok(response) => {
@@ -63,7 +63,7 @@ fn ntp_offset() -> chrono::Duration {
     unsafe {
         loop {
             let offset = NTP_OFFSET.load(Ordering::SeqCst);
-            if offset != std::ptr::null_mut() {
+            if !offset.is_null() {
                 return *offset;
             }
 
@@ -74,15 +74,14 @@ fn ntp_offset() -> chrono::Duration {
 
 fn update_last_checked(checked: *mut DateTime<Utc>, current_timestamp: DateTime<Utc>) -> bool {
     unsafe {
-        match LAST_CHECK.compare_exchange(
-            checked,
-            Box::into_raw(Box::new(current_timestamp)),
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        LAST_CHECK
+            .compare_exchange(
+                checked,
+                Box::into_raw(Box::new(current_timestamp)),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
     }
 }
 

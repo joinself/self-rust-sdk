@@ -52,7 +52,7 @@ impl PublicKey {
         self.bytes.encode_hex()
     }
 
-    pub fn eq(&self, bytes: &[u8]) -> bool {
+    pub fn matches(&self, bytes: &[u8]) -> bool {
         self.bytes.eq(bytes)
     }
 
@@ -173,6 +173,12 @@ impl KeyPair {
 
     pub fn to_vec(&self) -> Vec<u8> {
         self.secret_key.bytes.clone()
+    }
+}
+
+impl Default for KeyPair {
+    fn default() -> Self {
+        KeyPair::new()
     }
 }
 
