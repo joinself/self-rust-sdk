@@ -26,7 +26,7 @@ pub struct SignatureGraph {
 
 impl SignatureGraph {
     pub fn new() -> SignatureGraph {
-        return SignatureGraph {
+        SignatureGraph {
             id: None,
             root: None,
             keys: HashMap::new(),
@@ -34,7 +34,7 @@ impl SignatureGraph {
             operations: Vec::new(),
             recovery_key: None,
             sig_buf: vec![0; 96],
-        };
+        }
     }
 
     pub fn load(history: &[Vec<u8>], verify: bool) -> Result<SignatureGraph, SelfError> {
@@ -52,7 +52,7 @@ impl SignatureGraph {
             sg.execute_operation(operation.to_owned(), verify)?
         }
 
-        return Ok(sg);
+        Ok(sg)
     }
 
     pub fn create(&self) -> OperationBuilder {
@@ -70,11 +70,11 @@ impl SignatureGraph {
             ob.previous(&crate::crypto::hash::blake2b(last_op));
         }
 
-        return ob;
+        ob
     }
 
     pub fn execute(&mut self, operation: Vec<u8>) -> Result<(), SelfError> {
-        self.execute_operation(operation.to_owned(), true)
+        self.execute_operation(operation, true)
     }
 
     fn execute_operation(&mut self, operation: Vec<u8>, verify: bool) -> Result<(), SelfError> {
@@ -85,7 +85,7 @@ impl SignatureGraph {
 
         let op_bytes = signed_op
             .operation()
-            .ok_or_else(|| SelfError::SiggraphOperationDecodingInvalid)?;
+            .ok_or(SelfError::SiggraphOperationDecodingInvalid)?;
 
         let op = flatbuffers::root::<Operation>(op_bytes)
             .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
@@ -93,7 +93,7 @@ impl SignatureGraph {
         let mut signers = HashSet::new();
 
         if verify {
-            let op_hash = crate::crypto::hash::blake2b(&op_bytes);
+            let op_hash = crate::crypto::hash::blake2b(op_bytes);
             // copy the operation hash to our temporary buffer we
             // will use to calculate signatures for each signer
             self.sig_buf[32..64].copy_from_slice(&op_hash);
@@ -116,7 +116,7 @@ impl SignatureGraph {
         self.hashes.insert(signed_op_hash, self.operations.len());
         self.operations.push(operation);
 
-        return Ok(());
+        Ok(())
     }
 
     fn validate_operation(
@@ -139,7 +139,7 @@ impl SignatureGraph {
         }
         // TODO replace with is_some_and once stable
         if let Some(actions) = op.actions() {
-            if actions.len() < 1 {
+            if actions.is_empty() {
                 return Err(SelfError::SiggraphOperationNOOP);
             }
         }
@@ -219,7 +219,7 @@ impl SignatureGraph {
             signers.insert(signer.to_vec());
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn authorize_operation(
@@ -258,7 +258,7 @@ impl SignatureGraph {
             return Err(SelfError::SiggraphOperationSigningKeyInvalid);
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn validate_actions(
@@ -294,17 +294,17 @@ impl SignatureGraph {
             }
         }
 
-        if active_keys.len() < 1 {
+        if active_keys.is_empty() {
             return Err(SelfError::SiggraphOperationNoValidKeys);
         }
 
         let mut signing_keys = 0;
         let mut recovery_keys = 0;
 
-        for (_, key) in &active_keys {
-            if *key == KeyRole::Signing {
+        for role in active_keys.values() {
+            if *role == KeyRole::Signing {
                 signing_keys += 1;
-            } else if *key == KeyRole::Recovery {
+            } else if *role == KeyRole::Recovery {
                 recovery_keys += 1;
             }
         }
@@ -321,7 +321,7 @@ impl SignatureGraph {
             return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn execute_actions(
@@ -335,7 +335,7 @@ impl SignatureGraph {
             match action.actionable_type() {
                 Actionable::CreateKey => {
                     let create_key = action.actionable_as_create_key().unwrap();
-                    self.execute_create_key(&op, &create_key, &signers)?;
+                    self.execute_create_key(op, &create_key, signers)?;
                 }
                 Actionable::RevokeKey => {
                     let revoke_key = action.actionable_as_revoke_key().unwrap();
@@ -349,7 +349,7 @@ impl SignatureGraph {
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn validate_create_key(
@@ -394,7 +394,7 @@ impl SignatureGraph {
 
         active_keys.insert(key.to_vec(), ck.role());
 
-        return Ok(());
+        Ok(())
     }
 
     fn execute_create_key(
@@ -425,7 +425,7 @@ impl SignatureGraph {
                 if key.eq(signer) {
                     // TODO replace with is_some_and once stable
                     if let Some(id) = self.id.as_ref() {
-                        if !key.eq(&*id) {
+                        if !key.eq(id) {
                             self.root = Some(node.clone());
                         }
                     }
@@ -447,7 +447,7 @@ impl SignatureGraph {
             parent.as_ref().borrow_mut().outgoing.push(node.clone());
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn validate_revoke_key(
@@ -489,7 +489,7 @@ impl SignatureGraph {
 
         active_keys.remove(key);
 
-        return Ok(());
+        Ok(())
     }
 
     fn execute_revoke_key(&mut self, rk: &RevokeKey) -> Result<(), SelfError> {
@@ -509,7 +509,7 @@ impl SignatureGraph {
         let node = self
             .keys
             .get(key)
-            .ok_or_else(|| SelfError::SiggraphActionSigningKeyInvalid)?
+            .ok_or(SelfError::SiggraphActionSigningKeyInvalid)?
             .clone();
 
         let revoked_key = node.as_ref().borrow();
@@ -523,7 +523,7 @@ impl SignatureGraph {
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn validate_recover(
@@ -559,7 +559,7 @@ impl SignatureGraph {
             active_keys.remove(&key);
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn execute_recover(&mut self, rc: &Recover) -> Result<(), SelfError> {
@@ -574,7 +574,7 @@ impl SignatureGraph {
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 
     pub fn is_key_valid(&self, id: &[u8], at: i64) -> bool {
@@ -588,7 +588,7 @@ impl SignatureGraph {
             return false;
         }
 
-        if k.ca == at && k.ra == 0 || k.ca < at && k.ra == 0 {
+        if !(k.ra != 0 || k.ca != at && k.ca >= at) {
             return true;
         }
 
@@ -596,11 +596,11 @@ impl SignatureGraph {
             return false;
         }
 
-        if k.ca == at && k.ra > at || k.ca < at && k.ra > at {
+        if !(k.ra <= at || k.ca != at && k.ca >= at) {
             return true;
         }
 
-        return false;
+        false
     }
 
     fn operation(&self, index: usize) -> Operation {
@@ -609,6 +609,12 @@ impl SignatureGraph {
         let op_bytes = signed_op.operation().unwrap();
 
         return flatbuffers::root::<Operation>(op_bytes).unwrap();
+    }
+}
+
+impl Default for SignatureGraph {
+    fn default() -> Self {
+        SignatureGraph::new()
     }
 }
 
@@ -661,7 +667,7 @@ mod tests {
             keys.push(kp);
         }
 
-        return keys;
+        keys
     }
 
     fn test_operation(test_op: &mut TestOperation) -> (Vec<u8>, Vec<u8>) {
@@ -742,7 +748,7 @@ mod tests {
         let actions_vec = op_builder.create_vector(&actions);
         let mut previous: Option<WIPOffset<Vector<u8>>> = None;
 
-        if test_op.previous.len() > 0 {
+        if !test_op.previous.is_empty() {
             previous = Some(op_builder.create_vector(&test_op.previous));
         }
 
@@ -752,7 +758,7 @@ mod tests {
                 version: test_op.version,
                 sequence: test_op.sequence,
                 timestamp: test_op.timestamp,
-                previous: previous,
+                previous,
                 actions: Some(actions_vec),
             },
         );
@@ -814,16 +820,18 @@ mod tests {
         return (fn_builder.finished_data().to_vec(), signed_op_hash);
     }
 
-    fn test_execute<'a>(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
+    fn test_execute(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
         let mut sg = SignatureGraph::new();
         let mut previous_hash: Option<Vec<u8>> = None;
 
         for mut test_op in test_history {
-            if test_op.previous.len() < 1 && previous_hash.is_some() {
-                test_op.previous = previous_hash.unwrap();
+            if test_op.previous.is_empty() {
+                if let Some(previous) = previous_hash {
+                    test_op.previous = previous;
+                }
             }
 
-            let (signed_op, previous) = test_operation(&mut test_op);
+            let (signed_op, previous) = test_operation(test_op);
 
             previous_hash = Some(previous);
 
@@ -841,7 +849,7 @@ mod tests {
             }
         }
 
-        return sg;
+        sg
     }
 
     #[test]

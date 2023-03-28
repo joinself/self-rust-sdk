@@ -26,9 +26,9 @@ impl ProofOfWork {
             }
         }
 
-        return ProofOfWork {
-            target: target[..cap as usize].to_vec(),
-        };
+        ProofOfWork {
+            target: target[..cap].to_vec(),
+        }
     }
 
     pub fn calculate(&self, data: &[u8]) -> (Vec<u8>, u64) {
@@ -69,7 +69,7 @@ impl ProofOfWork {
 
         let computed_hash = crate::crypto::hash::blake2b(&hash_buf);
 
-        return computed_hash == hash;
+        computed_hash == hash
     }
 
     fn matches(&self, hash: &[u8]) -> bool {
@@ -79,7 +79,7 @@ impl ProofOfWork {
             }
         }
 
-        return true;
+        true
     }
 }
 

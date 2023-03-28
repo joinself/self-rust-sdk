@@ -44,7 +44,7 @@ impl Storage {
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
 
-        return Ok(());
+        Ok(())
     }
 
     fn setup_crypto_sessions_table(&mut self) -> Result<(), SelfError> {
@@ -62,7 +62,7 @@ impl Storage {
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
 
-        return Ok(());
+        Ok(())
     }
 
     fn setup_account_keychain_table(&mut self) -> Result<(), SelfError> {
@@ -80,7 +80,7 @@ impl Storage {
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
 
-        return Ok(());
+        Ok(())
     }
 
     fn setup_messaging_tokens_table(&mut self) -> Result<(), SelfError> {
@@ -98,7 +98,7 @@ impl Storage {
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
 
-        return Ok(());
+        Ok(())
     }
 
     fn setup_messaging_groups_table(&mut self) -> Result<(), SelfError> {
@@ -115,7 +115,7 @@ impl Storage {
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
 
-        return Ok(());
+        Ok(())
     }
 
     fn setup_messaging_membership_table(&mut self) -> Result<(), SelfError> {
@@ -132,7 +132,7 @@ impl Storage {
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
 
-        return Ok(());
+        Ok(())
     }
 
     pub fn transaction<F>(&mut self, execute: F) -> Result<(), SelfError>
@@ -152,7 +152,7 @@ impl Storage {
                 .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         };
 
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -167,12 +167,11 @@ mod tests {
         // create a session
         storage
             .transaction(|txn| {
-                return txn
-                    .execute(
-                        "INSERT INTO crypto_sessions (identity, session) VALUES (?1, ?2)",
-                        (b"bob", b"session-with-bob"),
-                    )
-                    .is_ok();
+                txn.execute(
+                    "INSERT INTO crypto_sessions (identity, session) VALUES (?1, ?2)",
+                    (b"bob", b"session-with-bob"),
+                )
+                .is_ok()
             })
             .expect("failed to create transaction");
 
@@ -192,7 +191,7 @@ mod tests {
                 assert_eq!(identity, b"bob");
                 assert_eq!(session, b"session-with-bob");
 
-                return true;
+                true
             })
             .expect("failed to create transaction");
     }

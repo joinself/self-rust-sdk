@@ -6,5 +6,5 @@ pub mod random;
 pub mod session;
 
 pub fn random_id() -> Vec<u8> {
-    return crate::crypto::random::vec(20);
+    crate::crypto::random::vec(20)
 }

@@ -24,6 +24,6 @@ impl Node {
             nodes.append(&mut node.borrow().collect());
         }
 
-        return nodes;
+        nodes
     }
 }

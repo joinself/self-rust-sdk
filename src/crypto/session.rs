@@ -11,28 +11,24 @@ impl Session {
     pub fn new() -> Session {
         unsafe {
             let session_len = olm_session_size() as usize;
-            let session_buf = vec![0 as u8; session_len].into_boxed_slice();
+            let session_buf = vec![0_u8; session_len].into_boxed_slice();
             let session = olm_session(Box::into_raw(session_buf) as *mut libc::c_void);
 
-            return Session { session };
+            Session { session }
         }
     }
 
     pub fn from_pickle(pickle: &mut [u8], password: Option<&[u8]>) -> Result<Session, SelfError> {
         unsafe {
             let session_len = olm_session_size() as usize;
-            let session_buf = vec![0 as u8; session_len].into_boxed_slice();
+            let session_buf = vec![0_u8; session_len].into_boxed_slice();
             let session = olm_session(Box::into_raw(session_buf) as *mut libc::c_void);
 
-            let password_len = password
-                .and_then(|pwd| Some(pwd.len()))
-                .or_else(|| Some(0))
-                .unwrap();
+            let password_len = password.map(|pwd| pwd.len()).unwrap_or(0);
 
             let password_buf = password
-                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
-                .or_else(|| Some(std::ptr::null()))
-                .unwrap();
+                .map(|pwd| pwd as *const [u8] as *const libc::c_void)
+                .unwrap_or(std::ptr::null());
 
             olm_unpickle_session(
                 session,
@@ -42,16 +38,19 @@ impl Session {
                 pickle.len() as u64,
             );
 
-            let session = Session { session: session };
+            let session = Session { session };
 
             session.last_error()?;
 
-            return Ok(session);
+            Ok(session)
         }
     }
 
+    /// # Safety
+    ///
+    /// This function should only be called internally by olm messages.
     pub unsafe fn as_mut_ptr(&self) -> *mut OlmSession {
-        return self.session;
+        self.session
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<(u64, Vec<u8>), SelfError> {
@@ -59,11 +58,11 @@ impl Session {
             let mtype = olm_encrypt_message_type(self.session);
 
             let random_len = olm_encrypt_random_length(self.session);
-            let mut random_buf = vec![0 as u8; random_len as usize].into_boxed_slice();
+            let mut random_buf = vec![0_u8; random_len as usize].into_boxed_slice();
             sodium_sys::randombytes_buf(random_buf.as_mut_ptr() as *mut libc::c_void, random_len);
 
             let mut message_len = olm_encrypt_message_length(self.session, plaintext.len() as u64);
-            let mut message_buf = vec![0 as u8; message_len as usize].into_boxed_slice();
+            let mut message_buf = vec![0_u8; message_len as usize].into_boxed_slice();
 
             message_len = olm_encrypt(
                 self.session,
@@ -77,7 +76,7 @@ impl Session {
 
             self.last_error()?;
 
-            return Ok((mtype, message_buf[0..message_len as usize].to_vec()));
+            Ok((mtype, message_buf[0..message_len as usize].to_vec()))
         }
     }
 
@@ -92,7 +91,7 @@ impl Session {
 
             self.last_error()?;
 
-            let mut plaintext_buf = vec![0 as u8; plaintext_len as usize].into_boxed_slice();
+            let mut plaintext_buf = vec![0_u8; plaintext_len as usize].into_boxed_slice();
 
             plaintext_len = olm_decrypt(
                 self.session,
@@ -105,7 +104,7 @@ impl Session {
 
             self.last_error()?;
 
-            return Ok(plaintext_buf[0..plaintext_len as usize].to_vec());
+            Ok(plaintext_buf[0..plaintext_len as usize].to_vec())
         }
     }
 
@@ -127,25 +126,20 @@ impl Session {
 
             self.last_error()?;
 
-            return Ok(result == 1);
+            Ok(result == 1)
         }
     }
 
     pub fn pickle(&self, password: Option<&[u8]>) -> Result<Vec<u8>, SelfError> {
         unsafe {
             let mut session_pickle_len = olm_pickle_session_length(self.session);
-            let mut session_pickle_buf =
-                vec![0 as u8; session_pickle_len as usize].into_boxed_slice();
+            let mut session_pickle_buf = vec![0_u8; session_pickle_len as usize].into_boxed_slice();
 
-            let password_len = password
-                .and_then(|pwd| Some(pwd.len()))
-                .or_else(|| Some(0))
-                .unwrap();
+            let password_len = password.map(|pwd| pwd.len()).unwrap_or(0);
 
             let password_buf = password
-                .and_then(|pwd| Some(pwd as *const [u8] as *const libc::c_void))
-                .or_else(|| Some(std::ptr::null()))
-                .unwrap();
+                .map(|pwd| pwd as *const [u8] as *const libc::c_void)
+                .unwrap_or(std::ptr::null());
 
             session_pickle_len = olm_pickle_session(
                 self.session,
@@ -157,7 +151,7 @@ impl Session {
 
             self.last_error()?;
 
-            return Ok(session_pickle_buf[0..session_pickle_len as usize].to_vec());
+            Ok(session_pickle_buf[0..session_pickle_len as usize].to_vec())
         }
     }
 
@@ -197,6 +191,12 @@ impl Session {
     }
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Session::new()
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         unsafe {
@@ -217,12 +217,12 @@ mod tests {
     fn encrypt_and_decrypt() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let alice_curve25519_pk = alice_ekp.public().clone();
+        let alice_curve25519_pk = alice_ekp.public();
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let bob_curve25519_pk = bob_ekp.public().clone();
+        let bob_curve25519_pk = bob_ekp.public();
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
 
         alice_acc
@@ -279,7 +279,7 @@ mod tests {
 
         // check it's intended for the session alice currently has with bob
         let matches = alices_session_with_bob
-            .matches_inbound_session(&bob_curve25519_pk, &mut bobs_message_to_alice_2)
+            .matches_inbound_session(&bob_curve25519_pk, &bobs_message_to_alice_2)
             .expect("failed to check if one time key message matches session");
 
         assert!(matches);
@@ -316,12 +316,12 @@ mod tests {
     fn serialize_and_deserialize() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let alice_curve25519_pk = alice_ekp.public().clone();
+        let alice_curve25519_pk = alice_ekp.public();
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let bob_curve25519_pk = bob_ekp.public().clone();
+        let bob_curve25519_pk = bob_ekp.public();
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
 
         alice_acc

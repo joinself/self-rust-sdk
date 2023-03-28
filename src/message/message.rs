@@ -40,7 +40,7 @@ pub struct Signature {
 
 impl Message {
     pub fn new() -> Message {
-        return Message {
+        Message {
             sub: None,
             aud: None,
             cti: None,
@@ -49,7 +49,7 @@ impl Message {
             exp: None,
             content: None,
             signatures: Vec::new(),
-        };
+        }
     }
 
     pub fn decode(data: &[u8]) -> Result<Message, SelfError> {
@@ -87,7 +87,7 @@ impl Message {
                 if signer.verify(data, sig) {
                     return Ok(());
                 }
-                return Err(());
+                Err(())
             })
             .map_err(|_| SelfError::MessageSignatureInvalid)?;
 
@@ -115,7 +115,7 @@ impl Message {
             .map_err(|_| SelfError::MessagePayloadInvalid)?;
 
         for entry in payload.as_map().into_iter() {
-            if entry.len() < 1 {
+            if entry.is_empty() {
                 continue;
             }
 
@@ -189,7 +189,7 @@ impl Message {
             }
         }
 
-        return Ok(m);
+        Ok(m)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
@@ -224,7 +224,7 @@ impl Message {
             .to_vec()
             .map_err(|_| SelfError::MessageEncodingInvalid)?;
 
-        return Ok(signed_message);
+        Ok(signed_message)
     }
 
     pub fn sign(&mut self, signer: &KeyPair, exp: Option<i64>) -> Result<(), SelfError> {
@@ -262,12 +262,12 @@ impl Message {
         self.signatures.push(Signature {
             iss: signer.public(),
             iat: Some(iat),
-            exp: exp,
+            exp,
             protected: Vec::new(),
-            signature: signature,
+            signature,
         });
 
-        return Ok(());
+        Ok(())
     }
 
     fn encode_payload(&self) -> Result<Vec<u8>, SelfError> {
@@ -289,10 +289,10 @@ impl Message {
             payload.push((Value::from(TYP), Value::from(typ.clone())));
         }
         if let Some(iat) = self.iat.as_ref() {
-            payload.push((Value::from(IAT), Value::from(iat.clone())));
+            payload.push((Value::from(IAT), Value::from(*iat)));
         }
         if let Some(exp) = self.exp.as_ref() {
-            payload.push((Value::from(EXP), Value::from(exp.clone())));
+            payload.push((Value::from(EXP), Value::from(*exp)));
         }
         if let Some(cnt) = self.content.as_ref() {
             payload.push((Value::from(CNT), Value::from(cnt.clone())));
@@ -301,7 +301,7 @@ impl Message {
         ciborium::ser::into_writer(&Value::Map(payload), &mut encoded_payload)
             .map_err(|_| SelfError::MessageEncodingInvalid)?;
 
-        return Ok(encoded_payload);
+        Ok(encoded_payload)
     }
 
     pub fn audience_set(&mut self, aud: &[u8]) {
@@ -309,7 +309,7 @@ impl Message {
     }
 
     pub fn audience_get(&self) -> Option<Vec<u8>> {
-        return self.aud.clone();
+        self.aud.clone()
     }
 
     pub fn subject_set(&mut self, sub: &[u8]) {
@@ -317,7 +317,7 @@ impl Message {
     }
 
     pub fn subject_get(&self) -> Option<Vec<u8>> {
-        return self.sub.clone();
+        self.sub.clone()
     }
 
     pub fn cti_set(&mut self, cti: &[u8]) {
@@ -325,7 +325,7 @@ impl Message {
     }
 
     pub fn cti_get(&self) -> Option<Vec<u8>> {
-        return self.cti.clone();
+        self.cti.clone()
     }
 
     pub fn type_set(&mut self, typ: &str) {
@@ -333,7 +333,7 @@ impl Message {
     }
 
     pub fn type_get(&self) -> Option<String> {
-        return self.typ.clone();
+        self.typ.clone()
     }
 
     pub fn issued_at_set(&mut self, iat: i64) {
@@ -341,7 +341,7 @@ impl Message {
     }
 
     pub fn issued_at_get(&self) -> Option<i64> {
-        return self.iat;
+        self.iat
     }
 
     pub fn expires_at_set(&mut self, exp: i64) {
@@ -349,7 +349,7 @@ impl Message {
     }
 
     pub fn expires_at_get(&self) -> Option<i64> {
-        return self.exp;
+        self.exp
     }
 
     pub fn content_set(&mut self, content: &[u8]) {
@@ -357,7 +357,13 @@ impl Message {
     }
 
     pub fn content_get(&self) -> Option<Vec<u8>> {
-        return self.content.clone();
+        self.content.clone()
+    }
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Message::new()
     }
 }
 
@@ -369,7 +375,7 @@ mod tests {
     fn audience() {
         let mut m = Message::new();
 
-        m.audience_set(&vec![0; 32]);
+        m.audience_set(&[0; 32]);
 
         // add a valid signature
         let kp = KeyPair::new();
@@ -387,7 +393,7 @@ mod tests {
     fn subject() {
         let mut m = Message::new();
 
-        m.subject_set(&vec![0; 32]);
+        m.subject_set(&[0; 32]);
 
         // add a valid signature
         let kp = KeyPair::new();
@@ -405,7 +411,7 @@ mod tests {
     fn cti() {
         let mut m = Message::new();
 
-        m.cti_set(&vec![0; 20]);
+        m.cti_set(&[0; 20]);
 
         // add a valid signature
         let kp = KeyPair::new();

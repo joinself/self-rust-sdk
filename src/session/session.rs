@@ -19,27 +19,27 @@ impl Session {
         with_id: Identifier,
         session: Arc<Mutex<session::Session>>,
     ) -> Session {
-        return Session {
-            as_id: as_id,
-            with_id: with_id,
+        Session {
+            as_id,
+            with_id,
             authorization: None,
             notification: None,
             sequence: 0,
-            session: session,
-        };
+            session,
+        }
     }
 
     pub fn send_as(&self) -> Vec<u8> {
-        return self.as_id.public_key().id();
+        self.as_id.public_key().id()
     }
 
     pub fn send_to(&self) -> Vec<u8> {
-        return self.with_id.public_key().id();
+        self.with_id.public_key().id()
     }
 
     pub fn next_sequence(&mut self) -> u64 {
         let sequence = self.sequence;
         self.sequence += 1;
-        return sequence;
+        sequence
     }
 }
