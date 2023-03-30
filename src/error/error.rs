@@ -85,6 +85,9 @@ pub enum SelfError {
     WebsocketTokenUnsupported,
     WebsocketProtocolEncodingInvalid,
     WebsocketProtocolErrorUnknown,
+    MessagingDestinationUnknown,
+    KeychainKeyNotFound,
+    KeychainKeyExists,
 }
 
 impl std::error::Error for SelfError {}
@@ -197,6 +200,9 @@ impl fmt::Display for SelfError {
             SelfError::WebsocketTokenUnsupported => write!(f, "Websocket send attempted with an unsupported token"),
             SelfError::WebsocketProtocolEncodingInvalid => write!(f, "Websocket protocol event could not be decoded"),
             SelfError::WebsocketProtocolErrorUnknown => write!(f, "Websocket protocol error code is unknown"),
+            SelfError::MessagingDestinationUnknown => write!(f, "Messaging destination or recipient unknown"),
+            SelfError::KeychainKeyNotFound => write!(f, "Keychain key not found"),
+            SelfError::KeychainKeyExists => write!(f, "Keychain key already exists"),
         }
     }
 }

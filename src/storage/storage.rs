@@ -52,7 +52,7 @@ impl Storage {
             .execute(
                 "CREATE TABLE crypto_sessions (
                     id INTEGER PRIMARY KEY,
-                    identity BLOB NOT NULL,
+                    with BLOB NOT NULL,
                     session BLOB NOT NULL,
                     offset INTEGER
                 );
@@ -70,12 +70,12 @@ impl Storage {
             .execute(
                 "CREATE TABLE account_keychain (
                     id INTEGER PRIMARY KEY,
-                    identity BLOB NOT NULL,
                     role INTEGER NOT NULL,
-                    key BLOB NOT NULL
+                    public_key BLOB NOT NULL,
+                    secret_key BLOB NOT NULL
                 );
-                CREATE UNIQUE INDEX idx_account_keychain_identity
-                ON account_keychain (identity);",
+                CREATE UNIQUE INDEX idx_account_keychain_public_key
+                ON account_keychain (public_key);",
                 (),
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;
@@ -124,7 +124,7 @@ impl Storage {
                 "CREATE TABLE messaging_members (
                     id INTEGER PRIMARY KEY,
                     group_id INTEGER NOT NULL,
-                    member BLOB NOT NULL
+                    member INTEGER NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_messaging_members_group_member
                 ON messaging_members (group_id, member);",

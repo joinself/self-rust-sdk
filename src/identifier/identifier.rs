@@ -49,3 +49,21 @@ impl fmt::Debug for Identifier {
         }
     }
 }
+
+impl std::hash::Hash for Identifier {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        state.write(&self.id());
+        state.finish();
+    }
+}
+
+impl PartialEq for Identifier {
+    fn eq(&self, other: &Identifier) -> bool {
+        self.public_key().matches(&other.id())
+    }
+}
+
+impl Eq for Identifier {}
