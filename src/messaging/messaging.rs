@@ -1,8 +1,7 @@
 use crate::crypto::omemo::Group;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
-use crate::messaging::session::Session;
-use crate::storage::Storage;
+use crate::storage::{Storage, Group};
 use crate::transport::rest::Rest;
 use crate::transport::websocket::Websocket;
 
@@ -14,8 +13,6 @@ pub struct Messaging {
     storage: Storage,
     websocket: Websocket,
     lock: Mutex<()>,
-    gcache: HashMap<Identifier, Group>,
-    scache: HashMap<Identifier, Session>,
 }
 
 impl Messaging {
@@ -25,8 +22,6 @@ impl Messaging {
             storage,
             websocket,
             lock: Mutex::new(()),
-            gcache: HashMap::new(),
-            scache: HashMap::new(),
         }
     }
 
@@ -36,6 +31,12 @@ impl Messaging {
         to: &Identifier,
         plaintext: &[u8],
     ) -> Result<(), SelfError> {
+        // get group....
+
+
+
+
+
         /*
         let lock = self.lock.lock().unwrap();
 

@@ -132,43 +132,31 @@ Table identifiers {
   identifier blob
 }
 
-Table operations {
-  id integer [primary key]
-  on integer
-  sequence integer
-}
-
-Table actions {
-  id integer [primary key]
-  action integer
-  from integer
-  on integer
-}
-
-Table public_keys {
-  id integer [primary key]
-  public_key blob
-  first_seen integer
-  last_seen integer
-}
-
-Table connections {
-  id integer [primary key]
-  with integer
-  connected_on integer
-}
-
 Table keypairs {
   id integer [primary key]
-  for integer
+  for_identifier integer
   keypair blob
   olm_account blob
 }
 
+Table operations {
+  id integer [primary key]
+  on_identifier integer
+  sequence integer
+  operation blob
+}
+
+Table connections {
+  id integer [primary key]
+  as_identifier integer
+  with_identifier integer
+  connected_on integer
+}
+
 Table sessions {
   id integer [primary key]
-  with integer
-  as integer
+  as_identifier integer
+  with_identifier integer
   sequence_rx integer
   sequence_tx integer
   olm_session blob
@@ -176,27 +164,21 @@ Table sessions {
 
 Table tokens {
   id integer [primary key]
-  from integer
+  from_identifier integer
   purpose integer
   token blob
 }
 
-Table groups {
-  id integer [primary key]
-  group integer
-}
-
 Table members {
   id integer [primary key]
-  group integer
-  member integer
+  group_identifier integer
+  member_identifier integer
 }
 
 Table credentials {
   id integer [primary key]
-  for integer
-  from integer
-  about integer
+  from_identifier integer
+  about_identifier integer
   credential blob
 }
 
@@ -214,19 +196,16 @@ Table outbox {
   message blob
 }
 
-Ref: operations.on > identifiers.id
-Ref: actions.from > operations.id
-Ref: actions.on > public_keys.id
-Ref: keypairs.for > public_keys.id
-Ref: connections.with > public_keys.id
-Ref: sessions.with > public_keys.id
-Ref: sessions.as > public_keys.id
-Ref: tokens.from > public_keys.id
-Ref: groups.group > public_keys.id
-Ref: members.group > groups.id
-Ref: members.member > public_keys.id
+Ref: keypairs.for_identifier > identifiers.id
+Ref: operations.on_identifier > identifiers.id
+Ref: connections.as_identifier > identifiers.id
+Ref: connections.with_identifier > identifiers.id
+Ref: sessions.as_identifier > identifiers.id
+Ref: sessions.with_identifier > identifiers.id
+Ref: members.group_identifier > identifiers.id
+Ref: credentials.from_identifier > identifiers.id
+Ref: credentials.about_identifier > identifiers.id
+Ref: tokens.from_identifier > identifiers.id
 Ref: inbox.session > sessions.id
 Ref: outbox.session > sessions.id
-Ref: credentials.for > public_keys.id
-Ref: credentials.from > public_keys.id
 ```
