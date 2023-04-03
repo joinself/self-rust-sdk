@@ -1,8 +1,10 @@
 use rusqlite::{Connection, Result, Transaction};
 
-use crate::crypto::{omemo, session};
+use crate::crypto::{account::Account, omemo, session};
 use crate::error::SelfError;
 use crate::identifier::Identifier;
+use crate::keypair::signing::KeyPair;
+use crate::protocol::siggraph::KeyRole;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -11,6 +13,7 @@ pub struct Storage {
     conn: Connection,
     lock: Mutex<()>,
     gcache: HashMap<Identifier, Arc<Mutex<omemo::Group>>>,
+    kcache: HashMap<Identifier, Arc<KeyPair>>,
     scache: HashMap<Identifier, Arc<Mutex<session::Session>>>,
 }
 
@@ -32,6 +35,7 @@ impl Storage {
             conn,
             lock: Mutex::new(()),
             gcache: HashMap::new(),
+            kcache: HashMap::new(),
             scache: HashMap::new(),
         };
 
@@ -269,6 +273,193 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCommitFailed)
     }
 
+    pub fn keypair_get(&mut self, identifier: &Identifier) -> Result<Arc<KeyPair>, SelfError> {
+        // check if the key exists in the cache
+        if let Some(kp) = self.kcache.get(identifier) {
+            return Ok(kp.clone());
+        };
+
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        let mut statement = txn
+            .prepare(
+                "SELECT keypair FROM identifiers
+            INNER JOIN sessions ON
+                keypairs.for_identifier = identifiers.id
+			WHERE identifier = ?1",
+            )
+            .expect("failed to prepare statement");
+
+        let mut rows = match statement.query([identifier.id()]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
+        };
+
+        let row = match rows.next() {
+            Ok(row) => match row {
+                Some(row) => row,
+                None => return Err(SelfError::KeychainKeyNotFound),
+            },
+            Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
+        };
+
+        let kp_encoded: Vec<u8> = row.get(3).unwrap();
+        let kp = KeyPair::decode(&kp_encoded)?;
+        let keypair = Arc::new(kp);
+
+        self.kcache.insert(identifier.clone(), keypair.clone());
+
+        Ok(keypair)
+    }
+
+    pub fn keypair_create(
+        &mut self,
+        role: KeyRole,
+        keypair: &KeyPair,
+        account: Option<Account>,
+    ) -> Result<(), SelfError> {
+        let identifier = Identifier::Owned(keypair.to_owned());
+
+        // check if the key exists in the cache
+        if self.kcache.contains_key(&identifier) {
+            return Err(SelfError::KeychainKeyExists);
+        };
+
+        // create the identifier
+        self.identifier_create(&identifier)?;
+
+        // create the keypair
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        if let Some(olm_account) = account {
+            txn.execute(
+                "INSERT INTO keypairs (for_identifier, role, keypair, olm_account) 
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    ?2,
+                    ?3,
+                    ?4
+                );",
+                (
+                    identifier.id(),
+                    role.0,
+                    &keypair.encode(),
+                    olm_account.pickle(None)?,
+                ),
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        } else {
+            txn.execute(
+                "INSERT INTO keypairs (for_identifier, role, keypair) 
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    ?2,
+                    ?3
+                );",
+                (identifier.id(), role.0, &keypair.encode()),
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        }
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        self.kcache.insert(identifier, Arc::new(keypair.clone()));
+
+        Ok(())
+    }
+
+    pub fn session_get(
+        &mut self,
+        with_identifier: &Identifier,
+    ) -> Result<Arc<Mutex<session::Session>>, SelfError> {
+        // check if the session exists in the cache
+        if let Some(session) = self.scache.get(with_identifier) {
+            return Ok(session.clone());
+        };
+
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        let mut statement = txn
+            .prepare(
+                "SELECT olm_session FROM identifiers
+                INNER JOIN sessions ON
+                    sessions.with_identifier = identifiers.id
+				WHERE identifier = ?1",
+            )
+            .expect("failed to prepare statement");
+
+        let mut rows = match statement.query([with_identifier.id()]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        let row = match rows.next() {
+            Ok(row) => match row {
+                Some(row) => row,
+                None => return Err(SelfError::StorageSessionNotFound),
+            },
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        let mut session_encoded: Vec<u8> = row.get(0).unwrap();
+
+        // TODO handle encryption for values
+        let session = session::Session::from_pickle(&mut session_encoded, None)?;
+        let s = Arc::new(Mutex::new(session));
+        self.scache.insert(with_identifier.clone(), s.clone());
+
+        Ok(s)
+    }
+
+    pub fn session_create(
+        &mut self,
+        as_identifier: &Identifier,
+        with_identifier: &Identifier,
+        session: session::Session,
+    ) -> Result<(), SelfError> {
+        // check if the session exists in the cache
+        if self.scache.contains_key(with_identifier) {
+            return Err(SelfError::KeychainKeyExists);
+        };
+
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        // TODO handle encryption for values
+        let session_encoded = session.pickle(None)?;
+
+        txn.execute(
+            "INSERT INTO sessions (as_identifier, with_identifier, olm_session)
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    (SELECT id FROM identifiers WHERE identifier=?2),
+                    ?3
+                );",
+            (as_identifier.id(), with_identifier.id(), session_encoded),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        self.scache
+            .insert(with_identifier.clone(), Arc::new(Mutex::new(session)));
+
+        Ok(())
+    }
+
     fn group_get(&mut self, group: &Identifier) -> Result<Arc<Mutex<omemo::Group>>, SelfError> {
         // lookup or load omemo group from group cache
         if let Some(grp) = self.gcache.get(group) {
@@ -366,91 +557,6 @@ impl Storage {
         */
         Ok(())
     }
-
-    pub fn session_get(
-        &mut self,
-        with_identifier: &Identifier,
-    ) -> Result<Arc<Mutex<session::Session>>, SelfError> {
-        // check if the session exists in the cache
-        if let Some(session) = self.scache.get(with_identifier) {
-            return Ok(session.clone());
-        };
-
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        let mut statement = txn
-            .prepare(
-                "SELECT olm_session FROM identifiers
-                INNER JOIN sessions ON
-                    sessions.with_identifier = identifiers.id
-				WHERE identifier = ?1",
-            )
-            .expect("failed to prepare statement");
-
-        let mut rows = match statement.query([with_identifier.id()]) {
-            Ok(rows) => rows,
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-        };
-
-        let row = match rows.next() {
-            Ok(row) => match row {
-                Some(row) => row,
-                None => return Err(SelfError::StorageSessionNotFound),
-            },
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-        };
-
-        let mut session_encoded: Vec<u8> = row.get(0).unwrap();
-
-        // TODO handle encryption for values
-        let session = session::Session::from_pickle(&mut session_encoded, None)?;
-        let s = Arc::new(Mutex::new(session));
-        self.scache.insert(with_identifier.clone(), s.clone());
-
-        Ok(s)
-    }
-
-    pub fn session_create(
-        &mut self,
-        as_identifier: &Identifier,
-        with_identifier: &Identifier,
-        session: session::Session,
-    ) -> Result<(), SelfError> {
-        // check if the session exists in the cache
-        if self.scache.contains_key(with_identifier) {
-            return Err(SelfError::KeychainKeyExists);
-        };
-
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        // TODO handle encryption for values
-        let session_encoded = session.pickle(None)?;
-
-        txn.execute(
-            "INSERT INTO sessions (as_identifier, with_identifier, olm_session)
-                VALUES (
-                    (SELECT id FROM identifiers WHERE identifier=?1),
-                    (SELECT id FROM identifiers WHERE identifier=?2),
-                    ?3
-                );",
-            (as_identifier.id(), with_identifier.id(), session_encoded),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        self.scache
-            .insert(with_identifier.clone(), Arc::new(Mutex::new(session)));
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -503,6 +609,25 @@ mod tests {
                 true
             })
             .expect("failed to create transaction");
+    }
+
+    #[test]
+    fn keypair_create_and_get() {
+        let kp = KeyPair::new();
+        let mut storage = Storage::new().expect("storage failed");
+
+        let msg = vec![8; 128];
+        let sig = kp.sign(&msg);
+
+        storage
+            .keypair_create(KeyRole::Signing, &kp, None)
+            .expect("failed to create keypair");
+
+        let kp = storage
+            .keypair_get(&Identifier::Owned(kp))
+            .expect("failed to get keypair");
+
+        assert!(kp.public().verify(&msg, &sig));
     }
 
     #[test]

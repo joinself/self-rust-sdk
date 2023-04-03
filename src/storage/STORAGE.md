@@ -135,6 +135,7 @@ Table identifiers {
 Table keypairs {
   id integer [primary key]
   for_identifier integer
+  role integer
   keypair blob
   olm_account blob
 }
