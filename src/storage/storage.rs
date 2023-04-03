@@ -106,11 +106,10 @@ impl Storage {
             .execute(
                 "CREATE TABLE messaging_groups (
                     id INTEGER PRIMARY KEY,
-                    identity BLOB NOT NULL,
-                    owner BLOB NOT NULL
+                    group BLOB NOT NULL,
                 );
-                CREATE UNIQUE INDEX idx_messaging_groups_identity
-                ON messaging_groups (identity);",
+                CREATE UNIQUE INDEX idx_messaging_groups_group
+                ON messaging_groups (group);",
                 (),
             )
             .map_err(|_| SelfError::StorageTableCreationFailed)?;

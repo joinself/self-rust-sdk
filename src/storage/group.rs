@@ -1,14 +1,14 @@
+use crate::crypto::omemo;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
-use crate::keypair::signing::KeyPair;
 use crate::storage::Storage;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub struct Group {
     storage: Storage,
-    gcache: Mutex<HashMap<Identifier, KeyPair>>,
+    gcache: Mutex<HashMap<Identifier, Arc<Mutex<omemo::Group>>>>,
 }
 
 impl Group {
@@ -19,19 +19,28 @@ impl Group {
         }
     }
 
-    fn get(&mut self, group: &Identifier) -> Option<&mut Group> {
-        /*
+    fn get(&mut self, group: &Identifier) -> Result<Arc<Mutex<omemo::Group>>, SelfError> {
         let gcache = self.gcache.lock().expect("gcache lock failed");
 
-        // lookup or load group from omemo group cache
-        if let Some(grp) = gcache.get_mut(group) {
-            return Some(grp);
+        // lookup or load omemo group from group cache
+        if let Some(grp) = gcache.get(group) {
+            return Ok(grp.clone());
         };
-
 
         match self.storage.transaction(|txn| {
             let mut statement = txn
-                .prepare("SELECT * FROM messaging_member WHERE identity = ?1")
+                .prepare("SELECT id FROM messaging_groups WHERE group = ?1")
+                .expect("failed to prepare statement");
+
+            let mut rows = match statement.query([group.id()]) {
+                Ok(rows) => rows,
+                Err(_) => return false,
+            };
+
+            let rows = rows.next().map_err(|_| SelfError::MessagingGroupUnknown)?;
+
+            let mut statement = txn
+                .prepare("SELECT * FROM messaging_members WHERE identity = ?1")
                 .expect("failed to prepare statement");
 
             let mut rows = match statement.query([group.id()]) {
@@ -47,7 +56,6 @@ impl Group {
                 Err(_) => return false,
             };
 
-
             let identity: Vec<u8> = row.get(0).unwrap();
             let session: Vec<u8> = row.get(1).unwrap();
 
@@ -55,14 +63,12 @@ impl Group {
 
             // TODO load group members and their sessions
 
-
-
             return true;
         }) {
             Ok(()) => return None,
             Err(_) => return None,
         };
-        */
+
         None
     }
 

@@ -86,6 +86,7 @@ pub enum SelfError {
     WebsocketProtocolEncodingInvalid,
     WebsocketProtocolErrorUnknown,
     MessagingDestinationUnknown,
+    MessagingGroupUnknown,
     KeychainKeyNotFound,
     KeychainKeyExists,
 }
@@ -201,6 +202,7 @@ impl fmt::Display for SelfError {
             SelfError::WebsocketProtocolEncodingInvalid => write!(f, "Websocket protocol event could not be decoded"),
             SelfError::WebsocketProtocolErrorUnknown => write!(f, "Websocket protocol error code is unknown"),
             SelfError::MessagingDestinationUnknown => write!(f, "Messaging destination or recipient unknown"),
+            SelfError::MessagingGroupUnknown => write!(f, "Messaging group not found"),
             SelfError::KeychainKeyNotFound => write!(f, "Keychain key not found"),
             SelfError::KeychainKeyExists => write!(f, "Keychain key already exists"),
         }
