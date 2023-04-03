@@ -1,9 +1,9 @@
 use rusqlite::{Connection, Result, Transaction};
 
-use crate::crypto::{account::Account, omemo, session};
+use crate::crypto::{account::Account, omemo::Group, session::Session};
 use crate::error::SelfError;
 use crate::identifier::Identifier;
-use crate::keypair::signing::KeyPair;
+use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::protocol::siggraph::KeyRole;
 
 use std::collections::HashMap;
@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex};
 pub struct Storage {
     conn: Connection,
     lock: Mutex<()>,
-    gcache: HashMap<Identifier, Arc<Mutex<omemo::Group>>>,
+    gcache: HashMap<Identifier, Arc<Mutex<Group>>>,
     kcache: HashMap<Identifier, Arc<KeyPair>>,
-    scache: HashMap<Identifier, Arc<Mutex<session::Session>>>,
+    scache: HashMap<Identifier, Arc<Mutex<Session>>>,
 }
 
 // This whole implementation is horrible and only temporary
@@ -378,7 +378,7 @@ impl Storage {
     pub fn session_get(
         &mut self,
         with_identifier: &Identifier,
-    ) -> Result<Arc<Mutex<session::Session>>, SelfError> {
+    ) -> Result<Arc<Mutex<Session>>, SelfError> {
         // check if the session exists in the cache
         if let Some(session) = self.scache.get(with_identifier) {
             return Ok(session.clone());
@@ -414,7 +414,7 @@ impl Storage {
         let mut session_encoded: Vec<u8> = row.get(0).unwrap();
 
         // TODO handle encryption for values
-        let session = session::Session::from_pickle(&mut session_encoded, None)?;
+        let session = Session::from_pickle(&mut session_encoded, None)?;
         let s = Arc::new(Mutex::new(session));
         self.scache.insert(with_identifier.clone(), s.clone());
 
@@ -425,7 +425,7 @@ impl Storage {
         &mut self,
         as_identifier: &Identifier,
         with_identifier: &Identifier,
-        session: session::Session,
+        session: Session,
     ) -> Result<(), SelfError> {
         // check if the session exists in the cache
         if self.scache.contains_key(with_identifier) {
@@ -460,7 +460,7 @@ impl Storage {
         Ok(())
     }
 
-    fn group_get(&mut self, group: &Identifier) -> Result<Arc<Mutex<omemo::Group>>, SelfError> {
+    fn group_get(&mut self, group: &Identifier) -> Result<Arc<Mutex<Group>>, SelfError> {
         // lookup or load omemo group from group cache
         if let Some(grp) = self.gcache.get(group) {
             return Ok(grp.clone());
@@ -472,7 +472,18 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
         let mut statement = txn
-            .prepare("SELECT id FROM groups WHERE group = ?1")
+            .prepare(
+                "SELECT i2.identifier, i3.identifier, s1.olm_session FROM members
+                JOIN identifiers i1 ON
+                    i1.id = members.group_identifier
+                JOIN identifiers i2 ON
+                    i2.id = members.member_identifier
+                JOIN sessions s1 ON
+                    i2.id = s1.with_identifier
+				JOIN identifiers i3 ON
+                    i3.id = s1.as_identifier
+				WHERE i1.identifier = ?1",
+            )
             .expect("failed to prepare statement");
 
         let mut rows = match statement.query([group.id()]) {
@@ -480,52 +491,51 @@ impl Storage {
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };
 
-        let row = match rows.next() {
-            Ok(rows) => match rows {
-                Some(row) => row,
-                None => return Err(SelfError::MessagingDestinationUnknown),
-            },
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        let mut members = Vec::new();
+        let mut as_identifier: Option<Vec<u8>> = None;
+
+        while let Some(row) = rows
+            .next()
+            .map_err(|_| SelfError::MessagingDestinationUnknown)?
+        {
+            let with_identifier: Vec<u8> = row.get(0).unwrap();
+            let mut session: Vec<u8> = row.get(2).unwrap();
+
+            if as_identifier.is_none() {
+                as_identifier = row.get(1).unwrap();
+            }
+
+            let public_key =
+                PublicKey::from_bytes(&with_identifier, crate::keypair::Algorithm::Ed25519)?;
+
+            members.push((
+                Identifier::Referenced(public_key),
+                Session::from_pickle(&mut session, None),
+            ))
+        }
+
+        let identifier = match as_identifier {
+            Some(identifier) => identifier,
+            None => return Err(SelfError::MessagingDestinationUnknown),
         };
 
-        let mut statement = txn
-            .prepare("SELECT * FROM members WHERE identity = ?1")
-            .expect("failed to prepare statement");
+        let grp = Group::new(&identifier);
 
-        let mut rows = match statement.query([group.id()]) {
-            Ok(rows) => rows,
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-        };
+        for member in &members {
+            // TODO check session cache for session over using
+            // session loaded from db
 
-        let row = match rows.next() {
-            Ok(row) => match row {
-                Some(row) => row,
-                None => return Err(SelfError::MessagingDestinationUnknown),
-            },
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-        };
+            grp.add_participant(member.0, session)
+        }
 
-        let identity: Vec<u8> = row.get(0).unwrap();
-        //let session: Vec<u8> = row.get(1).unwrap();
-
-        let group = Arc::new(Mutex::new(omemo::Group::new(&identity)));
+        let group = Arc::new(Mutex::new());
 
         // TODO load group members and their sessions
 
         Ok(group)
     }
 
-    fn group_create(&mut self, group: &Identifier, owner: &Identifier) -> Result<(), SelfError> {
-        self.transaction(|txn| {
-            txn.execute(
-                "INSERT INTO groups (identity, owner) VALUES (?1, ?2)",
-                (group.id(), owner.id()),
-            )
-            .is_ok()
-        })
-    }
-
-    fn group_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
+    fn member_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
         /*
         // lookup or load group from omemo group cache
         if let Some(grp) = self.gcache.get_mut(group) {
@@ -544,7 +554,7 @@ impl Storage {
         Ok(())
     }
 
-    fn group_remove(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
+    fn member_remove(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
         /*
         self.storage.transaction(|txn| {
             return txn
