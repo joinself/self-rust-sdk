@@ -15,7 +15,7 @@ Persistent storage is implemented via an embedded SQLLITE datebase, overlayed wi
 
 # Schema
 
-![Schema](client-db-schema.svg)
+![Schema](schema.svg)
 
 ## Tables & Relationships
 
