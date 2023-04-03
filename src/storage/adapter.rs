@@ -249,6 +249,26 @@ impl Storage {
         Ok(())
     }
 
+    fn identifier_create(&mut self, identifier: &Identifier) -> Result<(), SelfError> {
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        if txn
+            .execute(
+                "INSERT INTO identifiers (identifier) VALUES (?1)",
+                [identifier.id()],
+            )
+            .is_err()
+        {
+            return Err(SelfError::StorageTransactionCommitFailed);
+        }
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)
+    }
+
     fn group_get(&mut self, group: &Identifier) -> Result<Arc<Mutex<omemo::Group>>, SelfError> {
         // lookup or load omemo group from group cache
         if let Some(grp) = self.gcache.get(group) {
@@ -349,10 +369,10 @@ impl Storage {
 
     pub fn session_get(
         &mut self,
-        with: &Identifier,
+        with_identifier: &Identifier,
     ) -> Result<Arc<Mutex<session::Session>>, SelfError> {
         // check if the session exists in the cache
-        if let Some(session) = self.scache.get(with) {
+        if let Some(session) = self.scache.get(with_identifier) {
             return Ok(session.clone());
         };
 
@@ -362,10 +382,15 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
         let mut statement = txn
-            .prepare("SELECT * FROM sessions WHERE with_identifier = ?1")
+            .prepare(
+                "SELECT olm_session FROM identifiers
+                INNER JOIN sessions ON
+                    sessions.with_identifier = identifiers.id
+				WHERE identifier = ?1",
+            )
             .expect("failed to prepare statement");
 
-        let mut rows = match statement.query([with.id()]) {
+        let mut rows = match statement.query([with_identifier.id()]) {
             Ok(rows) => rows,
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };
@@ -373,26 +398,24 @@ impl Storage {
         let row = match rows.next() {
             Ok(row) => match row {
                 Some(row) => row,
-                None => return Err(SelfError::MessagingDestinationUnknown),
+                None => return Err(SelfError::StorageSessionNotFound),
             },
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };
 
-        let mut session_encoded: Vec<u8> = row.get(2).unwrap();
+        let mut session_encoded: Vec<u8> = row.get(0).unwrap();
 
         // TODO handle encryption for values
-        if let Ok(session) = session::Session::from_pickle(&mut session_encoded, None) {
-            let s = Arc::new(Mutex::new(session));
-            self.scache.insert(with.clone(), s.clone());
-            return Ok(s);
-        };
+        let session = session::Session::from_pickle(&mut session_encoded, None)?;
+        let s = Arc::new(Mutex::new(session));
+        self.scache.insert(with_identifier.clone(), s.clone());
 
-        Err(SelfError::KeychainKeyNotFound)
+        Ok(s)
     }
 
     pub fn session_create(
         &mut self,
-        as_idetifier: &Identifier,
+        as_identifier: &Identifier,
         with_identifier: &Identifier,
         session: session::Session,
     ) -> Result<(), SelfError> {
@@ -406,31 +429,27 @@ impl Storage {
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        // lookup the record ids of both with and as identifiers/public keys
-
         // TODO handle encryption for values
         let session_encoded = session.pickle(None)?;
 
         txn.execute(
-            "INSERT INTO sessions (with_identifier, session) VALUES (?1, ?2, ?3)",
-            (with_identifier.id(), session_encoded, 0),
+            "INSERT INTO sessions (as_identifier, with_identifier, olm_session)
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    (SELECT id FROM identifiers WHERE identifier=?2),
+                    ?3
+                );",
+            (as_identifier.id(), with_identifier.id(), session_encoded),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
         self.scache
             .insert(with_identifier.clone(), Arc::new(Mutex::new(session)));
 
         Ok(())
-    }
-
-    pub fn session_update(&mut self, txn: &rusqlite::Transaction, session: session::Session) {}
-
-    pub fn identifier_get(&mut self, id: &Identifier) -> Result<Option<i64>, SelfError> {
-        Ok(Some(1))
-    }
-
-    pub fn identifier_get_or_create(&mut self) -> Result<Option<i64>, SelfError> {
-        Ok(Some(1))
     }
 }
 
@@ -461,9 +480,7 @@ mod tests {
                 txn.execute(
                     "INSERT INTO sessions (as_identifier, with_identifier, olm_session) VALUES (?1, ?2, ?3)",
                     (alice_id, bob_id, b"session-with-bob"),
-                ).expect("failed to execute");
-
-                true//.is_ok()
+                ).is_ok()
             })
             .expect("failed to create transaction");
 
@@ -507,6 +524,13 @@ mod tests {
         let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
 
+        storage
+            .identifier_create(&alice_identifier)
+            .expect("failed to create alice identifier");
+        storage
+            .identifier_create(&bob_identifier)
+            .expect("failed to create bob identifier");
+
         alice_acc
             .generate_one_time_keys(10)
             .expect("failed to generate one time keys");
@@ -535,7 +559,7 @@ mod tests {
 
         // store bobs session with alice
         storage
-            .session_create(&alice_identifier, &bob_identifier, bobs_session_with_alice)
+            .session_create(&bob_identifier, &alice_identifier, bobs_session_with_alice)
             .expect("failed to create session");
 
         // create alices session with bob from bobs first message
