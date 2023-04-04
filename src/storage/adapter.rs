@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct Storage {
     conn: Connection,
-    lock: Mutex<()>,
+    // lock: Mutex<()>,
     gcache: HashMap<Identifier, Arc<Mutex<Group>>>,
     kcache: HashMap<Identifier, Arc<KeyPair>>,
     scache: HashMap<Identifier, Arc<Mutex<Session>>>,
@@ -33,7 +33,7 @@ impl Storage {
 
         let mut storage = Storage {
             conn,
-            lock: Mutex::new(()),
+            //lock: Mutex::new(()),
             gcache: HashMap::new(),
             kcache: HashMap::new(),
             scache: HashMap::new(),
@@ -86,7 +86,10 @@ impl Storage {
                 ON keypairs (for_identifier);",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -104,7 +107,10 @@ impl Storage {
                 ON operations (on_identifier, sequence);",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -122,7 +128,10 @@ impl Storage {
                 ON connections (as_identifier, with_identifier);",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -163,7 +172,10 @@ impl Storage {
                 ON tokens (from_identifier, purpose);",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -180,7 +192,10 @@ impl Storage {
                 ON members (group_identifier, member_identifier);",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -196,7 +211,10 @@ impl Storage {
                 );",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -212,7 +230,10 @@ impl Storage {
                 );",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -228,7 +249,10 @@ impl Storage {
                 );",
                 (),
             )
-            .map_err(|_| SelfError::StorageTableCreationFailed)?;
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
 
         Ok(())
     }
@@ -460,7 +484,7 @@ impl Storage {
         Ok(())
     }
 
-    fn group_get(&mut self, group: &Identifier) -> Result<Arc<Mutex<Group>>, SelfError> {
+    pub fn group_get(&mut self, group: &Identifier) -> Result<Arc<Mutex<Group>>, SelfError> {
         // lookup or load omemo group from group cache
         if let Some(grp) = self.gcache.get(group) {
             return Ok(grp.clone());
@@ -508,10 +532,18 @@ impl Storage {
             let public_key =
                 PublicKey::from_bytes(&with_identifier, crate::keypair::Algorithm::Ed25519)?;
 
-            members.push((
-                Identifier::Referenced(public_key),
-                Session::from_pickle(&mut session, None),
-            ))
+            let identifier = Identifier::Referenced(public_key);
+
+            let session = match self.scache.get(&identifier) {
+                Some(session) => session.clone(),
+                None => {
+                    let s = Arc::new(Mutex::new(Session::from_pickle(&mut session, None)?));
+                    self.scache.insert(identifier, s.clone());
+                    s.clone()
+                }
+            };
+
+            members.push((with_identifier, session))
         }
 
         let identifier = match as_identifier {
@@ -519,52 +551,81 @@ impl Storage {
             None => return Err(SelfError::MessagingDestinationUnknown),
         };
 
-        let grp = Group::new(&identifier);
+        let mut omemo_group = Group::new(&identifier);
 
         for member in &members {
-            // TODO check session cache for session over using
-            // session loaded from db
-
-            grp.add_participant(member.0, session)
+            omemo_group.add_participant(&member.0, member.1.clone());
         }
 
-        let group = Arc::new(Mutex::new());
+        let grp = Arc::new(Mutex::new(omemo_group));
+        self.gcache.insert(group.clone(), grp.clone());
 
-        // TODO load group members and their sessions
-
-        Ok(group)
+        Ok(grp)
     }
 
-    fn member_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
-        /*
-        // lookup or load group from omemo group cache
-        if let Some(grp) = self.gcache.get_mut(group) {
-            grp.add_participant(id, session);
-        };
+    pub fn member_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
+        // check the session exists and assume it's been pre-created
+        // before adding a member to the group
+        let session = self.session_get(member)?;
 
-        self.storage.transaction(|txn| {
-            return txn
-                .execute(
-                    "INSERT INTO members (identity, owner) VALUES (?1, ?2)",
-                    (group.id(), owner.id()),
-                )
-                .is_ok();
-        })
-        */
+        // create the membership
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        txn.execute(
+            "INSERT INTO members (group_identifier, member_identifier) 
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    (SELECT id FROM identifiers WHERE identifier=?2)
+                );",
+            (group.id(), member.id()),
+        )
+        .expect("hello?");
+        //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        // if the group exists, update the member list
+        if let Some(grp) = self.gcache.get(group) {
+            grp.lock().unwrap().add_participant(&member.id(), session);
+        }
+
         Ok(())
     }
 
-    fn member_remove(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
-        /*
-        self.storage.transaction(|txn| {
-            return txn
-                .execute(
-                    "INSERT INTO members (identity, owner) VALUES (?1, ?2)",
-                    (group.id(), owner.id()),
-                )
-                .is_ok();
-        })
-        */
+    pub fn member_remove(
+        &mut self,
+        group: &Identifier,
+        member: &Identifier,
+    ) -> Result<(), SelfError> {
+        // remove the membership
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        txn.execute(
+            "DELETE FROM members (group_identifier, member_identifier) 
+                JOIN identifiers i1 ON
+                    i1.id = members.group_identifier
+                JOIN identifiers i2 ON
+                    i2.id = members.member_identifier
+                WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
+            (group.id(), member.id()),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        // if the group exists, update the member list
+        if let Some(grp) = self.gcache.get(group) {
+            grp.lock().unwrap().remove_participant(&member.id());
+        }
+
         Ok(())
     }
 }
@@ -737,5 +798,135 @@ mod tests {
             .expect("failed to decrypt message from alice");
 
         assert_eq!(&plaintext, "hey bob".as_bytes());
+    }
+
+    #[test]
+    fn member_create_and_remove() {
+        let mut storage = Storage::new().expect("storage failed");
+
+        let group_skp = crate::keypair::signing::KeyPair::new();
+        let group_ed25519_pk = group_skp.public();
+
+        let alice_skp = crate::keypair::signing::KeyPair::new();
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_ed25519_pk = alice_skp.public();
+        let alice_curve25519_pk = alice_ekp.public();
+        let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
+
+        let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
+        let bob_ed25519_pk = bob_skp.public();
+        let mut bob_acc = crate::crypto::account::Account::new(bob_skp, bob_ekp);
+
+        let carol_skp = crate::keypair::signing::KeyPair::new();
+        let carol_ekp = crate::keypair::exchange::KeyPair::new();
+        let carol_ed25519_pk = carol_skp.public();
+        let carol_curve25519_pk = carol_ekp.public();
+        let mut carol_acc = crate::crypto::account::Account::new(carol_skp, carol_ekp);
+
+        let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
+        let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
+        let carol_identifier = Identifier::Referenced(carol_ed25519_pk);
+        let group_identifier = Identifier::Referenced(group_ed25519_pk);
+
+        // create all identifiers
+        storage
+            .identifier_create(&alice_identifier)
+            .expect("failed to create alice identifier");
+
+        storage
+            .identifier_create(&bob_identifier)
+            .expect("failed to create bob identifier");
+
+        storage
+            .identifier_create(&carol_identifier)
+            .expect("failed to create bob identifier");
+
+        storage
+            .identifier_create(&group_identifier)
+            .expect("failed to create bob identifier");
+
+        // create alice and carols one time keys
+        alice_acc
+            .generate_one_time_keys(10)
+            .expect("failed to generate one time keys");
+
+        let alices_one_time_keys: HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&alice_acc.one_time_keys())
+                .expect("failed to load alices one time keys");
+
+        let alices_one_time_key = alices_one_time_keys
+            .get("curve25519")
+            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
+            .unwrap()
+            .as_str()
+            .unwrap();
+
+        carol_acc
+            .generate_one_time_keys(10)
+            .expect("failed to generate one time keys");
+
+        let carols_one_time_keys: HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&carol_acc.one_time_keys())
+                .expect("failed to load alices one time keys");
+
+        let carols_one_time_key = carols_one_time_keys
+            .get("curve25519")
+            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
+            .unwrap()
+            .as_str()
+            .unwrap();
+
+        // create bob a new session with alice and carol
+        let bobs_session_with_alice = bob_acc
+            .create_outbound_session(&alice_curve25519_pk, alices_one_time_key.as_bytes())
+            .expect("failed to create outbound session");
+
+        let bobs_session_with_carol = bob_acc
+            .create_outbound_session(&carol_curve25519_pk, carols_one_time_key.as_bytes())
+            .expect("failed to create outbound session");
+
+        storage
+            .session_create(&bob_identifier, &alice_identifier, bobs_session_with_alice)
+            .expect("failed to crate alices session");
+
+        storage
+            .session_create(&bob_identifier, &carol_identifier, bobs_session_with_carol)
+            .expect("failed to crate carols session");
+
+        // add alice and carol as members to a group
+        storage
+            .member_add(&group_identifier, &alice_identifier)
+            .expect("failed to add alice as member");
+
+        storage
+            .member_add(&group_identifier, &carol_identifier)
+            .expect("failed to add alice as member");
+
+        // get the group and encrypt a message
+        let group = storage
+            .group_get(&group_identifier)
+            .expect("failed to get group");
+        let group_message = group
+            .lock()
+            .unwrap()
+            .encrypt(b"hello")
+            .expect("failed to encrypt");
+
+        // check the group message contains alice and carols identifier
+        let alice_id = alice_identifier.id();
+        let bob_id = bob_identifier.id();
+        let carol_id = carol_identifier.id();
+
+        let gm = crate::crypto::omemo::GroupMessage::decode(&group_message)
+            .expect("failed to decode group message");
+
+        let recipients = gm.recipients();
+        assert_eq!(recipients.len(), 2);
+        assert!(recipients.contains(&alice_id));
+        assert!(recipients.contains(&carol_id));
+
+        // it should not contain bobs identifier
+        assert!(!recipients.contains(&bob_id));
     }
 }

@@ -61,6 +61,10 @@ impl GroupMessage {
         }
     }
 
+    pub fn recipients(&self) -> Vec<Vec<u8>> {
+        self.recipients.keys().cloned().collect()
+    }
+
     fn set_recipient_ciphertext(&mut self, id: &[u8], mtype: u64, ciphertext: &[u8]) {
         self.recipients.insert(
             id.to_vec(),
@@ -85,6 +89,10 @@ impl Group {
             id: id.to_vec(),
             session,
         });
+    }
+
+    pub fn remove_participant(&mut self, id: &[u8]) {
+        self.participants.retain(|member| member.id != id);
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, SelfError> {
