@@ -43,7 +43,7 @@ impl GroupMessage {
         }
     }
 
-    fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(self, &mut encoded).unwrap();
         encoded
@@ -96,6 +96,10 @@ impl Group {
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, SelfError> {
+        Ok(self.encrypt_group_message(plaintext)?.encode())
+    }
+
+    pub fn encrypt_group_message(&mut self, plaintext: &[u8]) -> Result<GroupMessage, SelfError> {
         let mut key_buf =
             vec![0u8; sodium_sys::crypto_aead_xchacha20poly1305_ietf_KEYBYTES as usize]
                 .into_boxed_slice();
@@ -143,7 +147,7 @@ impl Group {
             group_message.set_recipient_ciphertext(&p.id, mtype, &ciphertext);
         }
 
-        Ok(group_message.encode())
+        Ok(group_message)
     }
 
     pub fn decrypt(&mut self, from: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {

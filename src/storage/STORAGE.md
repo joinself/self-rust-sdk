@@ -204,6 +204,7 @@ Ref: connections.with_identifier > identifiers.id
 Ref: sessions.as_identifier > identifiers.id
 Ref: sessions.with_identifier > identifiers.id
 Ref: members.group_identifier > identifiers.id
+Ref: members.member_identifier > identifiers.id
 Ref: credentials.from_identifier > identifiers.id
 Ref: credentials.about_identifier > identifiers.id
 Ref: tokens.from_identifier > identifiers.id
