@@ -1,5 +1,6 @@
 use rusqlite::{Connection, Result, Transaction};
 
+use crate::crypto::omemo::GroupMessage;
 use crate::crypto::{account::Account, omemo::Group, session::Session};
 use crate::error::SelfError;
 use crate::identifier::Identifier;
@@ -923,18 +924,59 @@ impl Storage {
         Ok(message)
     }
 
-    /*
     pub fn decrypt_and_queue(
         &mut self,
         sender: &Identifier,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, SelfError> {
-        //let grp = self.group_get(sender)?;
-        //let mut grp_lock = grp.lock().unwrap();
-        //let gm = grp_lock.decrypt_group_message(ciphertext)?;
-        Ok(Vec::new())
+        let mut gm = GroupMessage::decode(ciphertext)?;
+
+        let grp = self.group_get(sender)?;
+        let mut grp_lock = grp.lock().unwrap();
+        let plaintext = grp_lock.decrypt_group_message(&sender.id(), &mut gm)?;
+
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        let olm_session = self.scache.get(sender).unwrap();
+        let olm_session_encoded = olm_session.lock().unwrap().pickle(None)?;
+
+        txn.execute(
+            "UPDATE sessions
+            SET sequence_rx = ?2, olm_session = ?3
+            WHERE id = (
+                SELECT sessions.id FROM sessions
+                JOIN identifiers i1 ON
+                    i1.id = sessions.with_identifier
+                WHERE i1.identifier = ?1
+            );",
+            (&sender.id(), 0, olm_session_encoded),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.execute(
+            "INSERT INTO inbox (session, sequence, message)
+            VALUES (
+                (
+                    SELECT sessions.id FROM sessions
+                    JOIN identifiers i1 ON
+                        i1.id = sessions.with_identifier
+                    WHERE i1.identifier=?1
+                ),
+                ?2,
+                ?3
+            );",
+            (&sender.id(), 0, &plaintext),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        Ok(plaintext)
     }
-     */
 }
 
 #[cfg(test)]
@@ -1551,5 +1593,109 @@ mod tests {
             .expect("failed to decrypt bobs message");
 
         assert_eq!(&plaintext, "hello alice pt2".as_bytes());
+    }
+
+    #[test]
+    fn decrypt_and_queue() {
+        let mut storage = Storage::new().expect("storage failed");
+
+        let alice_skp = crate::keypair::signing::KeyPair::new();
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_ed25519_pk = alice_skp.public();
+        let alice_curve25519_pk = alice_ekp.public();
+        let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
+
+        let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
+        let bob_ed25519_pk = bob_skp.public();
+        let bob_curve25519_pk = bob_ekp.public();
+        let mut bob_acc = crate::crypto::account::Account::new(bob_skp, bob_ekp);
+
+        let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
+        let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
+
+        storage
+            .identifier_create(&alice_identifier)
+            .expect("failed to create alice identifier");
+        storage
+            .identifier_create(&bob_identifier)
+            .expect("failed to create bob identifier");
+
+        alice_acc
+            .generate_one_time_keys(10)
+            .expect("failed to generate one time keys");
+
+        let alices_one_time_keys: HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&alice_acc.one_time_keys())
+                .expect("failed to load alices one time keys");
+
+        let alices_one_time_key = alices_one_time_keys
+            .get("curve25519")
+            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
+            .unwrap()
+            .as_str()
+            .unwrap();
+
+        // encrypt a message from bob with a new session to alice
+        let bobs_session_with_alice = bob_acc
+            .create_outbound_session(&alice_curve25519_pk, alices_one_time_key.as_bytes())
+            .expect("failed to create outbound session");
+
+        // store bobs session with alice
+        storage
+            .session_create(
+                &bob_identifier,
+                &alice_identifier,
+                Some(bobs_session_with_alice),
+            )
+            .expect("failed to create session");
+
+        // setup a group 1-1 with alice
+        storage
+            .member_add(&alice_identifier, &alice_identifier)
+            .expect("failed to create 1-1 group with alice");
+
+        // encrypt and queue two messages to alice
+        let bobs_message_to_alice_1 = storage
+            .encrypt_and_queue(&alice_identifier, b"hello alice pt1")
+            .expect("failed to encrypt and queue");
+
+        // create alices session with bob from bobs first message
+        let gm = crate::crypto::omemo::GroupMessage::decode(&bobs_message_to_alice_1)
+            .expect("failed to decode group message");
+
+        let one_time_message = gm
+            .one_time_key_message(&alice_identifier.id())
+            .expect("one time key message missing");
+
+        let alices_session_with_bob = alice_acc
+            .create_inbound_session(&bob_curve25519_pk, &one_time_message)
+            .expect("failed to create inbound session");
+
+        // remove the one time key from alices account
+        alice_acc
+            .remove_one_time_keys(&alices_session_with_bob)
+            .expect("failed to remove session");
+
+        // create alices group with bob
+        let mut group = Group::new(&alice_identifier.id());
+        group.add_participant(
+            &bob_identifier.id(),
+            Arc::new(Mutex::new(alices_session_with_bob)),
+        );
+
+        // decrypt the first message from bob
+        let plaintext = group
+            .decrypt(&bob_identifier.id(), &bobs_message_to_alice_1)
+            .expect("failed to decrypt bobs message");
+
+        assert_eq!(&plaintext, "hello alice pt1".as_bytes());
+
+        // encrypt a message for bob
+        let ciphertext = group.encrypt(b"hello bob").expect("failed to encrypt message for bob");
+
+        // decrypt message for bob
+        let plaintext = storage.decrypt_and_queue(&alice_identifier, &ciphertext).expect("failed to decrypt message from alice");
+        assert_eq!(plaintext, b"hello bob");
     }
 }
