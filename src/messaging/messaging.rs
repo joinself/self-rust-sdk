@@ -1,12 +1,11 @@
-use crate::crypto::omemo::Group;
+//use crate::crypto::omemo::Group;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
-use crate::storage::{Storage, Group};
+use crate::storage::Storage;
 use crate::transport::rest::Rest;
 use crate::transport::websocket::Websocket;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 // TODO use LRU cache for sessions
 pub struct Messaging {
@@ -31,11 +30,10 @@ impl Messaging {
         to: &Identifier,
         plaintext: &[u8],
     ) -> Result<(), SelfError> {
-        // get group....
+        //let ciphertext = self.storage.encrypt_and_queue(to, )?;
 
-
-
-
+        // batch session updates
+        // storage.session_update(recipient_id)
 
         /*
         let lock = self.lock.lock().unwrap();

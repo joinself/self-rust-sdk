@@ -286,7 +286,7 @@ impl Storage {
         if txn
             .execute(
                 "INSERT INTO identifiers (identifier) VALUES (?1)",
-                [identifier.id()],
+                [&identifier.id()],
             )
             .is_err()
         {
@@ -317,7 +317,7 @@ impl Storage {
             )
             .expect("failed to prepare statement");
 
-        let mut rows = match statement.query([identifier.id()]) {
+        let mut rows = match statement.query([&identifier.id()]) {
             Ok(rows) => rows,
             Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
         };
@@ -371,7 +371,7 @@ impl Storage {
                     ?4
                 );",
                 (
-                    identifier.id(),
+                    &identifier.id(),
                     role.0,
                     &keypair.encode(),
                     olm_account.pickle(None)?,
@@ -386,7 +386,7 @@ impl Storage {
                     ?2,
                     ?3
                 );",
-                (identifier.id(), role.0, &keypair.encode()),
+                (&identifier.id(), role.0, &keypair.encode()),
             )
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         }
@@ -422,7 +422,7 @@ impl Storage {
             )
             .expect("failed to prepare statement");
 
-        let mut rows = match statement.query([with_identifier.id()]) {
+        let mut rows = match statement.query([&with_identifier.id()]) {
             Ok(rows) => rows,
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };
@@ -472,7 +472,7 @@ impl Storage {
                     (SELECT id FROM identifiers WHERE identifier=?2),
                     ?3
                 );",
-                (as_identifier.id(), with_identifier.id(), session_encoded),
+                (&as_identifier.id(), &with_identifier.id(), session_encoded),
             )
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -490,7 +490,7 @@ impl Storage {
                 (SELECT id FROM identifiers WHERE identifier=?1),
                 (SELECT id FROM identifiers WHERE identifier=?2)
             );",
-            (as_identifier.id(), with_identifier.id()),
+            (&as_identifier.id(), &with_identifier.id()),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -505,6 +505,9 @@ impl Storage {
         if let Some(grp) = self.gcache.get(group) {
             return Ok(grp.clone());
         };
+
+        let mut members = Vec::new();
+        let mut as_identifier: Option<Vec<u8>> = None;
 
         let txn = self
             .conn
@@ -526,13 +529,10 @@ impl Storage {
             )
             .expect("failed to prepare statement");
 
-        let mut rows = match statement.query([group.id()]) {
+        let mut rows = match statement.query([&group.id()]) {
             Ok(rows) => rows,
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };
-
-        let mut members = Vec::new();
-        let mut as_identifier: Option<Vec<u8>> = None;
 
         while let Some(row) = rows
             .next()
@@ -573,22 +573,14 @@ impl Storage {
             omemo_group.add_participant(&member.0, member.1.clone());
         }
 
+        // TODO avoid the need for locking the group
+        // by implementing a read only copy of the
+        // group members list via a concurrent hashmap
+        // like dashmap or a lock free linked list
         let grp = Arc::new(Mutex::new(omemo_group));
         self.gcache.insert(group.clone(), grp.clone());
 
         Ok(grp)
-    }
-
-    pub fn encrypt_and_queue(
-        &mut self,
-        for_identifier: &Identifier,
-        plaintext: &[u8],
-    ) -> Result<Vec<u8>, SelfError> {
-        let grp = self.group_get(for_identifier)?;
-        let mut grp_lock = grp.lock().unwrap();
-        let gm = grp_lock.encrypt_group_message(plaintext)?;
-
-        Ok(gm.encode())
     }
 
     pub fn member_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
@@ -608,7 +600,7 @@ impl Storage {
                     (SELECT id FROM identifiers WHERE identifier=?1),
                     (SELECT id FROM identifiers WHERE identifier=?2)
                 );",
-            (group.id(), member.id()),
+            (&group.id(), &member.id()),
         )
         .expect("hello?");
         //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -642,7 +634,7 @@ impl Storage {
                 JOIN identifiers i2 ON
                     i2.id = members.member_identifier
                 WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
-            (group.id(), member.id()),
+            (&group.id(), &member.id()),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -681,7 +673,7 @@ impl Storage {
                     ?2,
                     ?3
                 );",
-            (recipient.id(), sequence, ciphertext),
+            (&recipient.id(), sequence, ciphertext),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -753,7 +745,7 @@ impl Storage {
                     i1.id = sessions.with_identifier
                 WHERE i1.identifier=?1
             ) AND sequence = ?2;",
-            (recipient.id(), sequence),
+            (&recipient.id(), sequence),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -765,9 +757,9 @@ impl Storage {
 
     pub fn inbox_queue(
         &mut self,
-        recipient: &Identifier,
+        sender: &Identifier,
         sequence: i64,
-        ciphertext: &[u8],
+        plaintext: &[u8],
     ) -> Result<(), SelfError> {
         // add the encrypted message to the inbox
         let txn = self
@@ -787,7 +779,7 @@ impl Storage {
                     ?2,
                     ?3
                 );",
-            (recipient.id(), sequence, ciphertext),
+            (&sender.id(), sequence, plaintext),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -859,7 +851,7 @@ impl Storage {
                     i1.id = sessions.with_identifier
                 WHERE i1.identifier=?1
             ) AND sequence = ?2;",
-            (recipient.id(), sequence),
+            (&recipient.id(), sequence),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -868,6 +860,81 @@ impl Storage {
 
         Ok(())
     }
+
+    pub fn encrypt_and_queue(
+        &mut self,
+        recipient: &Identifier,
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, SelfError> {
+        let grp = self.group_get(recipient)?;
+        let mut grp_lock = grp.lock().unwrap();
+        let gm = grp_lock.encrypt_group_message(plaintext)?;
+
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        for m in &gm.recipients() {
+            let mid = Identifier::Referenced(PublicKey::from_bytes(
+                m,
+                crate::keypair::Algorithm::Ed25519,
+            )?);
+
+            let olm_session = self.scache.get(&mid).unwrap();
+            let olm_session_encoded = olm_session.lock().unwrap().pickle(None)?;
+
+            txn.execute(
+                "UPDATE sessions
+                SET sequence_tx = ?2, olm_session = ?3
+                WHERE id = (
+                    SELECT sessions.id FROM sessions
+                    JOIN identifiers i1 ON
+                        i1.id = sessions.with_identifier
+                    WHERE i1.identifier = ?1
+                );",
+                (&recipient.id(), 0, olm_session_encoded),
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        }
+
+        let message = gm.encode();
+
+        // TODO set the correct sequence here!
+        txn.execute(
+            "INSERT INTO outbox (session, sequence, message)
+            VALUES (
+                (
+                    SELECT sessions.id FROM sessions
+                    JOIN identifiers i1 ON
+                        i1.id = sessions.with_identifier
+                    WHERE i1.identifier=?1
+                ),
+                ?2,
+                ?3
+            );",
+            (&recipient.id(), 0, &message),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        Ok(message)
+    }
+
+    /*
+    pub fn decrypt_and_queue(
+        &mut self,
+        sender: &Identifier,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, SelfError> {
+        //let grp = self.group_get(sender)?;
+        //let mut grp_lock = grp.lock().unwrap();
+        //let gm = grp_lock.decrypt_group_message(ciphertext)?;
+        Ok(Vec::new())
+    }
+     */
 }
 
 #[cfg(test)]
@@ -1376,5 +1443,113 @@ mod tests {
         let next_item = storage.inbox_next().expect("failed to get next inbox item");
 
         assert!(next_item.is_none());
+    }
+
+    #[test]
+    fn encrypt_and_queue() {
+        let mut storage = Storage::new().expect("storage failed");
+
+        let alice_skp = crate::keypair::signing::KeyPair::new();
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_ed25519_pk = alice_skp.public();
+        let alice_curve25519_pk = alice_ekp.public();
+        let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
+
+        let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
+        let bob_ed25519_pk = bob_skp.public();
+        let bob_curve25519_pk = bob_ekp.public();
+        let mut bob_acc = crate::crypto::account::Account::new(bob_skp, bob_ekp);
+
+        let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
+        let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
+
+        storage
+            .identifier_create(&alice_identifier)
+            .expect("failed to create alice identifier");
+        storage
+            .identifier_create(&bob_identifier)
+            .expect("failed to create bob identifier");
+
+        alice_acc
+            .generate_one_time_keys(10)
+            .expect("failed to generate one time keys");
+
+        let alices_one_time_keys: HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&alice_acc.one_time_keys())
+                .expect("failed to load alices one time keys");
+
+        let alices_one_time_key = alices_one_time_keys
+            .get("curve25519")
+            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
+            .unwrap()
+            .as_str()
+            .unwrap();
+
+        // encrypt a message from bob with a new session to alice
+        let bobs_session_with_alice = bob_acc
+            .create_outbound_session(&alice_curve25519_pk, alices_one_time_key.as_bytes())
+            .expect("failed to create outbound session");
+
+        // store bobs session with alice
+        storage
+            .session_create(
+                &bob_identifier,
+                &alice_identifier,
+                Some(bobs_session_with_alice),
+            )
+            .expect("failed to create session");
+
+        // setup a group 1-1 with alice
+        storage
+            .member_add(&alice_identifier, &alice_identifier)
+            .expect("failed to create 1-1 group with alice");
+
+        // encrypt and queue two messages to alice
+        let bobs_message_to_alice_1 = storage
+            .encrypt_and_queue(&alice_identifier, b"hello alice pt1")
+            .expect("failed to encrypt and queue");
+
+        let bobs_message_to_alice_2 = storage
+            .encrypt_and_queue(&alice_identifier, b"hello alice pt2")
+            .expect("failed to encrypt and queue");
+
+        // create alices session with bob from bobs first message
+        let gm = crate::crypto::omemo::GroupMessage::decode(&bobs_message_to_alice_1)
+            .expect("failed to decode group message");
+
+        let one_time_message = gm
+            .one_time_key_message(&alice_identifier.id())
+            .expect("one time key message missing");
+
+        let alices_session_with_bob = alice_acc
+            .create_inbound_session(&bob_curve25519_pk, &one_time_message)
+            .expect("failed to create inbound session");
+
+        // remove the one time key from alices account
+        alice_acc
+            .remove_one_time_keys(&alices_session_with_bob)
+            .expect("failed to remove session");
+
+        // create alices group with bob
+        let mut group = Group::new(&alice_identifier.id());
+        group.add_participant(
+            &bob_identifier.id(),
+            Arc::new(Mutex::new(alices_session_with_bob)),
+        );
+
+        // decrypt the first message from bob
+        let plaintext = group
+            .decrypt(&bob_identifier.id(), &bobs_message_to_alice_1)
+            .expect("failed to decrypt bobs message");
+
+        assert_eq!(&plaintext, "hello alice pt1".as_bytes());
+
+        // decrypt the second message from bob
+        let plaintext = group
+            .decrypt(&bob_identifier.id(), &bobs_message_to_alice_2)
+            .expect("failed to decrypt bobs message");
+
+        assert_eq!(&plaintext, "hello alice pt2".as_bytes());
     }
 }

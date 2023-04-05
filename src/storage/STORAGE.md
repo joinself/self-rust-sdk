@@ -35,15 +35,10 @@ If there are no matches for the identitiy, or there are existing records that ma
 
 As clients persist these operations, it allows them to validate that the server is being honest about the records it returns. If the server produces new operations that depend on tampered history that the client has already witnessed, signautures and previous hashes will not match, allowing clients to mark servers as compromised/untrustworthy.
 
-### Actions
 
-Holds actions that create or revoke public keys. It is linked to it's parent operation by its autoincrementing primary key.
+### Identifiers
 
-Serves as a means of linking public keys to their corresponding actions, and by extension, persistent identifiers. 
-
-### Public Keys
-
-Holds records of public key addresses that have been witnessed or interacted with. 
+Holds records of public key address identifiers that have been witnessed or interacted with. 
 
 This is essentially the main table, as public keys serve as an address by which things are routed and entities are connected, etc.
 
@@ -66,10 +61,6 @@ When sending or receiving a message, this table will be used to encrypt or decry
 ### Tokens
 
 Holds records of tokens issued by other public key addresses for the purpose of interacting with or proving authorization to an action
-
-### Groups
-
-Holds records of groups that are participated in by the accounts holder
 
 ### Members
 
