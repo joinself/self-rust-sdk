@@ -84,6 +84,10 @@ impl Group {
         }
     }
 
+    pub fn id(&self) -> Vec<u8> {
+        self.id.clone()
+    }
+
     pub fn add_participant(&mut self, id: &[u8], session: Arc<Mutex<Session>>) {
         self.participants.push(Participant {
             id: id.to_vec(),

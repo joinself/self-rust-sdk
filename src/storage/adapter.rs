@@ -18,6 +18,8 @@ pub struct Storage {
     scache: HashMap<Identifier, Arc<Mutex<Session>>>,
 }
 
+unsafe impl Send for Storage {}
+
 // This whole implementation is horrible and only temporary
 // mutiple tables and caches are accessed for some higher level
 // operations that also require atomicity via a single transaction
@@ -866,10 +868,15 @@ impl Storage {
         &mut self,
         recipient: &Identifier,
         plaintext: &[u8],
-    ) -> Result<Vec<u8>, SelfError> {
+    ) -> Result<(Identifier, Vec<u8>), SelfError> {
         let grp = self.group_get(recipient)?;
         let mut grp_lock = grp.lock().unwrap();
         let gm = grp_lock.encrypt_group_message(plaintext)?;
+
+        let sender_identifier = Identifier::Referenced(PublicKey::from_bytes(
+            &grp_lock.id(),
+            crate::keypair::Algorithm::Ed25519,
+        )?);
 
         let txn = self
             .conn
@@ -921,7 +928,7 @@ impl Storage {
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        Ok(message)
+        Ok((sender_identifier, gm.encode()))
     }
 
     pub fn decrypt_and_queue(
@@ -1548,11 +1555,11 @@ mod tests {
             .expect("failed to create 1-1 group with alice");
 
         // encrypt and queue two messages to alice
-        let bobs_message_to_alice_1 = storage
+        let (_, bobs_message_to_alice_1) = storage
             .encrypt_and_queue(&alice_identifier, b"hello alice pt1")
             .expect("failed to encrypt and queue");
 
-        let bobs_message_to_alice_2 = storage
+        let (_, bobs_message_to_alice_2) = storage
             .encrypt_and_queue(&alice_identifier, b"hello alice pt2")
             .expect("failed to encrypt and queue");
 
@@ -1656,7 +1663,7 @@ mod tests {
             .expect("failed to create 1-1 group with alice");
 
         // encrypt and queue two messages to alice
-        let bobs_message_to_alice_1 = storage
+        let (_, bobs_message_to_alice_1) = storage
             .encrypt_and_queue(&alice_identifier, b"hello alice pt1")
             .expect("failed to encrypt and queue");
 
@@ -1692,10 +1699,14 @@ mod tests {
         assert_eq!(&plaintext, "hello alice pt1".as_bytes());
 
         // encrypt a message for bob
-        let ciphertext = group.encrypt(b"hello bob").expect("failed to encrypt message for bob");
+        let ciphertext = group
+            .encrypt(b"hello bob")
+            .expect("failed to encrypt message for bob");
 
         // decrypt message for bob
-        let plaintext = storage.decrypt_and_queue(&alice_identifier, &ciphertext).expect("failed to decrypt message from alice");
+        let plaintext = storage
+            .decrypt_and_queue(&alice_identifier, &ciphertext)
+            .expect("failed to decrypt message from alice");
         assert_eq!(plaintext, b"hello bob");
     }
 }
