@@ -70,9 +70,9 @@ impl Websocket {
     pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
         let handle = self.runtime.handle();
         let endpoint = self.endpoint.clone();
+        let read_tx = self.read_tx.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
-        let read_tx = self.read_tx.clone();
 
         // TODO cleanup old sockets!
 
@@ -281,6 +281,10 @@ impl Websocket {
         self.read_rx
             .recv()
             .map_err(|_| SelfError::RestRequestConnectionTimeout)
+    }
+
+    pub fn subscribe(&mut self, _to: &Identifier) -> Result<(), SelfError> {
+        Ok(())
     }
 
     pub fn assemble_payload(
@@ -891,9 +895,9 @@ mod tests {
         let bob_kp = crate::keypair::signing::KeyPair::new();
         let bob_id = Identifier::Referenced(bob_kp.public());
 
-        // connect
         let mut ws = Websocket::new("ws://localhost:12345", subs).unwrap();
-        ws.connect().unwrap();
+
+        ws.connect().expect("failed to connect");
 
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
 
@@ -925,6 +929,7 @@ mod tests {
         assert_eq!(msg, Vec::from("test message"));
 
         let (_, ciphertext) = ws.receive().expect("Failed to receive message");
+
         assert_eq!(ciphertext, Vec::from("test message"));
 
         rt.shutdown_background();

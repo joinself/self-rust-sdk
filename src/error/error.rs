@@ -81,10 +81,15 @@ pub enum SelfError {
     StorageTransactionCreationFailed,
     StorageTransactionCommitFailed,
     StorageTransactionRollbackFailed,
+    StorageSessionNotFound,
     WebsocketSenderIdentifierNotOwned,
     WebsocketTokenUnsupported,
     WebsocketProtocolEncodingInvalid,
     WebsocketProtocolErrorUnknown,
+    MessagingDestinationUnknown,
+    MessagingGroupUnknown,
+    KeychainKeyNotFound,
+    KeychainKeyExists,
 }
 
 impl std::error::Error for SelfError {}
@@ -193,10 +198,15 @@ impl fmt::Display for SelfError {
             SelfError::StorageTransactionCreationFailed => write!(f, "Storage transaction creation failed"),
             SelfError::StorageTransactionCommitFailed => write!(f, "Storage transaction commit failed"),
             SelfError::StorageTransactionRollbackFailed => write!(f, "Storage transaction rollback failed"),
+            SelfError::StorageSessionNotFound => write!(f, "Session not found"),
             SelfError::WebsocketSenderIdentifierNotOwned => write!(f, "Websocket cannot send from an identifier that does not belong to this account"),
             SelfError::WebsocketTokenUnsupported => write!(f, "Websocket send attempted with an unsupported token"),
             SelfError::WebsocketProtocolEncodingInvalid => write!(f, "Websocket protocol event could not be decoded"),
             SelfError::WebsocketProtocolErrorUnknown => write!(f, "Websocket protocol error code is unknown"),
+            SelfError::MessagingDestinationUnknown => write!(f, "Messaging destination or recipient unknown"),
+            SelfError::MessagingGroupUnknown => write!(f, "Messaging group not found"),
+            SelfError::KeychainKeyNotFound => write!(f, "Keychain key not found"),
+            SelfError::KeychainKeyExists => write!(f, "Keychain key already exists"),
         }
     }
 }

@@ -68,6 +68,24 @@ impl PublicKey {
     }
 }
 
+impl std::hash::Hash for PublicKey {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        state.write(&self.bytes);
+        state.finish();
+    }
+}
+
+impl PartialEq for PublicKey {
+    fn eq(&self, other: &PublicKey) -> bool {
+        self.bytes.eq(&other.bytes)
+    }
+}
+
+impl Eq for PublicKey {}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SecretKey {
     bytes: Vec<u8>,

@@ -5,6 +5,8 @@ use olm_sys::*;
 
 pub struct Session {
     session: *mut OlmSession,
+    sequence_tx: i64,
+    sequence_rx: i64,
 }
 
 impl Session {
@@ -14,7 +16,11 @@ impl Session {
             let session_buf = vec![0_u8; session_len].into_boxed_slice();
             let session = olm_session(Box::into_raw(session_buf) as *mut libc::c_void);
 
-            Session { session }
+            Session {
+                session,
+                sequence_tx: 0,
+                sequence_rx: 0,
+            }
         }
     }
 
@@ -38,12 +44,21 @@ impl Session {
                 pickle.len() as u64,
             );
 
-            let session = Session { session };
+            let session = Session {
+                session,
+                sequence_tx: 0,
+                sequence_rx: 0,
+            };
 
             session.last_error()?;
 
             Ok(session)
         }
+    }
+
+    pub fn set_sequences(&mut self, sequence_tx: i64, sequence_rx: i64) {
+        self.sequence_tx = sequence_tx;
+        self.sequence_rx = sequence_rx;
     }
 
     /// # Safety

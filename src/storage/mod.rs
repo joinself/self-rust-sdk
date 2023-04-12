@@ -1,4 +1,3 @@
-#[allow(clippy::module_inception)]
-mod storage;
+mod adapter;
 
-pub use self::storage::*;
+pub use self::adapter::*;
