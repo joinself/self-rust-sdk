@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
 use crate::identifier::Identifier;
+use crate::messaging::{SendCallback, Subscription, Transport};
 use crate::protocol::messaging;
 use crate::token::Token;
 
@@ -23,14 +24,8 @@ enum Event {
     Done,
 }
 
-pub struct Subscription {
-    pub identifier: Identifier,
-    pub from: i64,
-    pub token: Option<Token>,
-}
-
 pub struct Websocket {
-    endpoint: Url,
+    endpoint: Option<Url>,
     read_tx: Sender<(Vec<u8>, Vec<u8>)>,
     read_rx: Receiver<(Vec<u8>, Vec<u8>)>,
     write_tx: Sender<Event>,
@@ -39,248 +34,33 @@ pub struct Websocket {
     subscriptions: Vec<Subscription>,
 }
 
-impl Websocket {
-    pub fn new(
-        url: &str,
-        subscriptions: Vec<Subscription>,
-    ) -> std::result::Result<Websocket, SelfError> {
-        let endpoint = match Url::parse(url) {
-            Ok(endpoint) => endpoint,
-            Err(_) => return Err(SelfError::RestRequestURLInvalid),
-        };
+// TODO fix subscriptions...
 
+unsafe impl Send for Websocket {}
+unsafe impl Sync for Websocket {}
+
+impl Websocket {
+    pub fn new() -> Websocket {
         let (read_tx, read_rx) = channel::bounded(256);
         let (write_tx, write_rx) = channel::bounded(256);
 
         let runtime = Runtime::new().unwrap();
 
-        let ws = Websocket {
-            endpoint,
+        Websocket {
+            endpoint: None,
             read_tx,
             read_rx,
             write_tx,
             write_rx,
             runtime,
-            subscriptions,
-        };
-
-        Ok(ws)
-    }
-
-    pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
-        let handle = self.runtime.handle();
-        let endpoint = self.endpoint.clone();
-        let read_tx = self.read_tx.clone();
-        let write_tx = self.write_tx.clone();
-        let write_rx = self.write_rx.clone();
-
-        // TODO cleanup old sockets!
-
-        let (tx, rx) = channel::bounded(1);
-        let requests: Arc<Mutex<HashMap<Vec<u8>, Response>>> = Arc::new(Mutex::new(HashMap::new()));
-        let requests_rx = requests.clone();
-        let requests_tx = requests.clone();
-
-        handle.spawn(async move {
-            let result = match connect_async(&endpoint).await {
-                Ok((socket, _)) => Ok(socket),
-                Err(err) => {
-                    println!("{}", err);
-                    Err(SelfError::RestRequestConnectionFailed)
-                }
-            };
-
-            tx.send(result).unwrap();
-        });
-
-        let (mut socket_tx, mut socket_rx) = rx
-            .recv()
-            .map_err(|_| SelfError::RestRequestConnectionFailed)??
-            .split();
-
-        handle.spawn(async move {
-            while let Some(event) = socket_rx.next().await {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(_) => return,
-                };
-
-                if event.is_close() {
-                    write_tx.send(Event::Done).unwrap();
-                    return;
-                }
-
-                if event.is_ping() {
-                    continue;
-                }
-
-                if event.is_pong() {
-                    continue;
-                }
-
-                if event.is_binary() {
-                    let data = event.into_data();
-
-                    let event =
-                        messaging::root_as_event(&data).expect("Failed to process websocket event");
-
-                    match event.type_() {
-                        messaging::ContentType::ACKNOWLEDGEMENT => {
-                            if let Some(id) = event.id() {
-                                let lock = requests_rx.lock().await;
-
-                                if let Some(callback) = lock.get(id) {
-                                    callback(Ok(()));
-                                }
-
-                                drop(lock);
-                            }
-                        }
-                        messaging::ContentType::ERROR => {
-                            let error = match event.content() {
-                                Some(content) => flatbuffers::root::<messaging::Error>(content)
-                                    .expect("Failed to process websocket error content"),
-                                None => continue,
-                            };
-
-                            println!("code: {} message: {:?}", error.code().0, error.error());
-
-                            let event_id = match event.id() {
-                                Some(id) => id,
-                                None => continue,
-                            };
-
-                            let lock = requests_rx.lock().await;
-
-                            if let Some(callback) = lock.get(event_id) {
-                                // TODO replace this with a proper error
-                                callback(Err(SelfError::WebsocketProtocolErrorUnknown));
-                            }
-
-                            drop(lock);
-                        }
-                        messaging::ContentType::MESSAGE => {
-                            if let Some(content) = event.content() {
-                                let message = flatbuffers::root::<messaging::Message>(content)
-                                    .expect("Failed to process websocket message content");
-
-                                let payload = match message.payload() {
-                                    Some(payload) => {
-                                        flatbuffers::root::<messaging::Payload>(payload)
-                                            .expect("Failed to process websocket message content")
-                                    }
-                                    None => continue,
-                                };
-
-                                read_tx
-                                    .send((
-                                        payload.sender().unwrap().to_vec(),
-                                        payload.content().unwrap().to_vec(),
-                                    ))
-                                    .unwrap_or(());
-                            }
-                        }
-                        _ => {
-                            println!("unknown event...");
-                        }
-                    }
-                }
-            }
-        });
-
-        // TODO replace RestRequestConnectionFailed with better errors
-        handle.spawn(async move {
-            for m in write_rx.iter() {
-                match m {
-                    Event::Message(id, msg, callback) => match {
-                        if let Some(cb) = callback {
-                            let mut lock = requests_tx.lock().await;
-                            lock.insert(id, cb);
-                            drop(lock);
-                        }
-                        socket_tx.send(msg).await
-                    } {
-                        Ok(_) => continue,
-                        Err(_) => {
-                            break;
-                        }
-                    },
-                    Event::Done => break,
-                }
-            }
-            socket_tx.close().await.expect("Failed to close socket");
-        });
-
-        let (tx, rx) = channel::bounded(1);
-
-        let (event_id, event_subscribe) = self.assemble_subscription(&self.subscriptions)?;
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-
-        let callback = Arc::new(move |result: Result<(), SelfError>| {
-            tx.send(result)
-                .expect("Failed to send authentication response");
-        });
-
-        self.write_tx
-            .send(Event::Message(
-                event_id,
-                Message::Binary(event_subscribe),
-                Some(callback),
-            ))
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
-
-        rx.recv_deadline(deadline)
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+            subscriptions: Vec::new(),
+        }
     }
 
     pub fn disconnect(&mut self) -> Result<(), SelfError> {
         self.write_tx
             .send(Event::Done)
             .map_err(|_| SelfError::RestRequestConnectionFailed)
-    }
-
-    pub fn send(
-        &self,
-        from: &Identifier,
-        to: &Identifier,
-        sequence: u64,
-        content: &[u8],
-        tokens: Option<Vec<Token>>,
-        callback: Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>,
-    ) {
-        let payload = match self.assemble_payload(from, to, sequence, content) {
-            Ok(payload) => payload,
-            Err(err) => {
-                callback(Err(err));
-                return;
-            }
-        };
-
-        let (event_id, event_message) = match self.assemble_message(from, &payload, tokens) {
-            Ok(event) => event,
-            Err(err) => {
-                callback(Err(err));
-                return;
-            }
-        };
-
-        let event = Event::Message(
-            event_id,
-            Message::Binary(event_message),
-            Some(Arc::clone(&callback)),
-        );
-
-        if self.write_tx.send(event).is_err() {
-            // TODO handle this error properly
-            callback(Err(SelfError::RestRequestConnectionTimeout));
-        }
-    }
-
-    pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
-        self.read_rx
-            .recv()
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)
     }
 
     pub fn subscribe(&mut self, _to: &Identifier) -> Result<(), SelfError> {
@@ -535,6 +315,238 @@ impl Websocket {
         builder.finish(event, None);
 
         return Ok((event_id, builder.finished_data().to_vec()));
+    }
+}
+
+impl Default for Websocket {
+    fn default() -> Self {
+        Websocket::new()
+    }
+}
+
+impl Transport for Websocket {
+    fn connect(
+        &mut self,
+        url: &str,
+        subscriptions: &[Subscription],
+    ) -> std::result::Result<(), SelfError> {
+        let endpoint = match Url::parse(url) {
+            Ok(endpoint) => endpoint,
+            Err(_) => return Err(SelfError::RestRequestURLInvalid),
+        };
+
+        self.endpoint = Some(endpoint.clone());
+
+        let handle = self.runtime.handle();
+        let read_tx = self.read_tx.clone();
+        let write_tx = self.write_tx.clone();
+        let write_rx = self.write_rx.clone();
+
+        // TODO cleanup old sockets!
+
+        let (tx, rx) = channel::bounded(1);
+        let requests: Arc<Mutex<HashMap<Vec<u8>, Response>>> = Arc::new(Mutex::new(HashMap::new()));
+        let requests_rx = requests.clone();
+        let requests_tx = requests.clone();
+
+        subscriptions
+            .iter()
+            .for_each(|sub| self.subscriptions.push(sub.clone()));
+
+        handle.spawn(async move {
+            let result = match connect_async(&endpoint).await {
+                Ok((socket, _)) => Ok(socket),
+                Err(err) => {
+                    println!("{}", err);
+                    Err(SelfError::RestRequestConnectionFailed)
+                }
+            };
+
+            tx.send(result).unwrap();
+        });
+
+        let (mut socket_tx, mut socket_rx) = rx
+            .recv()
+            .map_err(|_| SelfError::RestRequestConnectionFailed)??
+            .split();
+
+        handle.spawn(async move {
+            while let Some(event) = socket_rx.next().await {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(_) => return,
+                };
+
+                if event.is_close() {
+                    write_tx.send(Event::Done).unwrap();
+                    return;
+                }
+
+                if event.is_ping() {
+                    continue;
+                }
+
+                if event.is_pong() {
+                    continue;
+                }
+
+                if event.is_binary() {
+                    let data = event.into_data();
+
+                    let event =
+                        messaging::root_as_event(&data).expect("Failed to process websocket event");
+
+                    match event.type_() {
+                        messaging::ContentType::ACKNOWLEDGEMENT => {
+                            if let Some(id) = event.id() {
+                                let lock = requests_rx.lock().await;
+
+                                if let Some(callback) = lock.get(id) {
+                                    callback(Ok(()));
+                                }
+
+                                drop(lock);
+                            }
+                        }
+                        messaging::ContentType::ERROR => {
+                            let error = match event.content() {
+                                Some(content) => flatbuffers::root::<messaging::Error>(content)
+                                    .expect("Failed to process websocket error content"),
+                                None => continue,
+                            };
+
+                            println!("code: {} message: {:?}", error.code().0, error.error());
+
+                            let event_id = match event.id() {
+                                Some(id) => id,
+                                None => continue,
+                            };
+
+                            let lock = requests_rx.lock().await;
+
+                            if let Some(callback) = lock.get(event_id) {
+                                // TODO replace this with a proper error
+                                callback(Err(SelfError::WebsocketProtocolErrorUnknown));
+                            }
+
+                            drop(lock);
+                        }
+                        messaging::ContentType::MESSAGE => {
+                            if let Some(content) = event.content() {
+                                let message = flatbuffers::root::<messaging::Message>(content)
+                                    .expect("Failed to process websocket message content");
+
+                                let payload = match message.payload() {
+                                    Some(payload) => {
+                                        flatbuffers::root::<messaging::Payload>(payload)
+                                            .expect("Failed to process websocket message content")
+                                    }
+                                    None => continue,
+                                };
+
+                                read_tx
+                                    .send((
+                                        payload.sender().unwrap().to_vec(),
+                                        payload.content().unwrap().to_vec(),
+                                    ))
+                                    .unwrap_or(());
+                            }
+                        }
+                        _ => {
+                            println!("unknown event...");
+                        }
+                    }
+                }
+            }
+        });
+
+        // TODO replace RestRequestConnectionFailed with better errors
+        handle.spawn(async move {
+            for m in write_rx.iter() {
+                match m {
+                    Event::Message(id, msg, callback) => match {
+                        if let Some(cb) = callback {
+                            let mut lock = requests_tx.lock().await;
+                            lock.insert(id, cb);
+                            drop(lock);
+                        }
+                        socket_tx.send(msg).await
+                    } {
+                        Ok(_) => continue,
+                        Err(_) => {
+                            break;
+                        }
+                    },
+                    Event::Done => break,
+                }
+            }
+            socket_tx.close().await.expect("Failed to close socket");
+        });
+
+        let (tx, rx) = channel::bounded(1);
+
+        let (event_id, event_subscribe) = self.assemble_subscription(&self.subscriptions)?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        let callback = Arc::new(move |result: Result<(), SelfError>| {
+            tx.send(result)
+                .expect("Failed to send authentication response");
+        });
+
+        self.write_tx
+            .send(Event::Message(
+                event_id,
+                Message::Binary(event_subscribe),
+                Some(callback),
+            ))
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
+
+        rx.recv_deadline(deadline)
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+    }
+
+    fn send(
+        &self,
+        from: &Identifier,
+        to: &Identifier,
+        sequence: u64,
+        content: &[u8],
+        tokens: Option<Vec<Token>>,
+        callback: SendCallback,
+    ) {
+        let payload = match self.assemble_payload(from, to, sequence, content) {
+            Ok(payload) => payload,
+            Err(err) => {
+                callback(Err(err));
+                return;
+            }
+        };
+
+        let (event_id, event_message) = match self.assemble_message(from, &payload, tokens) {
+            Ok(event) => event,
+            Err(err) => {
+                callback(Err(err));
+                return;
+            }
+        };
+
+        let event = Event::Message(
+            event_id,
+            Message::Binary(event_message),
+            Some(Arc::clone(&callback)),
+        );
+
+        if self.write_tx.send(event).is_err() {
+            // TODO handle this error properly
+            callback(Err(SelfError::RestRequestConnectionTimeout));
+        }
+    }
+
+    fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+        self.read_rx
+            .recv()
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)
     }
 }
 
@@ -886,6 +898,7 @@ mod tests {
 
         let alice_kp = crate::keypair::signing::KeyPair::new();
         let alice_id = Identifier::Owned(alice_kp);
+
         let subs = vec![Subscription {
             identifier: alice_id.clone(),
             from: crate::time::unix(),
@@ -895,9 +908,10 @@ mod tests {
         let bob_kp = crate::keypair::signing::KeyPair::new();
         let bob_id = Identifier::Referenced(bob_kp.public());
 
-        let mut ws = Websocket::new("ws://localhost:12345", subs).unwrap();
+        let mut ws = Websocket::new();
 
-        ws.connect().expect("failed to connect");
+        ws.connect("ws://localhost:12345", &subs)
+            .expect("failed to connect");
 
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
 

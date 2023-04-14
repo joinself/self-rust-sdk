@@ -9,6 +9,8 @@ pub struct Session {
     sequence_rx: i64,
 }
 
+unsafe impl Send for Session {}
+
 impl Session {
     pub fn new() -> Session {
         unsafe {

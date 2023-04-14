@@ -1,25 +1,37 @@
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
+use crate::messaging::Messaging;
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::transport::rest::Rest;
+use crate::transport::websocket::Websocket;
+
+use std::sync::{Arc, Mutex};
 
 use reqwest::Url;
 
-pub struct Account {
+pub struct Account<'a> {
     rest: Rest,
-    storage: Storage,
+    _messaging: Messaging<'a>,
+    storage: Arc<Mutex<Storage>>,
     server: Url,
 }
 
-impl Account {
-    pub fn new() -> Account {
-        Account {
+impl<'a> Account<'a> {
+    pub fn new() -> Result<Account<'a>, SelfError> {
+        let storage = Arc::new(Mutex::new(Storage::new()?));
+        let websocket = Arc::new(Mutex::new(Websocket::new()));
+
+        let messaging =
+            Messaging::new("https://messaging.joinself.com", storage.clone(), websocket);
+
+        Ok(Account {
             rest: Rest::new(),
-            storage: Storage::new().unwrap(),
+            _messaging: messaging,
+            storage,
             server: Url::parse("https://api.joinself.com").expect("url parse shouldn't fail"),
-        }
+        })
     }
 
     pub fn register(&mut self, recovery_kp: &KeyPair) -> Result<Identifier, SelfError> {
@@ -50,6 +62,8 @@ impl Account {
 
         // persist account keys to keychain
         self.storage
+            .lock()
+            .unwrap()
             .transaction(move |txn| {
                 txn.execute(
                     "INSERT INTO account_keychain (id, role, key)
@@ -74,18 +88,14 @@ impl Account {
             })
             .unwrap();
 
+        //self.messaging.connect()?;
+
         Ok(identifier)
     }
 
     pub fn server_set(&mut self, url: &str) -> Result<(), SelfError> {
         self.server = Url::parse(url).map_err(|_| SelfError::RestRequestURLInvalid)?;
         Ok(())
-    }
-}
-
-impl Default for Account {
-    fn default() -> Self {
-        Account::new()
     }
 }
 
@@ -111,7 +121,7 @@ mod tests {
         );
 
         let recovery_key = KeyPair::new();
-        let mut account = Account::new();
+        let mut account = Account::new().expect("failed to create account");
 
         account
             .server_set(&server.url_str("/"))

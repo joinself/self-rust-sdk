@@ -5,6 +5,7 @@ use crate::crypto::{account::Account, omemo::Group, session::Session};
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::messaging;
 use crate::protocol::siggraph::KeyRole;
 
 use std::collections::HashMap;
@@ -12,15 +13,15 @@ use std::sync::{Arc, Mutex};
 
 pub struct Storage {
     conn: Connection,
-    // lock: Mutex<()>,
     gcache: HashMap<Identifier, Arc<Mutex<Group>>>,
     kcache: HashMap<Identifier, Arc<KeyPair>>,
     scache: HashMap<Identifier, Arc<Mutex<Session>>>,
 }
 
 unsafe impl Send for Storage {}
+unsafe impl Sync for Storage {}
 
-// This whole implementation is horrible and only temporary
+// This whole implementation is horrible and only temporary...
 // mutiple tables and caches are accessed for some higher level
 // operations that also require atomicity via a single transaction
 impl Storage {
@@ -36,7 +37,6 @@ impl Storage {
 
         let mut storage = Storage {
             conn,
-            //lock: Mutex::new(()),
             gcache: HashMap::new(),
             kcache: HashMap::new(),
             scache: HashMap::new(),
@@ -454,6 +454,8 @@ impl Storage {
         with_identifier: &Identifier,
         session: Option<Session>,
     ) -> Result<(), SelfError> {
+        //let _lock = self.lock.lock();
+
         // check if the session exists in the cache
         if self.scache.contains_key(with_identifier) {
             return Err(SelfError::KeychainKeyExists);
@@ -655,7 +657,7 @@ impl Storage {
     pub fn outbox_queue(
         &mut self,
         recipient: &Identifier,
-        sequence: i64,
+        sequence: u64,
         ciphertext: &[u8],
     ) -> Result<(), SelfError> {
         // add the encrypted message to the outbox
@@ -686,7 +688,7 @@ impl Storage {
         Ok(())
     }
 
-    pub fn outbox_next(&mut self) -> Result<Option<(Identifier, i64, Vec<u8>)>, SelfError> {
+    pub fn outbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
         // get the next item in the outbox to be sent to the server
         let txn = self
             .conn
@@ -718,7 +720,7 @@ impl Storage {
         };
 
         let session: Vec<u8> = row.get(0).unwrap();
-        let sequence: i64 = row.get(1).unwrap();
+        let sequence: u64 = row.get(1).unwrap();
         let message: Vec<u8> = row.get(2).unwrap();
 
         let public_key = PublicKey::from_bytes(&session, crate::keypair::Algorithm::Ed25519)?;
@@ -730,38 +732,10 @@ impl Storage {
         )))
     }
 
-    pub fn outbox_dequeue(
-        &mut self,
-        recipient: &Identifier,
-        sequence: i64,
-    ) -> Result<(), SelfError> {
-        // remove the messaage from the outbox once it has been confirmed as received by the server
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        txn.execute(
-            "DELETE FROM outbox WHERE session = (
-                SELECT sessions.id FROM sessions
-                JOIN identifiers i1 ON
-                    i1.id = sessions.with_identifier
-                WHERE i1.identifier=?1
-            ) AND sequence = ?2;",
-            (&recipient.id(), sequence),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        Ok(())
-    }
-
     pub fn inbox_queue(
         &mut self,
         sender: &Identifier,
-        sequence: i64,
+        sequence: u64,
         plaintext: &[u8],
     ) -> Result<(), SelfError> {
         // add the encrypted message to the inbox
@@ -792,7 +766,7 @@ impl Storage {
         Ok(())
     }
 
-    pub fn inbox_next(&mut self) -> Result<Option<(Identifier, i64, Vec<u8>)>, SelfError> {
+    pub fn inbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
         // get the next item in the inbox to be sent to the server
         let txn = self
             .conn
@@ -824,7 +798,7 @@ impl Storage {
         };
 
         let session: Vec<u8> = row.get(0).unwrap();
-        let sequence: i64 = row.get(1).unwrap();
+        let sequence: u64 = row.get(1).unwrap();
         let message: Vec<u8> = row.get(2).unwrap();
 
         let public_key = PublicKey::from_bytes(&session, crate::keypair::Algorithm::Ed25519)?;
@@ -839,7 +813,7 @@ impl Storage {
     pub fn inbox_dequeue(
         &mut self,
         recipient: &Identifier,
-        sequence: i64,
+        sequence: u64,
     ) -> Result<(), SelfError> {
         // remove the messaage from the inbox once it has been confirmed as received by the server
         let txn = self
@@ -863,12 +837,38 @@ impl Storage {
 
         Ok(())
     }
+}
 
-    pub fn encrypt_and_queue(
+impl messaging::Storage for Storage {
+    fn outbox_dequeue(&mut self, recipient: &Identifier, sequence: u64) -> Result<(), SelfError> {
+        // remove the messaage from the outbox once it has been confirmed as received by the server
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        txn.execute(
+            "DELETE FROM outbox WHERE session = (
+                SELECT sessions.id FROM sessions
+                JOIN identifiers i1 ON
+                    i1.id = sessions.with_identifier
+                WHERE i1.identifier=?1
+            ) AND sequence = ?2;",
+            (&recipient.id(), sequence),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        Ok(())
+    }
+
+    fn encrypt_and_queue(
         &mut self,
         recipient: &Identifier,
         plaintext: &[u8],
-    ) -> Result<(Identifier, Vec<u8>), SelfError> {
+    ) -> Result<(Identifier, u64, Vec<u8>), SelfError> {
         let grp = self.group_get(recipient)?;
         let mut grp_lock = grp.lock().unwrap();
         let gm = grp_lock.encrypt_group_message(plaintext)?;
@@ -928,10 +928,11 @@ impl Storage {
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        Ok((sender_identifier, gm.encode()))
+        // TODO correctly select and return the rigth sequence
+        Ok((sender_identifier, 0, gm.encode()))
     }
 
-    pub fn decrypt_and_queue(
+    fn decrypt_and_queue(
         &mut self,
         sender: &Identifier,
         ciphertext: &[u8],
@@ -989,10 +990,11 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messaging::Storage;
 
     #[test]
     fn transaction() {
-        let mut storage = Storage::new().expect("failed to create transaction");
+        let mut storage = super::Storage::new().expect("failed to create transaction");
 
         let (alice_id, bob_id) = (0, 1);
 
@@ -1041,7 +1043,7 @@ mod tests {
     #[test]
     fn keypair_create_and_get() {
         let kp = KeyPair::new();
-        let mut storage = Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new().expect("storage failed");
 
         let msg = vec![8; 128];
         let sig = kp.sign(&msg);
@@ -1059,7 +1061,7 @@ mod tests {
 
     #[test]
     fn session_create_and_get() {
-        let mut storage = Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new().expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
@@ -1162,7 +1164,7 @@ mod tests {
 
     #[test]
     fn member_create_and_remove() {
-        let mut storage = Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new().expect("storage failed");
 
         let group_skp = crate::keypair::signing::KeyPair::new();
         let group_ed25519_pk = group_skp.public();
@@ -1300,7 +1302,7 @@ mod tests {
 
     #[test]
     fn outbox_queue_and_dequeue() {
-        let mut storage = Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new().expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
@@ -1401,7 +1403,7 @@ mod tests {
 
     #[test]
     fn inbox_queue_and_dequeue() {
-        let mut storage = Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new().expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
@@ -1496,7 +1498,7 @@ mod tests {
 
     #[test]
     fn encrypt_and_queue() {
-        let mut storage = Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new().expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
@@ -1555,11 +1557,11 @@ mod tests {
             .expect("failed to create 1-1 group with alice");
 
         // encrypt and queue two messages to alice
-        let (_, bobs_message_to_alice_1) = storage
+        let (_, _, bobs_message_to_alice_1) = storage
             .encrypt_and_queue(&alice_identifier, b"hello alice pt1")
             .expect("failed to encrypt and queue");
 
-        let (_, bobs_message_to_alice_2) = storage
+        let (_, _, bobs_message_to_alice_2) = storage
             .encrypt_and_queue(&alice_identifier, b"hello alice pt2")
             .expect("failed to encrypt and queue");
 
@@ -1604,7 +1606,7 @@ mod tests {
 
     #[test]
     fn decrypt_and_queue() {
-        let mut storage = Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new().expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
@@ -1663,7 +1665,7 @@ mod tests {
             .expect("failed to create 1-1 group with alice");
 
         // encrypt and queue two messages to alice
-        let (_, bobs_message_to_alice_1) = storage
+        let (_, _, bobs_message_to_alice_1) = storage
             .encrypt_and_queue(&alice_identifier, b"hello alice pt1")
             .expect("failed to encrypt and queue");
 

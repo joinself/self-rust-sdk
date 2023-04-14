@@ -6,19 +6,30 @@ use crate::{error::SelfError, keypair::signing::PublicKey};
 use mockall::predicate::*;
 use mockall::*;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-// type MessageCallback = Arc<dyn Fn(&Identifier, &[u8]) + Sync + Send>;
+pub type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+
+#[derive(Clone)]
+pub struct Subscription {
+    pub identifier: Identifier,
+    pub from: i64,
+    pub token: Option<Token>,
+}
 
 pub struct Messaging<'a> {
-    storage: Box<dyn Storage + 'a>,
-    websocket: Box<dyn Websocket + 'a>,
+    url: String,
+    storage: Arc<Mutex<dyn Storage + 'a>>,
+    websocket: Arc<Mutex<dyn Transport + 'a>>,
 }
 
 #[automock]
-pub trait Websocket {
-    fn connect(&mut self) -> std::result::Result<(), SelfError>;
+pub trait Transport {
+    fn connect(
+        &mut self,
+        url: &str,
+        subscriptions: &[Subscription],
+    ) -> std::result::Result<(), SelfError>;
 
     fn send(
         &self,
@@ -52,23 +63,37 @@ pub trait Storage {
 
 impl<'a> Messaging<'a> {
     pub fn new(
-        storage: Box<dyn Storage + Send + 'a>,
-        mut websocket: Box<dyn Websocket + 'a>,
-    ) -> Result<Messaging<'a>, SelfError> {
-        websocket.connect()?;
-        Ok(Messaging { storage, websocket })
+        url: &str,
+        storage: Arc<Mutex<dyn Storage + Send + 'a>>,
+        websocket: Arc<Mutex<dyn Transport + Send + 'a>>,
+    ) -> Messaging<'a> {
+        Messaging {
+            url: url.to_string(),
+            storage,
+            websocket,
+        }
+    }
+
+    pub fn connect(&mut self) -> Result<(), SelfError> {
+        // TODO load subscriptions
+        self.websocket
+            .lock()
+            .expect("failed to lock websocket")
+            .connect(&self.url, &Vec::new())
     }
 
     pub fn send(&mut self, to: &Identifier, plaintext: &[u8]) -> Result<(), SelfError> {
-        let (from, sequence, ciphertext) = self.storage.encrypt_and_queue(to, plaintext)?;
+        let mut storage = self.storage.lock().unwrap();
 
-        self.storage.outbox_dequeue(to, sequence)?;
+        let (from, sequence, ciphertext) = storage.encrypt_and_queue(to, plaintext)?;
+        storage.outbox_dequeue(to, sequence)?;
+        drop(storage);
 
         // TODO get tokens
 
         let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
 
-        self.websocket.send(
+        self.websocket.lock().unwrap().send(
             &from,
             to,
             sequence,
@@ -85,18 +110,25 @@ impl<'a> Messaging<'a> {
     }
 
     pub fn receive(&mut self) -> Result<(Identifier, Vec<u8>), SelfError> {
-        let (sender, ciphertext) = self.websocket.receive()?;
+        let mut websocket = self.websocket.lock().unwrap();
+
+        // TODO this will deadlock as rust we have to use a lock to protect
+        // the websocket, even though it implements it's own synchronization
+        // and implementing DerefMut doesn't work as we don't have anything
+        // to deference, so it reccursively loops forever (╯°□°）╯︵ ┻━┻
+        let (sender, ciphertext) = websocket.receive()?;
+        drop(websocket);
 
         let sender_identifier = Identifier::Referenced(PublicKey::from_bytes(
             &sender,
             crate::keypair::Algorithm::Ed25519,
         )?);
 
-        let plaintext = self
-            .storage
-            .decrypt_and_queue(&sender_identifier, &ciphertext)?;
+        let mut storage = self.storage.lock().unwrap();
 
-        // TODO handle dequeueing the processed message from the inbox queue
+        let plaintext = storage.decrypt_and_queue(&sender_identifier, &ciphertext)?;
+
+        // TODO handle dequeueing the processedciphertext message from the inbox queue
 
         Ok((sender_identifier, plaintext))
     }
@@ -125,9 +157,9 @@ mod test {
 
         ms.expect_outbox_dequeue().times(1).returning(|_, _| Ok(()));
 
-        let mut mw = MockWebsocket::new();
+        let mut mw = MockTransport::new();
 
-        mw.expect_connect().times(1).returning(|| Ok(()));
+        mw.expect_connect().times(1).returning(|_, _| Ok(()));
 
         mw.expect_send()
             .times(1)
@@ -135,7 +167,12 @@ mod test {
                 callback(Ok(()));
             });
 
-        let mut m = Messaging::new(Box::new(ms), Box::new(mw)).expect("failed to create messaging");
+        let mut m = Messaging::new(
+            "https:://joinself.com",
+            Arc::new(Mutex::new(ms)),
+            Arc::new(Mutex::new(mw)),
+        );
+        m.connect().expect("failed to connect messaging");
 
         m.send(&recipient, b"plaintext-message")
             .expect("failed to send message");
@@ -152,9 +189,9 @@ mod test {
             .times(1)
             .returning(|_, _| Ok(b"plaintext-message".to_vec()));
 
-        let mut mw = MockWebsocket::new();
+        let mut mw = MockTransport::new();
 
-        mw.expect_connect().times(1).returning(|| Ok(()));
+        mw.expect_connect().times(1).returning(|_, _| Ok(()));
 
         mw.expect_receive().times(1).returning(move || {
             Ok((
@@ -163,7 +200,13 @@ mod test {
             ))
         });
 
-        let mut m = Messaging::new(Box::new(ms), Box::new(mw)).expect("failed to create messaging");
+        let mut m = Messaging::new(
+            "https:://joinself.com",
+            Arc::new(Mutex::new(ms)),
+            Arc::new(Mutex::new(mw)),
+        );
+
+        m.connect().expect("failed to connect messaging");
 
         let (snd, plaintext) = m.receive().expect("failed to receive message");
         assert!(sender.eq(&snd));
