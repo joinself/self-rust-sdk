@@ -1,4 +1,3 @@
-use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
 use crate::messaging::Messaging;
@@ -6,10 +5,32 @@ use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::transport::rest::Rest;
 use crate::transport::websocket::Websocket;
+use crate::{
+    error::SelfError,
+    message::{Message, SignedMessage},
+    token::Token,
+};
 
-use std::sync::{Arc, Mutex};
+use std::{
+    any::Any,
+    sync::{Arc, Mutex},
+};
 
 use reqwest::Url;
+
+pub type OnConnectCB = fn(user_data: Box<dyn Any>);
+pub type OnDisconnectCB = fn(user_data: Box<dyn Any>, reason: Result<(), SelfError>);
+pub type OnRequestCB = fn(user_data: Box<dyn Any>, message: &SignedMessage) -> i32;
+pub type OnResponseCB = fn(user_data: Box<dyn Any>, message: &SignedMessage);
+pub type OnMessageCB = fn(user_data: Box<dyn Any>, message: &SignedMessage);
+
+pub struct MessagingCallbacks {
+    pub on_connect: Option<OnConnectCB>,
+    pub on_disconnect: Option<OnDisconnectCB>,
+    pub on_request: Option<OnRequestCB>,
+    pub on_response: Option<OnResponseCB>,
+    pub on_message: Option<OnMessageCB>,
+}
 
 pub struct Account<'a> {
     rest: Rest,
@@ -32,6 +53,20 @@ impl<'a> Account<'a> {
             storage,
             server: Url::parse("https://api.joinself.com").expect("url parse shouldn't fail"),
         })
+    }
+
+    pub fn configure(
+        &mut self,
+        endpoint: &str,
+        storage_path: &str,
+        encryption_key: &[u8],
+        callbacks: MessagingCallbacks,
+    ) -> Result<(), SelfError> {
+        // configures an account. if the account already exists, all existing state will
+        // be loaded and messaging subscriptions will be started
+        // self_status self_account_configure(self_account *account, char *storage_path, uint8_t *encryption_key_buf, uint32_t encryption_key_len, self_message_callbacks *msg_callbacks);
+
+        Ok(())
     }
 
     pub fn register(&mut self, recovery_kp: &KeyPair) -> Result<Identifier, SelfError> {
@@ -91,6 +126,34 @@ impl<'a> Account<'a> {
         //self.messaging.connect()?;
 
         Ok(identifier)
+    }
+
+    pub fn connect(&mut self, with: &Identifier) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    pub fn connect_as(&mut self, with: &Identifier, using: &Identifier) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    pub fn connect_anonymously(&mut self, with: &Identifier) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    pub fn send(&mut self, to: &Identifier, message: &SignedMessage) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    pub fn accept(&mut self, message: &Message) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    pub fn reject(&mut self, message: &Message) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    pub fn link(&mut self, link_token: &Token) -> Result<(), SelfError> {
+        Ok(())
     }
 
     pub fn server_set(&mut self, url: &str) -> Result<(), SelfError> {
