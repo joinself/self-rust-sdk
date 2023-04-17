@@ -2,9 +2,9 @@ use super::SignedMessage;
 use crate::identifier::Identifier;
 
 pub struct Message {
-    id: Vec<u8>,
-    to: Identifier,
-    from: Identifier,
-    message_type: String,
-    signed_message: SignedMessage,
+    pub id: Vec<u8>,
+    pub to: Identifier,
+    pub from: Identifier,
+    pub message_type: String,
+    pub signed_message: SignedMessage,
 }

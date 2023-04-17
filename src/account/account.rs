@@ -18,11 +18,11 @@ use std::{
 
 use reqwest::Url;
 
-pub type OnConnectCB = fn(user_data: Box<dyn Any>);
-pub type OnDisconnectCB = fn(user_data: Box<dyn Any>, reason: Result<(), SelfError>);
-pub type OnRequestCB = fn(user_data: Box<dyn Any>, message: &SignedMessage) -> i32;
-pub type OnResponseCB = fn(user_data: Box<dyn Any>, message: &SignedMessage);
-pub type OnMessageCB = fn(user_data: Box<dyn Any>, message: &SignedMessage);
+pub type OnConnectCB = Box<dyn Fn(Box<dyn Any>)>;
+pub type OnDisconnectCB = Box<dyn Fn(Box<dyn Any>, Result<(), SelfError>)>;
+pub type OnRequestCB = Box<dyn Fn(Box<dyn Any>, &Message) -> i32>;
+pub type OnResponseCB = Box<dyn Fn(Box<dyn Any>, &Message)>;
+pub type OnMessageCB = Box<dyn Fn(Box<dyn Any>, &Message)>;
 
 pub struct MessagingCallbacks {
     pub on_connect: Option<OnConnectCB>,
@@ -34,25 +34,19 @@ pub struct MessagingCallbacks {
 
 pub struct Account<'a> {
     rest: Rest,
-    _messaging: Messaging<'a>,
-    storage: Arc<Mutex<Storage>>,
+    messaging: Option<Messaging<'a>>,
+    storage: Option<Arc<Mutex<Storage>>>,
     server: Url,
 }
 
 impl<'a> Account<'a> {
-    pub fn new() -> Result<Account<'a>, SelfError> {
-        let storage = Arc::new(Mutex::new(Storage::new()?));
-        let websocket = Arc::new(Mutex::new(Websocket::new()));
-
-        let messaging =
-            Messaging::new("https://messaging.joinself.com", storage.clone(), websocket);
-
-        Ok(Account {
+    pub fn new() -> Account<'a> {
+        Account {
             rest: Rest::new(),
-            _messaging: messaging,
-            storage,
+            messaging: None,
+            storage: None,
             server: Url::parse("https://api.joinself.com").expect("url parse shouldn't fail"),
-        })
+        }
     }
 
     pub fn configure(
@@ -66,10 +60,21 @@ impl<'a> Account<'a> {
         // be loaded and messaging subscriptions will be started
         // self_status self_account_configure(self_account *account, char *storage_path, uint8_t *encryption_key_buf, uint32_t encryption_key_len, self_message_callbacks *msg_callbacks);
 
+        let storage = Arc::new(Mutex::new(Storage::new()?));
+        let websocket = Arc::new(Mutex::new(Websocket::new()));
+
+        let messaging =
+            Messaging::new("https://messaging.joinself.com", storage.clone(), websocket);
+
         Ok(())
     }
 
     pub fn register(&mut self, recovery_kp: &KeyPair) -> Result<Identifier, SelfError> {
+        let storage = match &self.storage {
+            Some(storage) => storage,
+            None => return Err(SelfError::StorageConnectionFailed),
+        };
+
         // generate keypairs for account identifier and device
         let (identifier_kp, device_kp) = (KeyPair::new(), KeyPair::new());
         let identifier = Identifier::Owned(identifier_kp.clone());
@@ -96,7 +101,7 @@ impl<'a> Account<'a> {
         self.rest.post(url.as_ref(), operation, None, true)?;
 
         // persist account keys to keychain
-        self.storage
+        storage
             .lock()
             .unwrap()
             .transaction(move |txn| {
@@ -162,6 +167,12 @@ impl<'a> Account<'a> {
     }
 }
 
+impl<'a> Default for Account<'a> {
+    fn default() -> Account<'a> {
+        Account::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -184,11 +195,19 @@ mod tests {
         );
 
         let recovery_key = KeyPair::new();
-        let mut account = Account::new().expect("failed to create account");
+        let mut account = Account::new();
+
+        let callbacks = MessagingCallbacks {
+            on_connect: None,
+            on_disconnect: None,
+            on_request: None,
+            on_response: None,
+            on_message: None,
+        };
 
         account
-            .server_set(&server.url_str("/"))
-            .expect("failed to set server url");
+            .configure(&server.url_str("/"), "/tmp/", &[0; 32], callbacks)
+            .expect("failed to configure account");
 
         let identifier = account.register(&recovery_key).expect("failed to register");
         assert!(identifier.id().len() == 32);
