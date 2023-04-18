@@ -7,7 +7,7 @@ use crate::transport::rest::Rest;
 use crate::transport::websocket::Websocket;
 use crate::{
     error::SelfError,
-    message::{Message, SignedMessage},
+    message::{Envelope, SignedContent},
     token::Token,
 };
 
@@ -20,9 +20,9 @@ use reqwest::Url;
 
 pub type OnConnectCB = Box<dyn Fn(Box<dyn Any>)>;
 pub type OnDisconnectCB = Box<dyn Fn(Box<dyn Any>, Result<(), SelfError>)>;
-pub type OnRequestCB = Box<dyn Fn(Box<dyn Any>, &Message) -> i32>;
-pub type OnResponseCB = Box<dyn Fn(Box<dyn Any>, &Message)>;
-pub type OnMessageCB = Box<dyn Fn(Box<dyn Any>, &Message)>;
+pub type OnRequestCB = Box<dyn Fn(Box<dyn Any>, &Envelope) -> i32>;
+pub type OnResponseCB = Box<dyn Fn(Box<dyn Any>, &Envelope)>;
+pub type OnMessageCB = Box<dyn Fn(Box<dyn Any>, &Envelope)>;
 
 pub struct MessagingCallbacks {
     pub on_connect: Option<OnConnectCB>,
@@ -133,6 +133,15 @@ impl<'a> Account<'a> {
         Ok(identifier)
     }
 
+    pub fn register_anonymously(&mut self) -> Result<Identifier, SelfError> {
+        Ok(Identifier::Referenced(
+            crate::keypair::signing::PublicKey::from_bytes(
+                vec![0; 32].as_slice(),
+                crate::keypair::Algorithm::Ed25519,
+            )?,
+        ))
+    }
+
     pub fn connect(&mut self, with: &Identifier) -> Result<(), SelfError> {
         Ok(())
     }
@@ -145,15 +154,15 @@ impl<'a> Account<'a> {
         Ok(())
     }
 
-    pub fn send(&mut self, to: &Identifier, message: &SignedMessage) -> Result<(), SelfError> {
+    pub fn send(&mut self, to: &Identifier, message: &SignedContent) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn accept(&mut self, message: &Message) -> Result<(), SelfError> {
+    pub fn accept(&mut self, message: &Envelope) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn reject(&mut self, message: &Message) -> Result<(), SelfError> {
+    pub fn reject(&mut self, message: &Envelope) -> Result<(), SelfError> {
         Ok(())
     }
 

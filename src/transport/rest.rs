@@ -61,7 +61,7 @@ impl Rest {
     }
 
     fn authorization(&self, signing_key: &KeyPair, headers: &mut reqwest::header::HeaderMap) {
-        let mut token = crate::message::SignedMessage::new();
+        let mut token = crate::message::SignedContent::new();
 
         token.subject_set(&signing_key.id());
         token.type_set("authorization");

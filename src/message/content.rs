@@ -18,7 +18,7 @@ const TYP: i64 = -100000;
 const CNT: i64 = -100001;
 
 #[derive(Clone)]
-pub struct SignedMessage {
+pub struct SignedContent {
     sub: Option<Vec<u8>>,
     aud: Option<Vec<u8>>,
     cti: Option<Vec<u8>>,
@@ -38,9 +38,9 @@ pub struct Signature {
     pub signature: Vec<u8>,
 }
 
-impl SignedMessage {
-    pub fn new() -> SignedMessage {
-        SignedMessage {
+impl SignedContent {
+    pub fn new() -> SignedContent {
+        SignedContent {
             sub: None,
             aud: None,
             cti: None,
@@ -52,7 +52,7 @@ impl SignedMessage {
         }
     }
 
-    pub fn decode(data: &[u8]) -> Result<SignedMessage, SelfError> {
+    pub fn decode(data: &[u8]) -> Result<SignedContent, SelfError> {
         let sm: coset::CoseSign = match coset::CoseSign::from_slice(data) {
             Ok(sm) => sm,
             Err(err) => {
@@ -61,7 +61,7 @@ impl SignedMessage {
             }
         };
 
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         // validate signatures
         for (index, sig) in sm.signatures.iter().enumerate() {
@@ -361,9 +361,9 @@ impl SignedMessage {
     }
 }
 
-impl Default for SignedMessage {
+impl Default for SignedContent {
     fn default() -> Self {
-        SignedMessage::new()
+        SignedContent::new()
     }
 }
 
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn audience() {
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         m.audience_set(&[0; 32]);
 
@@ -385,13 +385,13 @@ mod tests {
         let cws = m.encode().unwrap();
 
         // decode from cws
-        let m = SignedMessage::decode(&cws).unwrap();
+        let m = SignedContent::decode(&cws).unwrap();
         assert!(m.audience_get().unwrap().len() == 32);
     }
 
     #[test]
     fn subject() {
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         m.subject_set(&[0; 32]);
 
@@ -403,13 +403,13 @@ mod tests {
         let cws = m.encode().unwrap();
 
         // decode from cws
-        let m = SignedMessage::decode(&cws).unwrap();
+        let m = SignedContent::decode(&cws).unwrap();
         assert!(m.subject_get().unwrap().len() == 32);
     }
 
     #[test]
     fn cti() {
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         m.cti_set(&[0; 20]);
 
@@ -421,13 +421,13 @@ mod tests {
         let cws = m.encode().unwrap();
 
         // decode from cws
-        let m = SignedMessage::decode(&cws).unwrap();
+        let m = SignedContent::decode(&cws).unwrap();
         assert!(m.cti_get().unwrap().len() == 20);
     }
 
     #[test]
     fn message_type() {
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         m.type_set("connections.req");
 
@@ -439,13 +439,13 @@ mod tests {
         let cws = m.encode().unwrap();
 
         // decode from cws
-        let m = SignedMessage::decode(&cws).unwrap();
+        let m = SignedContent::decode(&cws).unwrap();
         assert_eq!(m.type_get().unwrap(), "connections.req");
     }
 
     #[test]
     fn issued_at() {
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         m.issued_at_set(101);
 
@@ -457,13 +457,13 @@ mod tests {
         let cws = m.encode().unwrap();
 
         // decode from cws
-        let m = SignedMessage::decode(&cws).unwrap();
+        let m = SignedContent::decode(&cws).unwrap();
         assert_eq!(m.issued_at_get().unwrap(), 101);
     }
 
     #[test]
     fn expires_at() {
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         m.expires_at_set(101);
 
@@ -475,7 +475,7 @@ mod tests {
         let cws = m.encode().unwrap();
 
         // decode from cws
-        let m = SignedMessage::decode(&cws).unwrap();
+        let m = SignedContent::decode(&cws).unwrap();
 
         assert_eq!(m.expires_at_get().unwrap(), 101);
     }
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn content() {
         let kp = KeyPair::new();
-        let mut m = SignedMessage::new();
+        let mut m = SignedContent::new();
 
         // add a field to the payload
         let mut content = Vec::new();
@@ -498,7 +498,7 @@ mod tests {
         let cws = m.encode().unwrap();
 
         // decode from cws
-        let m = SignedMessage::decode(&cws).unwrap();
+        let m = SignedContent::decode(&cws).unwrap();
 
         // decode the content
         let content = m.content_get().unwrap();

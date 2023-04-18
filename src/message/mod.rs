@@ -1,5 +1,5 @@
-mod message;
-mod signed_message;
+mod content;
+mod envelope;
 
-pub use self::message::*;
-pub use self::signed_message::*;
+pub use self::content::*;
+pub use self::envelope::*;

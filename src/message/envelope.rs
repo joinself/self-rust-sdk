@@ -1,10 +1,10 @@
-use super::SignedMessage;
+use super::SignedContent;
 use crate::identifier::Identifier;
 
-pub struct Message {
+pub struct Envelope {
     pub id: Vec<u8>,
     pub to: Identifier,
     pub from: Identifier,
     pub message_type: String,
-    pub signed_message: SignedMessage,
+    pub signed_content: SignedContent,
 }
