@@ -76,6 +76,24 @@ impl KeyPair {
         }
     }
 
+    pub fn from_bytes(public_key: Vec<u8>, secret_key: Vec<u8>) -> Result<KeyPair, SelfError> {
+        if public_key.len() != sodium_sys::crypto_box_PUBLICKEYBYTES as usize {
+            return Err(SelfError::KeyPairDataIncorrectLength);
+        }
+        if secret_key.len() != sodium_sys::crypto_box_SECRETKEYBYTES as usize {
+            return Err(SelfError::KeyPairDataIncorrectLength);
+        }
+
+        Ok(KeyPair {
+            public_key: PublicKey {
+                id: None,
+                algorithm: Algorithm::Curve25519,
+                bytes: secret_key,
+            },
+            secret_key: SecretKey { bytes: public_key },
+        })
+    }
+
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
         match ciborium::de::from_reader(encoded_keypair) {
             Ok(keypair) => Ok(keypair),

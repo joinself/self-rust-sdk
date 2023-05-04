@@ -1,6 +1,8 @@
 use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
+use crate::keypair::Usage;
 use crate::messaging::Messaging;
+use crate::protocol::siggraph::KeyRole;
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::transport::rest::Rest;
@@ -15,8 +17,6 @@ use std::{
     any::Any,
     sync::{Arc, Mutex},
 };
-
-use reqwest::Url;
 
 pub type OnConnectCB = Box<dyn Fn(Box<dyn Any>)>;
 pub type OnDisconnectCB = Box<dyn Fn(Box<dyn Any>, Result<(), SelfError>)>;
@@ -33,51 +33,70 @@ pub struct MessagingCallbacks {
 }
 
 pub struct Account<'a> {
-    rest: Rest,
     messaging: Option<Messaging<'a>>,
+    rest: Option<Rest>,
     storage: Option<Arc<Mutex<Storage>>>,
-    server: Url,
 }
 
 impl<'a> Account<'a> {
     pub fn new() -> Account<'a> {
         Account {
-            rest: Rest::new(),
+            rest: None,
             messaging: None,
             storage: None,
-            server: Url::parse("https://api.joinself.com").expect("url parse shouldn't fail"),
         }
     }
 
+    /// configures an account. if the account already exists, all existing state will
+    /// be loaded and messaging subscriptions will be started
     pub fn configure(
         &mut self,
-        endpoint: &str,
+        api_endpoint: &str,
+        messaging_endpoint: &str,
         storage_path: &str,
         encryption_key: &[u8],
         callbacks: MessagingCallbacks,
     ) -> Result<(), SelfError> {
-        // configures an account. if the account already exists, all existing state will
-        // be loaded and messaging subscriptions will be started
-        // self_status self_account_configure(self_account *account, char *storage_path, uint8_t *encryption_key_buf, uint32_t encryption_key_len, self_message_callbacks *msg_callbacks);
-
-        let storage = Arc::new(Mutex::new(Storage::new()?));
+        let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
         let websocket = Arc::new(Mutex::new(Websocket::new()));
+        let rest = Rest::new(api_endpoint)?;
 
-        let messaging =
-            Messaging::new("https://messaging.joinself.com", storage.clone(), websocket);
+        println!("api endpoint: {}", api_endpoint);
+        println!("messaging endpoint: {}", messaging_endpoint);
+
+        self.messaging = Some(Messaging::new(
+            messaging_endpoint,
+            storage.clone(),
+            websocket,
+        ));
+        self.rest = Some(rest);
+        self.storage = Some(storage);
 
         Ok(())
     }
 
     pub fn register(&mut self, recovery_kp: &KeyPair) -> Result<Identifier, SelfError> {
+        let rest = match &self.rest {
+            Some(rest) => rest,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
         let storage = match &self.storage {
             Some(storage) => storage,
-            None => return Err(SelfError::StorageConnectionFailed),
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let messaging = match &mut self.messaging {
+            Some(messaging) => messaging,
+            None => return Err(SelfError::AccountNotConfigured),
         };
 
         // generate keypairs for account identifier and device
         let (identifier_kp, device_kp) = (KeyPair::new(), KeyPair::new());
         let identifier = Identifier::Owned(identifier_kp.clone());
+
+        // convert device key to a curve25519 key
+        let exchange_kp = device_kp.to_exchange_key()?;
 
         // construct a public key operation to serve as
         // the initial public state for the account
@@ -93,42 +112,31 @@ impl<'a> Account<'a> {
             .sign(recovery_kp)
             .build()?;
 
+        // create an olm account for the device identifier
+        let mut olm_account = crate::crypto::account::Account::new(device_kp.clone(), exchange_kp);
+        olm_account.generate_one_time_keys(100)?;
+
+        let mut one_time_keys = Vec::new();
+        ciborium::ser::into_writer(&olm_account.one_time_keys(), &mut one_time_keys)
+            .expect("failed to encode one time keys");
+
         // submit public key operation to api
-        let url = self
-            .server
-            .join("/v2/identities")
-            .map_err(|_| SelfError::RestRequestURLInvalid)?;
-        self.rest.post(url.as_ref(), operation, None, true)?;
+        rest.post("/v2/identities", operation, None, true)?;
+
+        // upload prekeys for device key
+        rest.post("/v2/prekeys", one_time_keys, Some(&device_kp), false)?;
 
         // persist account keys to keychain
-        storage
-            .lock()
-            .unwrap()
-            .transaction(move |txn| {
-                txn.execute(
-                    "INSERT INTO account_keychain (id, role, key)
-                    VALUES
-                        (?1, ?2, ?3),
-                        (?4, ?5, ?6),
-                        (?7, ?8, ?9),
-                    ",
-                    (
-                        &identifier_kp.id(),
-                        0,
-                        &identifier_kp.encode(),
-                        &device_kp.id(),
-                        1,
-                        &device_kp.encode(),
-                        &recovery_kp.id(),
-                        2,
-                        &recovery_kp.encode(),
-                    ),
-                )
-                .is_ok()
-            })
-            .unwrap();
+        let mut storage = storage.lock().unwrap();
 
-        //self.messaging.connect()?;
+        storage.keypair_create(Usage::Identifier, &identifier_kp, None)?;
+        storage.keypair_create(Usage::Messaging, &device_kp, Some(olm_account))?;
+
+        // TODO determine whether it makes sense from a security perspective to store the recover key
+        // storage.keypair_create(KeyRole::Identifier ,&recovery_kp, None)?;
+        drop(storage);
+
+        messaging.connect()?;
 
         Ok(identifier)
     }
@@ -167,11 +175,6 @@ impl<'a> Account<'a> {
     }
 
     pub fn link(&mut self, link_token: &Token) -> Result<(), SelfError> {
-        Ok(())
-    }
-
-    pub fn server_set(&mut self, url: &str) -> Result<(), SelfError> {
-        self.server = Url::parse(url).map_err(|_| SelfError::RestRequestURLInvalid)?;
         Ok(())
     }
 }
@@ -215,7 +218,13 @@ mod tests {
         };
 
         account
-            .configure(&server.url_str("/"), "/tmp/", &[0; 32], callbacks)
+            .configure(
+                &server.url_str("/"),
+                &server.url_str("/"),
+                "/tmp/",
+                &[0; 32],
+                callbacks,
+            )
             .expect("failed to configure account");
 
         let identifier = account.register(&recovery_key).expect("failed to register");

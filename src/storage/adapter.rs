@@ -5,8 +5,9 @@ use crate::crypto::{account::Account, omemo::Group, session::Session};
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::{KeyPair, PublicKey};
-use crate::messaging;
-use crate::protocol::siggraph::KeyRole;
+use crate::keypair::Usage;
+use crate::token::Token;
+use crate::{messaging, messaging::Subscription};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -25,7 +26,7 @@ unsafe impl Sync for Storage {}
 // mutiple tables and caches are accessed for some higher level
 // operations that also require atomicity via a single transaction
 impl Storage {
-    pub fn new() -> Result<Storage, SelfError> {
+    pub fn new(storage_path: &str, encryption_key: &[u8]) -> Result<Storage, SelfError> {
         let conn = Connection::open_in_memory().map_err(|_| SelfError::StorageConnectionFailed)?;
 
         /*
@@ -81,7 +82,7 @@ impl Storage {
                 "CREATE TABLE keypairs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     for_identifier INTEGER NOT NULL,
-                    role INTEGER NOT NULL,
+                    usage INTEGER NOT NULL,
                     keypair BLOB NOT NULL,
                     olm_account BLOB
                 );
@@ -168,11 +169,12 @@ impl Storage {
                 "CREATE TABLE tokens (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     from_identifier INTEGER NOT NULL,
+                    for_identifier INTEGER NOT NULL,
                     purpose INTEGER NOT NULL,
                     token BLOB NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_tokens_from
-                ON tokens (from_identifier, purpose);",
+                ON tokens (from_identifier, for_identifier, purpose);",
                 (),
             )
             .map_err(|err| {
@@ -280,7 +282,7 @@ impl Storage {
         Ok(())
     }
 
-    fn identifier_create(&mut self, identifier: &Identifier) -> Result<(), SelfError> {
+    pub fn identifier_create(&mut self, identifier: &Identifier) -> Result<(), SelfError> {
         let txn = self
             .conn
             .transaction()
@@ -344,7 +346,7 @@ impl Storage {
 
     pub fn keypair_create(
         &mut self,
-        role: KeyRole,
+        usage: Usage,
         keypair: &KeyPair,
         account: Option<Account>,
     ) -> Result<(), SelfError> {
@@ -366,7 +368,7 @@ impl Storage {
 
         if let Some(olm_account) = account {
             txn.execute(
-                "INSERT INTO keypairs (for_identifier, role, keypair, olm_account) 
+                "INSERT INTO keypairs (for_identifier, usage, keypair, olm_account) 
                 VALUES (
                     (SELECT id FROM identifiers WHERE identifier=?1),
                     ?2,
@@ -375,7 +377,7 @@ impl Storage {
                 );",
                 (
                     &identifier.id(),
-                    role.0,
+                    usage.kind(),
                     &keypair.encode(),
                     olm_account.pickle(None)?,
                 ),
@@ -383,13 +385,13 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         } else {
             txn.execute(
-                "INSERT INTO keypairs (for_identifier, role, keypair) 
+                "INSERT INTO keypairs (for_identifier, usage, keypair) 
                 VALUES (
                     (SELECT id FROM identifiers WHERE identifier=?1),
                     ?2,
                     ?3
                 );",
-                (&identifier.id(), role.0, &keypair.encode()),
+                (&identifier.id(), usage.kind(), &keypair.encode()),
             )
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         }
@@ -400,6 +402,82 @@ impl Storage {
         self.kcache.insert(identifier, Arc::new(keypair.clone()));
 
         Ok(())
+    }
+
+    pub fn subscription_list(&mut self) -> Result<Vec<Subscription>, SelfError> {
+        let mut subscriptions = Vec::new();
+
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        // get all subscriptions that don't require a token
+        let mut statement = txn
+            .prepare(
+                "SELECT keypair FROM keypairs
+                WHERE usage = ?1;",
+            )
+            .expect("failed to prepare statement");
+
+        let mut rows = match statement.query([Usage::Messaging as u8]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        while let Some(row) = rows
+            .next()
+            .map_err(|_| SelfError::MessagingDestinationUnknown)?
+        {
+            let keypair: Vec<u8> = row.get(0).unwrap();
+            let keypair = KeyPair::decode(&keypair)?;
+
+            // TODO correctly load from value
+            subscriptions.push(Subscription {
+                identifier: Identifier::Owned(keypair),
+                from: 0,
+                token: None,
+            });
+        }
+
+        // get all subscriptions that require a token (groups)
+        let mut statement = txn
+            .prepare(
+                "SELECT i1.identifier, k1.keypair, token FROM tokens
+                JOIN identifiers i1 ON
+                    i1.id = k1.id
+                JOIN keypairs k1 ON
+                    k1.id = tokens.for_identifier
+                WHERE purpose = 2",
+            )
+            .expect("failed to prepare statement");
+
+        let mut rows = match statement.query([]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        while let Some(row) = rows
+            .next()
+            .map_err(|_| SelfError::MessagingDestinationUnknown)?
+        {
+            // let for_identifier: Vec<u8> = row.get(0).unwrap();
+            let keypair: Vec<u8> = row.get(1).unwrap();
+            let token: Vec<u8> = row.get(2).unwrap();
+
+            let keypair = KeyPair::decode(&keypair)?;
+            let token = Token::decode(&token)?;
+
+            // TODO de-duplicate keypair serialisation
+            // TODO correctly load from value
+            subscriptions.push(Subscription {
+                identifier: Identifier::Owned(keypair),
+                from: 0,
+                token: Some(token),
+            })
+        }
+
+        Ok(subscriptions)
     }
 
     pub fn session_get(
@@ -454,8 +532,6 @@ impl Storage {
         with_identifier: &Identifier,
         session: Option<Session>,
     ) -> Result<(), SelfError> {
-        //let _lock = self.lock.lock();
-
         // check if the session exists in the cache
         if self.scache.contains_key(with_identifier) {
             return Err(SelfError::KeychainKeyExists);
@@ -588,6 +664,45 @@ impl Storage {
         Ok(grp)
     }
 
+    pub fn token_create(
+        &mut self,
+        from_identifier: &Identifier,
+        for_identifier: &Identifier,
+        token: Token,
+    ) -> Result<(), SelfError> {
+        // create the token
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        let mut encoded_token = Vec::new();
+        ciborium::ser::into_writer(&token, &mut encoded_token)
+            .map_err(|_| SelfError::TokenEncodingInvalid)?;
+
+        txn.execute(
+            "INSERT INTO tokens (from_identifier, purpose, token) 
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    (SELECT id FROM identifiers WHERE identifier=?2),
+                    ?3,
+                    ?4
+                );",
+            (
+                &from_identifier.id(),
+                &for_identifier.id(),
+                token.kind(),
+                &encoded_token,
+            ),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        Ok(())
+    }
+
     pub fn member_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
         // check the session exists and assume it's been pre-created
         // before adding a member to the group
@@ -607,8 +722,7 @@ impl Storage {
                 );",
             (&group.id(), &member.id()),
         )
-        .expect("hello?");
-        //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -994,7 +1108,8 @@ mod tests {
 
     #[test]
     fn transaction() {
-        let mut storage = super::Storage::new().expect("failed to create transaction");
+        let mut storage =
+            super::Storage::new("/tmp/test.db", b"12345").expect("failed to create transaction");
 
         let (alice_id, bob_id) = (0, 1);
 
@@ -1043,13 +1158,13 @@ mod tests {
     #[test]
     fn keypair_create_and_get() {
         let kp = KeyPair::new();
-        let mut storage = super::Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let msg = vec![8; 128];
         let sig = kp.sign(&msg);
 
         storage
-            .keypair_create(KeyRole::Signing, &kp, None)
+            .keypair_create(Usage::Messaging, &kp, None)
             .expect("failed to create keypair");
 
         let kp = storage
@@ -1061,7 +1176,7 @@ mod tests {
 
     #[test]
     fn session_create_and_get() {
-        let mut storage = super::Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
@@ -1164,7 +1279,7 @@ mod tests {
 
     #[test]
     fn member_create_and_remove() {
-        let mut storage = super::Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let group_skp = crate::keypair::signing::KeyPair::new();
         let group_ed25519_pk = group_skp.public();
@@ -1302,7 +1417,7 @@ mod tests {
 
     #[test]
     fn outbox_queue_and_dequeue() {
-        let mut storage = super::Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
@@ -1403,7 +1518,7 @@ mod tests {
 
     #[test]
     fn inbox_queue_and_dequeue() {
-        let mut storage = super::Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
@@ -1498,7 +1613,7 @@ mod tests {
 
     #[test]
     fn encrypt_and_queue() {
-        let mut storage = super::Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
@@ -1606,7 +1721,7 @@ mod tests {
 
     #[test]
     fn decrypt_and_queue() {
-        let mut storage = super::Storage::new().expect("storage failed");
+        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();

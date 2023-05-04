@@ -1,10 +1,11 @@
-use hex::ToHex;
-
 use crate::error::SelfError;
 use crate::keypair::{
     signing::{KeyPair, PublicKey},
     Algorithm,
 };
+
+use hex::ToHex;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use std::fmt;
 
@@ -32,6 +33,24 @@ impl Identifier {
             Self::Owned(kp) => kp.public(),
             Self::Referenced(pk) => pk.clone(),
         }
+    }
+}
+
+impl Serialize for Identifier {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(&self.id())
+    }
+}
+
+impl<'de> Deserialize<'de> for Identifier {
+    fn deserialize<D>(deserializer: D) -> Result<Identifier, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_bytes(IdentifierVisitor)
     }
 }
 
@@ -67,3 +86,22 @@ impl PartialEq for Identifier {
 }
 
 impl Eq for Identifier {}
+
+struct IdentifierVisitor;
+
+impl<'de> serde::de::Visitor<'de> for IdentifierVisitor {
+    type Value = Identifier;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an identifier 32 bytes long")
+    }
+
+    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Identifier::Referenced(
+            PublicKey::from_bytes(v, Algorithm::Ed25519).expect("identifier invalid"),
+        ))
+    }
+}

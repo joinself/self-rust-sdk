@@ -7,6 +7,7 @@ use crate::error::SelfError;
 use crate::keypair::signing::KeyPair;
 
 pub struct Rest {
+    endpoint: Url,
     client: reqwest::blocking::Client,
 }
 
@@ -16,10 +17,11 @@ pub struct Response {
 }
 
 impl Rest {
-    pub fn new() -> Rest {
-        Rest {
+    pub fn new(endpoint: &str) -> Result<Rest, SelfError> {
+        Ok(Rest {
+            endpoint: Url::parse(endpoint).map_err(|_| SelfError::RestRequestURLInvalid)?,
             client: Client::new(),
-        }
+        })
     }
 
     pub fn get(
@@ -89,13 +91,10 @@ impl Rest {
         signing_key: Option<&KeyPair>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        let target = match Url::parse(url) {
-            Ok(target) => target,
-            Err(err) => {
-                println!("{:?}", err);
-                return Err(SelfError::RestRequestURLInvalid);
-            }
-        };
+        let target = self
+            .endpoint
+            .join(url)
+            .map_err(|_| SelfError::RestRequestURLInvalid)?;
 
         let mut request = Request::new(method, target);
 
@@ -145,12 +144,6 @@ impl Rest {
     }
 }
 
-impl Default for Rest {
-    fn default() -> Self {
-        Rest::new()
-    }
-}
-
 fn handle_error(e: reqwest::Error) -> SelfError {
     println!("reqwest err: {}", e);
     if e.is_redirect() {
@@ -191,11 +184,9 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new();
+        let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
-        let url = server.url_str("/v1/identities");
-
-        let response = client.get(&url, Some(&kp), false);
+        let response = client.get("/v1/identities", Some(&kp), false);
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();
@@ -223,12 +214,10 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new();
-
-        let url = server.url_str("/v1/identities");
+        let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
         let response = client.post(
-            &url,
+            "/v1/identities",
             "{\"history\":[]\"}".as_bytes().to_vec(),
             Some(&kp),
             false,
@@ -260,12 +249,10 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new();
-
-        let url = server.url_str("/v1/identities");
+        let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
         let response = client.put(
-            &url,
+            "/v1/identities",
             "{\"history\":[]\"}".as_bytes().to_vec(),
             Some(&kp),
             false,
@@ -296,11 +283,9 @@ mod tests {
 
         // create a new client and siging keypair
         let kp = KeyPair::new();
-        let client = Rest::new();
+        let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
-        let url = server.url_str("/v1/identities");
-
-        let response = client.delete(&url, Some(&kp), false);
+        let response = client.delete("/v1/identities", Some(&kp), false);
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();

@@ -52,13 +52,13 @@ pub trait Storage {
         plaintext: &[u8],
     ) -> Result<(Identifier, u64, Vec<u8>), SelfError>;
 
-    fn outbox_dequeue(&mut self, recipient: &Identifier, sequence: u64) -> Result<(), SelfError>;
-
     fn decrypt_and_queue(
         &mut self,
         sender: &Identifier,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, SelfError>;
+
+    fn outbox_dequeue(&mut self, recipient: &Identifier, sequence: u64) -> Result<(), SelfError>;
 }
 
 impl<'a> Messaging<'a> {
@@ -75,11 +75,16 @@ impl<'a> Messaging<'a> {
     }
 
     pub fn connect(&mut self) -> Result<(), SelfError> {
-        // TODO load subscriptions
-        self.websocket
-            .lock()
-            .expect("failed to lock websocket")
-            .connect(&self.url, &Vec::new())
+        let mut websocket = self.websocket.lock().expect("failed to lock websocket");
+        websocket.connect(&self.url, &Vec::new())?;
+
+        let Subscription: Vec<crate::messaging::Subscription> = Vec::new();
+
+        let mut storage = self.storage.lock().expect("failed to lock storage");
+
+        // for sub into storage.subscription_list()
+
+        Ok(())
     }
 
     pub fn send(&mut self, to: &Identifier, plaintext: &[u8]) -> Result<(), SelfError> {
@@ -112,7 +117,7 @@ impl<'a> Messaging<'a> {
     pub fn receive(&mut self) -> Result<(Identifier, Vec<u8>), SelfError> {
         let mut websocket = self.websocket.lock().unwrap();
 
-        // TODO this will deadlock as rust we have to use a lock to protect
+        // TODO this will deadlock as we have to use a lock to protect
         // the websocket, even though it implements it's own synchronization
         // and implementing DerefMut doesn't work as we don't have anything
         // to deference, so it reccursively loops forever (╯°□°）╯︵ ┻━┻

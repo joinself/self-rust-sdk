@@ -157,6 +157,7 @@ Table sessions {
 Table tokens {
   id integer [primary key]
   from_identifier integer
+  for_identifier integer
   purpose integer
   token blob
 }

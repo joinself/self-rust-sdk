@@ -63,7 +63,7 @@ impl Websocket {
             .map_err(|_| SelfError::RestRequestConnectionFailed)
     }
 
-    pub fn subscribe(&mut self, _to: &Identifier) -> Result<(), SelfError> {
+    pub fn subscribe(&mut self, subscriptions: Vec<Subscription>) -> Result<(), SelfError> {
         Ok(())
     }
 
