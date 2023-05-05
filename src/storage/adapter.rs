@@ -7,7 +7,7 @@ use crate::identifier::Identifier;
 use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::keypair::Usage;
 use crate::token::Token;
-use crate::{messaging, messaging::Subscription};
+use crate::transport::websocket::Subscription;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -420,7 +420,7 @@ impl Storage {
             )
             .expect("failed to prepare statement");
 
-        let mut rows = match statement.query([Usage::Messaging as u8]) {
+        let mut rows = match statement.query([Usage::Messaging.kind()]) {
             Ok(rows) => rows,
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };
@@ -432,7 +432,7 @@ impl Storage {
             let keypair: Vec<u8> = row.get(0).unwrap();
             let keypair = KeyPair::decode(&keypair)?;
 
-            // TODO correctly load from value
+            // TODO correctly load 'from' value
             subscriptions.push(Subscription {
                 identifier: Identifier::Owned(keypair),
                 from: 0,
@@ -469,7 +469,7 @@ impl Storage {
             let token = Token::decode(&token)?;
 
             // TODO de-duplicate keypair serialisation
-            // TODO correctly load from value
+            // TODO correctly load 'from' value
             subscriptions.push(Subscription {
                 identifier: Identifier::Owned(keypair),
                 from: 0,
@@ -951,10 +951,12 @@ impl Storage {
 
         Ok(())
     }
-}
 
-impl messaging::Storage for Storage {
-    fn outbox_dequeue(&mut self, recipient: &Identifier, sequence: u64) -> Result<(), SelfError> {
+    pub fn outbox_dequeue(
+        &mut self,
+        recipient: &Identifier,
+        sequence: u64,
+    ) -> Result<(), SelfError> {
         // remove the messaage from the outbox once it has been confirmed as received by the server
         let txn = self
             .conn
@@ -978,7 +980,7 @@ impl messaging::Storage for Storage {
         Ok(())
     }
 
-    fn encrypt_and_queue(
+    pub fn encrypt_and_queue(
         &mut self,
         recipient: &Identifier,
         plaintext: &[u8],
@@ -1046,7 +1048,7 @@ impl messaging::Storage for Storage {
         Ok((sender_identifier, 0, gm.encode()))
     }
 
-    fn decrypt_and_queue(
+    pub fn decrypt_and_queue(
         &mut self,
         sender: &Identifier,
         ciphertext: &[u8],
@@ -1104,7 +1106,6 @@ impl messaging::Storage for Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messaging::Storage;
 
     #[test]
     fn transaction() {

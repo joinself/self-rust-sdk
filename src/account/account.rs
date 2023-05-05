@@ -1,12 +1,10 @@
 use crate::identifier::Identifier;
-use crate::keypair::signing::KeyPair;
+use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::keypair::Usage;
-use crate::messaging::Messaging;
-use crate::protocol::siggraph::KeyRole;
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::transport::rest::Rest;
-use crate::transport::websocket::Websocket;
+use crate::transport::websocket::{Subscription, Websocket};
 use crate::{
     error::SelfError,
     message::{Envelope, SignedContent},
@@ -32,18 +30,18 @@ pub struct MessagingCallbacks {
     pub on_message: Option<OnMessageCB>,
 }
 
-pub struct Account<'a> {
-    messaging: Option<Messaging<'a>>,
+pub struct Account {
     rest: Option<Rest>,
     storage: Option<Arc<Mutex<Storage>>>,
+    websocket: Option<Websocket>,
 }
 
-impl<'a> Account<'a> {
-    pub fn new() -> Account<'a> {
+impl Account {
+    pub fn new() -> Account {
         Account {
             rest: None,
-            messaging: None,
             storage: None,
+            websocket: None,
         }
     }
 
@@ -57,20 +55,13 @@ impl<'a> Account<'a> {
         encryption_key: &[u8],
         callbacks: MessagingCallbacks,
     ) -> Result<(), SelfError> {
-        let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
-        let websocket = Arc::new(Mutex::new(Websocket::new()));
         let rest = Rest::new(api_endpoint)?;
+        let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
+        let websocket = Websocket::new(messaging_endpoint)?;
 
-        println!("api endpoint: {}", api_endpoint);
-        println!("messaging endpoint: {}", messaging_endpoint);
-
-        self.messaging = Some(Messaging::new(
-            messaging_endpoint,
-            storage.clone(),
-            websocket,
-        ));
         self.rest = Some(rest);
         self.storage = Some(storage);
+        self.websocket = Some(websocket);
 
         Ok(())
     }
@@ -86,8 +77,8 @@ impl<'a> Account<'a> {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        let messaging = match &mut self.messaging {
-            Some(messaging) => messaging,
+        let websocket = match &mut self.websocket {
+            Some(websocket) => websocket,
             None => return Err(SelfError::AccountNotConfigured),
         };
 
@@ -134,9 +125,11 @@ impl<'a> Account<'a> {
 
         // TODO determine whether it makes sense from a security perspective to store the recover key
         // storage.keypair_create(KeyRole::Identifier ,&recovery_kp, None)?;
+
+        let subscriptions = storage.subscription_list()?;
         drop(storage);
 
-        messaging.connect()?;
+        websocket.connect(&subscriptions)?;
 
         Ok(identifier)
     }
@@ -177,57 +170,64 @@ impl<'a> Account<'a> {
     pub fn link(&mut self, link_token: &Token) -> Result<(), SelfError> {
         Ok(())
     }
-}
 
-impl<'a> Default for Account<'a> {
-    fn default() -> Account<'a> {
-        Account::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-    use httptest::{matchers::*, responders::*, Expectation, Server};
-
-    #[test]
-    fn register() {
-        let server = Server::run();
-
-        let m = all_of![
-            request::method_path("POST", "/v2/identities"),
-            request::headers(contains(key("x-self-pow-hash"))),
-            request::headers(contains(key("x-self-pow-nonce"))),
-        ];
-
-        server.expect(
-            Expectation::matching(m)
-                .respond_with(status_code(201).body("{\"status\":\"success\"}")),
-        );
-
-        let recovery_key = KeyPair::new();
-        let mut account = Account::new();
-
-        let callbacks = MessagingCallbacks {
-            on_connect: None,
-            on_disconnect: None,
-            on_request: None,
-            on_response: None,
-            on_message: None,
+    fn socket_send(&mut self, to: &Identifier, plaintext: &[u8]) -> Result<(), SelfError> {
+        let mut storage = match &mut self.storage {
+            Some(storage) => storage.lock().unwrap(),
+            None => return Err(SelfError::AccountNotConfigured),
         };
 
-        account
-            .configure(
-                &server.url_str("/"),
-                &server.url_str("/"),
-                "/tmp/",
-                &[0; 32],
-                callbacks,
-            )
-            .expect("failed to configure account");
+        let websocket = match &mut self.websocket {
+            Some(websocket) => websocket,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
 
-        let identifier = account.register(&recovery_key).expect("failed to register");
-        assert!(identifier.id().len() == 32);
+        let (from, sequence, ciphertext) = storage.encrypt_and_queue(to, plaintext)?;
+        storage.outbox_dequeue(to, sequence)?;
+        drop(storage);
+
+        // TODO get tokens
+
+        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+        websocket.send(
+            &from,
+            to,
+            sequence,
+            &ciphertext,
+            None,
+            Arc::new(move |resp| {
+                resp_tx.send(resp).unwrap();
+            }),
+        );
+
+        resp_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+    }
+
+    fn socket_receive(&mut self) -> Result<(Identifier, Vec<u8>), SelfError> {
+        let websocket = match &mut self.websocket {
+            Some(websocket) => websocket,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let mut storage = match &mut self.storage {
+            Some(storage) => storage.lock().unwrap(),
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let (sender, ciphertext) = websocket.receive()?;
+
+        let sender_identifier = Identifier::Referenced(PublicKey::from_bytes(
+            &sender,
+            crate::keypair::Algorithm::Ed25519,
+        )?);
+
+        let plaintext = storage.decrypt_and_queue(&sender_identifier, &ciphertext)?;
+
+        // TODO handle dequeueing the processedciphertext message from the inbox queue
+
+        Ok((sender_identifier, plaintext))
     }
 }
