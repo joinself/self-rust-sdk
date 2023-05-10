@@ -448,11 +448,13 @@ impl Storage {
                     i1.id = k1.id
                 JOIN keypairs k1 ON
                     k1.id = tokens.for_identifier
-                WHERE purpose = 2",
+                WHERE purpose = ?1",
             )
             .expect("failed to prepare statement");
 
-        let mut rows = match statement.query([]) {
+        let mut rows = match statement
+            .query([Token::Subscription(crate::token::Subscription { token: Vec::new() }).kind()])
+        {
             Ok(rows) => rows,
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };

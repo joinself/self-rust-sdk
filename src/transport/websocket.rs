@@ -1,5 +1,6 @@
 use crossbeam::channel;
 use crossbeam::channel::{Receiver, Sender};
+use flatbuffers::{Vector, WIPOffset};
 use futures_util::{SinkExt, StreamExt};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -370,7 +371,7 @@ impl Websocket {
                         signatures.push(messaging::Signature::create(
                             &mut builder,
                             &messaging::SignatureArgs {
-                                type_: messaging::SignatureType::AUTH,
+                                type_: messaging::SignatureType::TOKEN,
                                 signer: None,
                                 signature: Some(sig),
                             },
@@ -378,13 +379,12 @@ impl Websocket {
                     }
                     Token::Delegation(delegation) => {
                         let sig = builder.create_vector(&delegation.token);
-                        let iss = builder.create_vector(&delegation.issuer.id());
 
                         signatures.push(messaging::Signature::create(
                             &mut builder,
                             &messaging::SignatureArgs {
-                                type_: messaging::SignatureType::AUTH,
-                                signer: Some(iss),
+                                type_: messaging::SignatureType::TOKEN,
+                                signer: None,
                                 signature: Some(sig),
                             },
                         ));
@@ -473,12 +473,17 @@ impl Websocket {
             let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf));
 
             let mut sigs = Vec::new();
+            let mut signer: Option<WIPOffset<Vector<u8>>> = None;
+
+            if subscription.token.is_some() {
+                signer = Some(builder.create_vector(&owned_identifier.id()));
+            }
 
             sigs.push(messaging::Signature::create(
                 &mut builder,
                 &messaging::SignatureArgs {
                     type_: messaging::SignatureType::PAYLOAD,
-                    signer: None,
+                    signer,
                     signature: Some(sig),
                 },
             ));
@@ -494,7 +499,7 @@ impl Websocket {
                 sigs.push(messaging::Signature::create(
                     &mut builder,
                     &messaging::SignatureArgs {
-                        type_: messaging::SignatureType::SUBSCRIPTION,
+                        type_: messaging::SignatureType::TOKEN,
                         signer: None,
                         signature: Some(sig),
                     },
@@ -763,8 +768,7 @@ mod tests {
                 .expect("Subscription details invalid");
             let inbox = details.inbox().expect("Subscription inbox missing");
 
-            let (mut authenticated, mut authorized) = (false, false);
-            let mut subscriber: Option<&[u8]> = None;
+            let (mut authenticated_as, mut authorized_by, mut authorized_for) = (None, None, None);
 
             // validate the subscriptions signatures
             for signature in signatures {
@@ -787,39 +791,107 @@ mod tests {
                             return;
                         };
 
-                        subscriptions.push(inbox.to_vec());
-
+                        // if the signer is the inbox that a subscription is being requested for, then we can exit
                         if inbox == signer {
-                            (authenticated, authorized) = (true, true);
+                            (authenticated_as, authorized_by) =
+                                (Some(signer.to_vec()), Some(signer.to_vec()));
                             break;
                         }
 
-                        subscriber = Some(signer);
-
-                        authenticated = true;
+                        authenticated_as = Some(signer.to_vec());
                     }
-                    messaging::SignatureType::SUBSCRIPTION => {
-                        let mut subscription_sig_buf = vec![0; 65];
-                        subscription_sig_buf[0] = messaging::SignatureType::SUBSCRIPTION.0 as u8;
-                        subscription_sig_buf[1..33].copy_from_slice(inbox);
-                        subscription_sig_buf[33..65]
-                            .copy_from_slice(subscriber.expect("Subscriber empty"));
-
-                        let pk = PublicKey::from_bytes(inbox, crate::keypair::Algorithm::Ed25519)
-                            .expect("Subscription signer invalid");
-
-                        if !pk.verify(&subscription_sig_buf, sig) {
-                            err(&mut socket_tx, event.id().unwrap(), b"bad auth").await;
-                            return;
+                    messaging::SignatureType::TOKEN => {
+                        let token = match Token::decode(sig) {
+                            Ok(token) => token,
+                            Err(_) => {
+                                err(&mut socket_tx, event.id().unwrap(), b"bad token encoding")
+                                    .await;
+                                return;
+                            }
                         };
 
-                        authorized = true;
+                        match token {
+                            Token::Subscription(token) => {
+                                // TODO validate token if not handled by decoding step...
+                                // token.validate();
+
+                                (authorized_by, authorized_for) =
+                                    (Some(token.signer().id()), Some(token.bearer().id()));
+                            }
+                            _ => {
+                                err(&mut socket_tx, event.id().unwrap(), b"invalid token").await;
+                                return;
+                            }
+                        }
                     }
                     _ => continue, // skip other signature types for now
                 }
             }
 
-            assert!(authenticated && authorized);
+            let authenticated_as = match authenticated_as {
+                Some(authenticated_as) => authenticated_as,
+                None => {
+                    err(
+                        &mut socket_tx,
+                        event.id().unwrap(),
+                        b"unauthenticated subscription",
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            let authorized_by = match authorized_by {
+                Some(authorized_by) => authorized_by,
+                None => {
+                    err(
+                        &mut socket_tx,
+                        event.id().unwrap(),
+                        b"unauthorized subscription",
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            if inbox != authorized_by {
+                err(
+                    &mut socket_tx,
+                    event.id().unwrap(),
+                    b"unauthorized subscription",
+                )
+                .await;
+                return;
+            }
+
+            if authenticated_as != authorized_by {
+                // if the authenticated user does not match the authorized user
+                // check the authorizing user has authorized the authenticated user
+                let authorized_for = match authorized_for {
+                    Some(authorized_for) => authorized_for,
+                    None => {
+                        err(
+                            &mut socket_tx,
+                            event.id().unwrap(),
+                            b"unauthorized subscription",
+                        )
+                        .await;
+                        return;
+                    }
+                };
+
+                if authenticated_as != authorized_for {
+                    err(
+                        &mut socket_tx,
+                        event.id().unwrap(),
+                        b"unauthorized subscription",
+                    )
+                    .await;
+                    return;
+                }
+            }
+
+            subscriptions.push(authorized_by);
         }
 
         ack(&mut socket_tx, event.id().unwrap()).await;

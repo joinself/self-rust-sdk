@@ -111,9 +111,11 @@ impl Account {
         ciborium::ser::into_writer(&olm_account.one_time_keys(), &mut one_time_keys)
             .expect("failed to encode one time keys");
 
+        println!(">>> account create - POST /v2/identities");
         // submit public key operation to api
         rest.post("/v2/identities", operation, None, true)?;
 
+        println!(">>> prekeys create - POST /v2/prekeys");
         // upload prekeys for device key
         rest.post("/v2/prekeys", one_time_keys, Some(&device_kp), false)?;
 
@@ -129,8 +131,10 @@ impl Account {
         let subscriptions = storage.subscription_list()?;
         drop(storage);
 
+        println!(">>> account create - connect ws");
         websocket.connect(&subscriptions)?;
 
+        println!(">>> account create - DONE");
         Ok(identifier)
     }
 
@@ -229,5 +233,11 @@ impl Account {
         // TODO handle dequeueing the processedciphertext message from the inbox queue
 
         Ok((sender_identifier, plaintext))
+    }
+}
+
+impl Default for Account {
+    fn default() -> Self {
+        Account::new()
     }
 }

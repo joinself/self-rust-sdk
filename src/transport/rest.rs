@@ -104,6 +104,7 @@ impl Rest {
 
         if let Some(bd) = body {
             if pow {
+                println!("setting proof of work!");
                 self.proof_of_work(&bd, request.headers_mut());
             }
 
@@ -116,11 +117,21 @@ impl Rest {
         }
 
         let successful_response = response.unwrap();
-        let status = successful_response.status().as_u16();
+        let status = successful_response.status();
+
+        match status {
+            http::StatusCode::BAD_REQUEST => return Err(SelfError::RestResponseBadRequest),
+            http::StatusCode::CONFLICT => return Err(SelfError::RestResponseConflict),
+            http::StatusCode::NOT_FOUND => return Err(SelfError::RestResponseNotFound),
+            http::StatusCode::UNAUTHORIZED => return Err(SelfError::RestResponseUnauthorized),
+            _ => {}
+        }
+
+        println!("request status: {}", status);
 
         match successful_response.bytes() {
             Ok(bytes) => Ok(Response {
-                code: status,
+                code: status.as_u16(),
                 data: bytes.to_vec(),
             }),
             Err(err) => {
@@ -134,13 +145,13 @@ impl Rest {
         // compute proof of work hash over operation
         // TODO load pow difficulty from some other sourcee
         let (hash, nonce) = ProofOfWork::new(20).calculate(body);
-
+        println!("generated hash: {:?}", hash);
         let hash_encoded = base64::encode_config(hash, base64::URL_SAFE_NO_PAD);
-
         let pow_hash = reqwest::header::HeaderValue::from_str(&hash_encoded);
         let pow_nonce = reqwest::header::HeaderValue::from_str(&nonce.to_string());
-        headers.insert("X-Self-POW-Hash", pow_hash.unwrap());
-        headers.insert("X-Self-POW-Nonce", pow_nonce.unwrap());
+
+        headers.insert("Self-POW-Hash", pow_hash.unwrap());
+        headers.insert("Self-POW-Nonce", pow_nonce.unwrap());
     }
 }
 
