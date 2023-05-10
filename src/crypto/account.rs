@@ -4,9 +4,17 @@ use crate::keypair::exchange::{self, KeyPair as ExchangeKeyPair};
 use crate::keypair::signing::KeyPair as SigningKeyPair;
 
 use olm_sys::*;
+use serde::Deserialize;
+
+use std::collections::HashMap;
 
 pub struct Account {
     account: *mut OlmAccount,
+}
+
+#[derive(Deserialize)]
+struct OneTimeKeys {
+    pub curve25519: HashMap<String, String>,
 }
 
 impl Account {
@@ -61,7 +69,7 @@ impl Account {
         }
     }
 
-    pub fn one_time_keys(&self) -> Vec<u8> {
+    pub fn one_time_keys(&self) -> Vec<Vec<u8>> {
         unsafe {
             let mut one_time_keys_len = olm_account_one_time_keys_length(self.account);
             let mut one_time_keys_buf = vec![0_u8; one_time_keys_len as usize].into_boxed_slice();
@@ -72,7 +80,16 @@ impl Account {
                 one_time_keys_len,
             );
 
-            one_time_keys_buf[0..one_time_keys_len as usize].to_vec()
+            let one_time_keys_json = one_time_keys_buf[0..one_time_keys_len as usize].to_vec();
+            let one_time_keys: OneTimeKeys =
+                serde_json::from_slice(&one_time_keys_json).expect("always valid json");
+
+            Vec::from_iter(
+                one_time_keys
+                    .curve25519
+                    .values()
+                    .map(|otk| otk.as_bytes().to_vec()),
+            )
         }
     }
 
@@ -276,17 +293,7 @@ mod tests {
         acc.generate_one_time_keys(100)
             .expect("failed to generate one time keys");
 
-        let one_time_keys_json = acc.one_time_keys();
-        let json: std::collections::HashMap<String, serde_json::Value> =
-            serde_json::from_slice(&one_time_keys_json)
-                .expect("failed to decode one time keys json");
-
-        let one_time_keys = json
-            .get("curve25519")
-            .unwrap()
-            .as_object()
-            .expect("could not coerce value to map");
-        assert!(one_time_keys.get("AAAAAQ").is_some());
+        let one_time_keys = acc.one_time_keys();
         assert_eq!(one_time_keys.len(), 100);
     }
 

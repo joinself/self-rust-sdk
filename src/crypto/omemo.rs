@@ -239,40 +239,22 @@ mod tests {
             .generate_one_time_keys(10)
             .expect("failed to generate one time keys");
 
-        let alices_one_time_keys: HashMap<String, Value> =
-            serde_json::from_slice(&alice_acc.one_time_keys())
-                .expect("failed to load alices one time keys");
-
-        let alices_one_time_key = alices_one_time_keys
-            .get("curve25519")
-            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
-            .unwrap()
-            .as_str()
-            .unwrap();
+        let alices_one_time_keys = alice_acc.one_time_keys();
 
         // generate one time keys or carol and get one for bob to use
         carol_acc
             .generate_one_time_keys(10)
             .expect("failed to generate one time keys");
 
-        let carols_one_time_keys: HashMap<String, Value> =
-            serde_json::from_slice(&carol_acc.one_time_keys())
-                .expect("failed to load alices one time keys");
-
-        let carols_one_time_key = carols_one_time_keys
-            .get("curve25519")
-            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
-            .unwrap()
-            .as_str()
-            .unwrap();
+        let carols_one_time_keys = carol_acc.one_time_keys();
 
         // create bob a new session with alice and carol
         let bobs_session_with_alice = bob_acc
-            .create_outbound_session(&alice_curve25519_pk, alices_one_time_key.as_bytes())
+            .create_outbound_session(&alice_curve25519_pk, &alices_one_time_keys[0])
             .expect("failed to create outbound session");
 
         let bobs_session_with_carol = bob_acc
-            .create_outbound_session(&carol_curve25519_pk, carols_one_time_key.as_bytes())
+            .create_outbound_session(&carol_curve25519_pk, &carols_one_time_keys[0])
             .expect("failed to create outbound session");
 
         // create a group with alice and carol

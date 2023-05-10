@@ -5,6 +5,7 @@ use reqwest::Url;
 use crate::crypto::pow::ProofOfWork;
 use crate::error::SelfError;
 use crate::keypair::signing::KeyPair;
+use crate::token::Authentication;
 
 pub struct Rest {
     endpoint: Url,
@@ -62,27 +63,6 @@ impl Rest {
         self.request(reqwest::Method::DELETE, url, None, signing_key, pow)
     }
 
-    fn authorization(&self, signing_key: &KeyPair, headers: &mut reqwest::header::HeaderMap) {
-        let mut token = crate::message::SignedContent::new();
-
-        token.subject_set(&signing_key.id());
-        token.type_set("authorization");
-        token.cti_set(&crate::crypto::random_id());
-
-        token
-            .sign(
-                signing_key,
-                Some((crate::time::now() + Duration::seconds(10)).timestamp()),
-            )
-            .expect("signing token failed unexpectedly");
-
-        let cws = token.encode().expect("encoding tokne failed unexpectedly");
-        let cws_encoded = base64::encode_config(cws, base64::URL_SAFE_NO_PAD);
-
-        let authorization = reqwest::header::HeaderValue::from_str(&cws_encoded);
-        headers.insert("Authorization", authorization.unwrap());
-    }
-
     fn request(
         &self,
         method: reqwest::Method,
@@ -96,10 +76,12 @@ impl Rest {
             .join(url)
             .map_err(|_| SelfError::RestRequestURLInvalid)?;
 
+        let target_str = String::from(target.as_str());
+        let method_str = String::from(method.as_str());
         let mut request = Request::new(method, target);
 
         if let Some(sk) = signing_key {
-            self.authorization(sk, request.headers_mut());
+            self.authentication(sk, &method_str, &target_str, request.headers_mut());
         }
 
         if let Some(bd) = body {
@@ -139,6 +121,24 @@ impl Rest {
                 Err(SelfError::RestRequestInvalid)
             }
         }
+    }
+
+    fn authentication(
+        &self,
+        signing_key: &KeyPair,
+        method: &str,
+        request_url: &str,
+        headers: &mut reqwest::header::HeaderMap,
+    ) {
+        let token = Authentication::new(
+            &crate::identifier::Identifier::Owned(signing_key.clone()),
+            (crate::time::now() + chrono::Duration::seconds(60)).timestamp(),
+            (method.to_owned() + request_url).as_bytes(),
+        );
+
+        let token_encoded = base64::encode_config(token.token, base64::URL_SAFE_NO_PAD);
+        let auth = reqwest::header::HeaderValue::from_str(&token_encoded);
+        headers.insert("Self-Authentication", auth.unwrap());
     }
 
     fn proof_of_work(&self, body: &[u8], headers: &mut reqwest::header::HeaderMap) {
@@ -185,7 +185,7 @@ mod tests {
 
         let m = all_of![
             request::method_path("GET", "/v1/identities"),
-            request::headers(contains(key("authorization"))),
+            request::headers(contains(key("self-authentication"))),
         ];
 
         server.expect(
@@ -214,7 +214,7 @@ mod tests {
 
         let m = all_of![
             request::method_path("POST", "/v1/identities"),
-            request::headers(contains(key("authorization"))),
+            request::headers(contains(key("self-authentication"))),
             request::body("{\"history\":[]\"}"),
         ];
 
@@ -249,7 +249,7 @@ mod tests {
 
         let m = all_of![
             request::method_path("PUT", "/v1/identities"),
-            request::headers(contains(key("authorization"))),
+            request::headers(contains(key("self-authentication"))),
             request::body("{\"history\":[]\"}"),
         ];
 
@@ -284,7 +284,7 @@ mod tests {
 
         let m = all_of![
             request::method_path("DELETE", "/v1/identities"),
-            request::headers(contains(key("authorization"))),
+            request::headers(contains(key("self-authentication"))),
         ];
 
         server.expect(
