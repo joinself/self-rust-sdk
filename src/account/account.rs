@@ -4,7 +4,7 @@ use crate::keypair::Usage;
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::transport::rest::Rest;
-use crate::transport::websocket::{Subscription, Websocket};
+use crate::transport::websocket::{Websocket};
 use crate::{
     error::SelfError,
     message::{Envelope, SignedContent},
@@ -53,7 +53,7 @@ impl Account {
         messaging_endpoint: &str,
         storage_path: &str,
         encryption_key: &[u8],
-        callbacks: MessagingCallbacks,
+        _callbacks: MessagingCallbacks,
     ) -> Result<(), SelfError> {
         let rest = Rest::new(api_endpoint)?;
         let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
@@ -143,31 +143,31 @@ impl Account {
         ))
     }
 
-    pub fn connect(&mut self, with: &Identifier) -> Result<(), SelfError> {
+    pub fn connect(&mut self, _with: &Identifier) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn connect_as(&mut self, with: &Identifier, using: &Identifier) -> Result<(), SelfError> {
+    pub fn connect_as(&mut self, _with: &Identifier, _using: &Identifier) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn connect_anonymously(&mut self, with: &Identifier) -> Result<(), SelfError> {
+    pub fn connect_anonymously(&mut self, _with: &Identifier) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn send(&mut self, to: &Identifier, message: &SignedContent) -> Result<(), SelfError> {
+    pub fn send(&mut self, _to: &Identifier, _message: &SignedContent) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn accept(&mut self, message: &Envelope) -> Result<(), SelfError> {
+    pub fn accept(&mut self, _message: &Envelope) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn reject(&mut self, message: &Envelope) -> Result<(), SelfError> {
+    pub fn reject(&mut self, _message: &Envelope) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn link(&mut self, link_token: &Token) -> Result<(), SelfError> {
+    pub fn link(&mut self, _link_token: &Token) -> Result<(), SelfError> {
         Ok(())
     }
 

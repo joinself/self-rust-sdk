@@ -26,7 +26,7 @@ unsafe impl Sync for Storage {}
 // mutiple tables and caches are accessed for some higher level
 // operations that also require atomicity via a single transaction
 impl Storage {
-    pub fn new(storage_path: &str, encryption_key: &[u8]) -> Result<Storage, SelfError> {
+    pub fn new(_storage_path: &str, _encryption_key: &[u8]) -> Result<Storage, SelfError> {
         let conn = Connection::open_in_memory().map_err(|_| SelfError::StorageConnectionFailed)?;
 
         /*
