@@ -116,7 +116,7 @@ impl Authentication {
         let mut token = vec![0; 1 + 1 + 20 + 4 + 8 + 1 + 32 + 64];
 
         token[0] = TOKEN_VERSION_1;
-        token[1] = TOKEN_KIND_AUTHORIZATION;
+        token[1] = TOKEN_KIND_AUTHENTICATION;
         crate::crypto::random::read_bytes(&mut token[6..26]);
         token[26..34].copy_from_slice(&expires.to_le_bytes());
         token[34] = SIGNER_ALG_ED25519;
