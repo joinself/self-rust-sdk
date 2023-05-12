@@ -1,15 +1,13 @@
+use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::keypair::Usage;
+use crate::message::{self, Content, Envelope};
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
+use crate::token::Token;
 use crate::transport::rest::Rest;
 use crate::transport::websocket::Websocket;
-use crate::{
-    error::SelfError,
-    message::{Envelope, SignedContent},
-    token::Token,
-};
 
 use std::{
     any::Any,
@@ -172,7 +170,18 @@ impl Account {
     }
 
     /// connect to another identifier
-    pub fn connect(&mut self, _with: &Identifier) -> Result<(), SelfError> {
+    pub fn connect(&mut self, with: &Identifier) -> Result<(), SelfError> {
+        let request_id = crate::crypto::random_id();
+        let now = crate::time::now();
+
+        let mut msg = crate::message::Content::new();
+        msg.cti_set(&request_id);
+        msg.type_set(message::MESSAGE_TYPE_CONNECTION_REQ);
+        msg.audience_set(&with.id());
+        msg.issued_at_set(now.timestamp());
+        msg.expires_at_set((now + chrono::Duration::days(7)).timestamp());
+        self.socket_send(with, &msg.encode()?)?;
+
         Ok(())
     }
 
@@ -187,7 +196,7 @@ impl Account {
     }
 
     /// sends a message to a given identifier
-    pub fn send(&mut self, _to: &Identifier, _message: &[u8]) -> Result<(), SelfError> {
+    pub fn send(&mut self, _to: &Identifier, _message: &Content) -> Result<(), SelfError> {
         Ok(())
     }
 
@@ -235,7 +244,15 @@ impl Account {
 
         resp_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+        let mut storage = self
+            .storage
+            .as_ref()
+            .expect("storage is set")
+            .lock()
+            .unwrap();
+        storage.outbox_dequeue(to, sequence)
     }
 
     fn socket_receive(&mut self) -> Result<(Identifier, Vec<u8>), SelfError> {
