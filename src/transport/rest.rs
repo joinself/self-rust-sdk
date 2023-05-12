@@ -1,4 +1,3 @@
-
 use reqwest::blocking::{Client, Request};
 use reqwest::Url;
 

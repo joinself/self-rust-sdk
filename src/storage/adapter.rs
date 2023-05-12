@@ -83,6 +83,8 @@ impl Storage {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     for_identifier INTEGER NOT NULL,
                     usage INTEGER NOT NULL,
+                    persistent BOOL NOT NULL,
+                    revoked_at INTEGER,
                     keypair BLOB NOT NULL,
                     olm_account BLOB
                 );
@@ -316,15 +318,18 @@ impl Storage {
         let mut statement = txn
             .prepare(
                 "SELECT keypair FROM identifiers
-            INNER JOIN sessions ON
-                keypairs.for_identifier = identifiers.id
-			WHERE identifier = ?1",
+                INNER JOIN sessions ON
+                    keypairs.for_identifier = identifiers.id
+                WHERE identifier = ?1",
             )
             .expect("failed to prepare statement");
 
         let mut rows = match statement.query([&identifier.id()]) {
             Ok(rows) => rows,
-            Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
+            Err(err) => {
+                println!("{}", err);
+                return Err(SelfError::StorageTransactionCommitFailed);
+            }
         };
 
         let row = match rows.next() {
@@ -349,6 +354,7 @@ impl Storage {
         usage: Usage,
         keypair: &KeyPair,
         account: Option<Account>,
+        persistent: bool,
     ) -> Result<(), SelfError> {
         let identifier = Identifier::Owned(keypair.to_owned());
 
@@ -356,9 +362,6 @@ impl Storage {
         if self.kcache.contains_key(&identifier) {
             return Err(SelfError::KeychainKeyExists);
         };
-
-        // create the identifier
-        self.identifier_create(&identifier)?;
 
         // create the keypair
         let txn = self
@@ -368,7 +371,38 @@ impl Storage {
 
         if let Some(olm_account) = account {
             txn.execute(
-                "INSERT INTO keypairs (for_identifier, usage, keypair, olm_account) 
+                "INSERT INTO identifiers (identifier) VALUES (?1);",
+                [&identifier.id()],
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+            txn.execute(
+                "INSERT INTO keypairs (for_identifier, usage, persistent, keypair, olm_account) 
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    ?2,
+                    ?3,
+                    ?4,
+                    ?5
+                );",
+                (
+                    &identifier.id(),
+                    usage.kind(),
+                    persistent,
+                    &keypair.encode(),
+                    olm_account.pickle(None)?,
+                ),
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        } else {
+            txn.execute(
+                "INSERT INTO identifiers (identifier) VALUES (?1);",
+                [&identifier.id()],
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+            txn.execute(
+                "INSERT INTO keypairs (for_identifier, usage, persistent, keypair) 
                 VALUES (
                     (SELECT id FROM identifiers WHERE identifier=?1),
                     ?2,
@@ -378,20 +412,9 @@ impl Storage {
                 (
                     &identifier.id(),
                     usage.kind(),
+                    persistent,
                     &keypair.encode(),
-                    olm_account.pickle(None)?,
                 ),
-            )
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-        } else {
-            txn.execute(
-                "INSERT INTO keypairs (for_identifier, usage, keypair) 
-                VALUES (
-                    (SELECT id FROM identifiers WHERE identifier=?1),
-                    ?2,
-                    ?3
-                );",
-                (&identifier.id(), usage.kind(), &keypair.encode()),
             )
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         }
@@ -402,6 +425,67 @@ impl Storage {
         self.kcache.insert(identifier, Arc::new(keypair.clone()));
 
         Ok(())
+    }
+
+    pub fn keypair_list(
+        &mut self,
+        usage: Option<Usage>,
+        persistent: bool,
+    ) -> Result<Vec<KeyPair>, SelfError> {
+        let mut keypairs = Vec::new();
+
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        if let Some(usage) = usage {
+            let mut statement = txn
+                .prepare(
+                    "SELECT keypair FROM keypairs
+                WHERE usage = ?1 AND persistent = ?2;",
+                )
+                .expect("failed to prepare statement");
+
+            let mut rows = match statement.query((usage.kind(), persistent)) {
+                Ok(rows) => rows,
+                Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
+            };
+
+            while let Some(row) = rows
+                .next()
+                .map_err(|_| SelfError::StorageTransactionCommitFailed)?
+            {
+                // let for_identifier: Vec<u8> = row.get(0).unwrap();
+                let keypair: Vec<u8> = row.get(0).unwrap();
+                let keypair = KeyPair::decode(&keypair)?;
+                keypairs.push(keypair);
+            }
+        } else {
+            let mut statement = txn
+                .prepare(
+                    "SELECT keypair FROM keypairs
+                WHERE persistent = ?1;",
+                )
+                .expect("failed to prepare statement");
+
+            let mut rows = match statement.query([persistent]) {
+                Ok(rows) => rows,
+                Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
+            };
+
+            while let Some(row) = rows
+                .next()
+                .map_err(|_| SelfError::StorageTransactionCommitFailed)?
+            {
+                // let for_identifier: Vec<u8> = row.get(0).unwrap();
+                let keypair: Vec<u8> = row.get(0).unwrap();
+                let keypair = KeyPair::decode(&keypair)?;
+                keypairs.push(keypair);
+            }
+        }
+
+        Ok(keypairs)
     }
 
     pub fn subscription_list(&mut self) -> Result<Vec<Subscription>, SelfError> {
@@ -1167,7 +1251,7 @@ mod tests {
         let sig = kp.sign(&msg);
 
         storage
-            .keypair_create(Usage::Messaging, &kp, None)
+            .keypair_create(Usage::Messaging, &kp, None, false)
             .expect("failed to create keypair");
 
         let kp = storage

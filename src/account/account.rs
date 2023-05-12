@@ -4,7 +4,7 @@ use crate::keypair::Usage;
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::transport::rest::Rest;
-use crate::transport::websocket::{Websocket};
+use crate::transport::websocket::Websocket;
 use crate::{
     error::SelfError,
     message::{Envelope, SignedContent},
@@ -66,6 +66,29 @@ impl Account {
         Ok(())
     }
 
+    /// returns the primary messaging identifier of this account
+    /// if the account has been registered as a persistent identifier
+    /// then this will be the device that was created when the account
+    /// was made. if the account is an ephemeral, then it will the
+    /// ephemeral identifier
+    pub fn messaging_identifer(&self) -> Option<Identifier> {
+        if let Some(storage) = &self.storage {
+            let mut storage = storage.lock().expect("failed to lock storage");
+
+            if let Ok(keypairs) = storage.keypair_list(Some(Usage::Messaging), true) {
+                // there should only be one persistent messaging keypair for this device
+                if let Some(keypair) = keypairs.first() {
+                    return Some(Identifier::Owned(keypair.to_owned()));
+                }
+            }
+        }
+
+        None
+    }
+
+    /// register a persistent identifier
+    /// returns the persistent identifier created to group all other
+    /// public key identifiers
     pub fn register(&mut self, recovery_kp: &KeyPair) -> Result<Identifier, SelfError> {
         let rest = match &self.rest {
             Some(rest) => rest,
@@ -120,8 +143,8 @@ impl Account {
         // persist account keys to keychain
         let mut storage = storage.lock().unwrap();
 
-        storage.keypair_create(Usage::Identifier, &identifier_kp, None)?;
-        storage.keypair_create(Usage::Messaging, &device_kp, Some(olm_account))?;
+        storage.keypair_create(Usage::Identifier, &identifier_kp, None, true)?;
+        storage.keypair_create(Usage::Messaging, &device_kp, Some(olm_account), true)?;
 
         // TODO determine whether it makes sense from a security perspective to store the recover key
         // storage.keypair_create(KeyRole::Identifier ,&recovery_kp, None)?;
@@ -134,6 +157,11 @@ impl Account {
         Ok(identifier)
     }
 
+    /// registers an epehemral identifier
+    /// this type of account does not support key revocation or recovery
+    /// and serves as only an identifier to send and receive messages from.
+    /// this type of account can be linked to a persistent account as a
+    /// device identifier later on
     pub fn register_anonymously(&mut self) -> Result<Identifier, SelfError> {
         Ok(Identifier::Referenced(
             crate::keypair::signing::PublicKey::from_bytes(
@@ -143,19 +171,23 @@ impl Account {
         ))
     }
 
+    /// connect to another identifier
     pub fn connect(&mut self, _with: &Identifier) -> Result<(), SelfError> {
         Ok(())
     }
 
+    /// connect to another identifier using an identifier that is already assoicated with this account
     pub fn connect_as(&mut self, _with: &Identifier, _using: &Identifier) -> Result<(), SelfError> {
         Ok(())
     }
 
+    /// connect to another identifier with a new, anonymous and ephemeral identifier
     pub fn connect_anonymously(&mut self, _with: &Identifier) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn send(&mut self, _to: &Identifier, _message: &SignedContent) -> Result<(), SelfError> {
+    /// sends a message to a given identifier
+    pub fn send(&mut self, _to: &Identifier, _message: &[u8]) -> Result<(), SelfError> {
         Ok(())
     }
 
