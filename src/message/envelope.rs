@@ -1,10 +1,9 @@
-use super::SignedContent;
+use super::Content;
 use crate::identifier::Identifier;
 
 pub struct Envelope {
-    pub id: Vec<u8>,
     pub to: Identifier,
     pub from: Identifier,
-    pub message_type: String,
-    pub signed_content: SignedContent,
+    pub sequence: u64,
+    pub content: Content,
 }

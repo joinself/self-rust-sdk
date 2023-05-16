@@ -14,8 +14,20 @@ use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
 use crate::identifier::Identifier;
+use crate::keypair::signing::PublicKey;
 use crate::protocol::messaging;
 use crate::token::Token;
+
+pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
+pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(&Identifier, &Identifier, u64, &[u8]) + Sync + Send>;
+
+#[derive(Clone)]
+pub struct Callbacks {
+    pub on_connect: Option<OnConnectCB>,
+    pub on_disconnect: Option<OnDisconnectCB>,
+    pub on_message: Option<OnMessageCB>,
+}
 
 pub type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 pub type Response = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
@@ -34,6 +46,7 @@ pub struct Subscription {
 
 pub struct Websocket {
     endpoint: Url,
+    callbacks: Callbacks,
     read_tx: Sender<(Vec<u8>, Vec<u8>)>,
     read_rx: Receiver<(Vec<u8>, Vec<u8>)>,
     write_tx: Sender<Event>,
@@ -43,12 +56,11 @@ pub struct Websocket {
 }
 
 // TODO fix subscriptions...
-
 unsafe impl Send for Websocket {}
 unsafe impl Sync for Websocket {}
 
 impl Websocket {
-    pub fn new(endpoint: &str) -> Result<Websocket, SelfError> {
+    pub fn new(endpoint: &str, callbacks: Callbacks) -> Result<Websocket, SelfError> {
         let (read_tx, read_rx) = channel::bounded(256);
         let (write_tx, write_rx) = channel::bounded(256);
 
@@ -61,6 +73,7 @@ impl Websocket {
 
         Ok(Websocket {
             endpoint,
+            callbacks,
             read_tx,
             read_rx,
             write_tx,
@@ -79,6 +92,9 @@ impl Websocket {
         let read_tx = self.read_tx.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
+
+        let on_connect_cb = self.callbacks.on_connect.clone();
+        let on_message_cb = self.callbacks.on_message.clone();
 
         // TODO cleanup old sockets!
         let (tx, rx) = channel::bounded(1);
@@ -182,12 +198,38 @@ impl Websocket {
                                     None => continue,
                                 };
 
+                                if let Some(on_message) = &on_message_cb {
+                                    let sender = Identifier::Referenced(
+                                        PublicKey::from_bytes(
+                                            payload.sender().unwrap(),
+                                            crate::keypair::Algorithm::Ed25519,
+                                        )
+                                        .expect("server has forwarded a message with a bad sender"),
+                                    );
+
+                                    let recipient = Identifier::Referenced(
+                                        PublicKey::from_bytes(
+                                            payload.recipient().unwrap(),
+                                            crate::keypair::Algorithm::Ed25519,
+                                        )
+                                        .expect(
+                                            "server has forwarded a message with a bad recipient",
+                                        ),
+                                    );
+
+                                    let content = payload.content().unwrap();
+
+                                    on_message(&sender, &recipient, payload.sequence(), content);
+                                }
+
+                                /*
                                 read_tx
                                     .send((
                                         payload.sender().unwrap().to_vec(),
                                         payload.content().unwrap().to_vec(),
                                     ))
                                     .unwrap_or(());
+                                */
                             }
                         }
                         _ => {
@@ -241,10 +283,22 @@ impl Websocket {
             .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
 
         rx.recv_deadline(deadline)
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+        handle.spawn(async move {
+            if let Some(on_connect) = on_connect_cb {
+                on_connect();
+            }
+        });
+
+        Ok(())
     }
 
     pub fn disconnect(&mut self) -> Result<(), SelfError> {
+        if let Some(on_disconnect) = &self.callbacks.on_disconnect {
+            on_disconnect(Ok(()));
+        }
+
         self.write_tx
             .send(Event::Done)
             .map_err(|_| SelfError::RestRequestConnectionFailed)
@@ -291,11 +345,13 @@ impl Websocket {
         }
     }
 
+    /*
     pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
         self.read_rx
             .recv()
             .map_err(|_| SelfError::RestRequestConnectionTimeout)
     }
+     */
 
     pub fn assemble_payload(
         &self,
@@ -977,7 +1033,14 @@ mod tests {
         let bob_kp = crate::keypair::signing::KeyPair::new();
         let bob_id = Identifier::Referenced(bob_kp.public());
 
-        let mut ws = Websocket::new("ws://localhost:12345").expect("failed to create websocket");
+        let callbacks = Callbacks {
+            on_connect: None,
+            on_disconnect: None,
+            on_message: None,
+        };
+
+        let mut ws =
+            Websocket::new("ws://localhost:12345", callbacks).expect("failed to create websocket");
 
         ws.connect(&subs).expect("failed to connect");
 
@@ -1010,9 +1073,11 @@ mod tests {
         let msg = msgs.get(0).unwrap().clone();
         assert_eq!(msg, Vec::from("test message"));
 
+        /*
         let (_, ciphertext) = ws.receive().expect("Failed to receive message");
 
         assert_eq!(ciphertext, Vec::from("test message"));
+         */
 
         rt.shutdown_background();
     }

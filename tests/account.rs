@@ -1,7 +1,7 @@
 use self_sdk::account::{Account, MessagingCallbacks};
 use self_test_mock::Server;
 
-use std::sync::Once;
+use std::sync::{Arc, Once};
 
 static mut SERVER: Option<Server> = None;
 static INIT: Once = Once::new();
@@ -25,6 +25,7 @@ fn account_configure() {
             "ws://127.0.0.1:3001/",
             "/tmp/test_account_configure/",
             b"123456789",
+            Arc::new(Box::new(0)),
             MessagingCallbacks {
                 on_connect: None,
                 on_disconnect: None,
@@ -47,6 +48,7 @@ fn account_register() {
             "ws://127.0.0.1:3001/",
             "/tmp/test_account_register/",
             b"123456789",
+            Arc::new(Box::new(0)),
             MessagingCallbacks {
                 on_connect: None,
                 on_disconnect: None,
@@ -79,6 +81,8 @@ fn account_connect_without_token() {
     alices_account
         .connect(&bobs_identifier, None, None)
         .expect("failed to send connection to bob");
+
+    std::thread::sleep(std::time::Duration::from_secs(1));
 }
 
 fn register_test_account(test_name: &str) -> Account {
@@ -89,6 +93,7 @@ fn register_test_account(test_name: &str) -> Account {
             "ws://127.0.0.1:3001/",
             &format!("/tmp/{}/", test_name),
             b"123456789",
+            Arc::new(Box::new(0)),
             MessagingCallbacks {
                 on_connect: None,
                 on_disconnect: None,

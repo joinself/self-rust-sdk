@@ -8,18 +8,18 @@ use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::token::Token;
 use crate::transport::rest::Rest;
-use crate::transport::websocket::Websocket;
+use crate::transport::websocket::{Callbacks, Websocket};
 
 use std::{
     any::Any,
     sync::{Arc, Mutex},
 };
 
-pub type OnConnectCB = Box<dyn Fn(Box<dyn Any>)>;
-pub type OnDisconnectCB = Box<dyn Fn(Box<dyn Any>, Result<(), SelfError>)>;
-pub type OnRequestCB = Box<dyn Fn(Box<dyn Any>, &Envelope) -> i32>;
-pub type OnResponseCB = Box<dyn Fn(Box<dyn Any>, &Envelope)>;
-pub type OnMessageCB = Box<dyn Fn(Box<dyn Any>, &Envelope)>;
+pub type OnConnectCB = Arc<dyn Fn(Arc<dyn Any + Send>) + Sync + Send>;
+pub type OnDisconnectCB = Arc<dyn Fn(Arc<dyn Any + Send>, Result<(), SelfError>) + Sync + Send>;
+pub type OnRequestCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Envelope) -> i32 + Sync + Send>;
+pub type OnResponseCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Envelope) + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Envelope) + Sync + Send>;
 
 pub struct MessagingCallbacks {
     pub on_connect: Option<OnConnectCB>,
@@ -52,11 +52,62 @@ impl Account {
         messaging_endpoint: &str,
         storage_path: &str,
         encryption_key: &[u8],
-        _callbacks: MessagingCallbacks,
+        user_data: Arc<dyn Any + Send + Sync>,
+        callbacks: MessagingCallbacks,
     ) -> Result<(), SelfError> {
         let rest = Rest::new(api_endpoint)?;
         let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
-        let websocket = Websocket::new(messaging_endpoint)?;
+
+        let ws_callbacks = Callbacks {
+            on_connect: callbacks.on_connect.map(|on_connect| {
+                let on_connect_ud = user_data.clone();
+
+                Arc::new(move || {
+                    on_connect(on_connect_ud.clone());
+                }) as Arc<dyn Fn() + Send + Sync>
+            }),
+            on_disconnect: callbacks.on_disconnect.map(|on_disconnect| {
+                let on_disconnect_ud = user_data.clone();
+
+                Arc::new(move |result| {
+                    on_disconnect(on_disconnect_ud.clone(), result);
+                }) as Arc<dyn Fn(Result<(), SelfError>) + Send + Sync>
+            }),
+            on_message: callbacks.on_message.map(|on_message| {
+                let on_message_ud = user_data.clone();
+                let on_message_st = storage.clone();
+
+                Arc::new(
+                    move |sender: &Identifier,
+                          recipient: &Identifier,
+                          sequence: u64,
+                          ciphertext: &[u8]| {
+                        let mut storage = on_message_st.lock().unwrap();
+                        match storage.decrypt_and_queue(sender, ciphertext) {
+                            Ok(plaintext) => {
+                                match crate::message::Content::decode(&plaintext) {
+                                    Ok(content) => {
+                                        on_message(
+                                            on_message_ud.clone(),
+                                            &Envelope {
+                                                to: recipient.clone(),
+                                                from: sender.clone(),
+                                                sequence,
+                                                content,
+                                            },
+                                        );
+                                    }
+                                    Err(err) => println!("failed to decode content: {}", err),
+                                };
+                            }
+                            Err(err) => println!("failed to decrypt and queue message: {}", err),
+                        }
+                    },
+                ) as Arc<dyn Fn(&Identifier, &Identifier, u64, &[u8]) + Send + Sync>
+            }),
+        };
+
+        let websocket = Websocket::new(messaging_endpoint, ws_callbacks)?;
 
         self.rest = Some(rest);
         self.storage = Some(storage);
@@ -322,6 +373,7 @@ impl Account {
         storage.outbox_dequeue(to, sequence)
     }
 
+    /*
     fn socket_receive(&mut self) -> Result<(Identifier, Vec<u8>), SelfError> {
         let websocket = match &mut self.websocket {
             Some(websocket) => websocket,
@@ -346,6 +398,7 @@ impl Account {
 
         Ok((sender_identifier, plaintext))
     }
+    */
 }
 
 impl Default for Account {
