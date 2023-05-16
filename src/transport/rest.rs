@@ -3,8 +3,8 @@ use reqwest::Url;
 
 use crate::crypto::pow::ProofOfWork;
 use crate::error::SelfError;
-use crate::keypair::signing::KeyPair;
-use crate::token::Authentication;
+use crate::identifier::Identifier;
+use crate::token::{Authentication, Token};
 
 pub struct Rest {
     endpoint: Url,
@@ -27,47 +27,80 @@ impl Rest {
     pub fn get(
         &self,
         url: &str,
-        signing_key: Option<&KeyPair>,
+        authenticate_as: Option<&Identifier>,
+        authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        self.request(reqwest::Method::GET, url, None, signing_key, pow)
+        self.request(
+            reqwest::Method::GET,
+            url,
+            None,
+            authenticate_as,
+            authorization,
+            pow,
+        )
     }
 
     pub fn post(
         &self,
         url: &str,
-        body: Vec<u8>,
-        signing_key: Option<&KeyPair>,
+        body: &[u8],
+        authenticate_as: Option<&Identifier>,
+        authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        self.request(reqwest::Method::POST, url, Some(body), signing_key, pow)
+        self.request(
+            reqwest::Method::POST,
+            url,
+            Some(body),
+            authenticate_as,
+            authorization,
+            pow,
+        )
     }
 
     pub fn put(
         &self,
         url: &str,
-        body: Vec<u8>,
-        signing_key: Option<&KeyPair>,
+        body: &[u8],
+        authenticate_as: Option<&Identifier>,
+        authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        self.request(reqwest::Method::PUT, url, Some(body), signing_key, pow)
+        self.request(
+            reqwest::Method::PUT,
+            url,
+            Some(body),
+            authenticate_as,
+            authorization,
+            pow,
+        )
     }
 
     pub fn delete(
         &self,
         url: &str,
-        signing_key: Option<&KeyPair>,
+        authenticate_as: Option<&Identifier>,
+        authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
-        self.request(reqwest::Method::DELETE, url, None, signing_key, pow)
+        self.request(
+            reqwest::Method::DELETE,
+            url,
+            None,
+            authenticate_as,
+            authorization,
+            pow,
+        )
     }
 
     fn request(
         &self,
         method: reqwest::Method,
         url: &str,
-        body: Option<Vec<u8>>,
-        signing_key: Option<&KeyPair>,
+        body: Option<&[u8]>,
+        authenticate_as: Option<&Identifier>,
+        authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
         let target = self
@@ -79,16 +112,23 @@ impl Rest {
         let method_str = String::from(method.as_str());
         let mut request = Request::new(method, target);
 
-        if let Some(sk) = signing_key {
-            self.authentication(sk, &method_str, &target_str, request.headers_mut());
+        if let Some(auth) = authenticate_as {
+            self.authentication(auth, &method_str, &target_str, request.headers_mut());
+        }
+
+        if let Some(auth) = authorization {
+            self.authorization(auth, request.headers_mut());
+        }
+
+        if pow {
+            self.proof_of_work(
+                body.unwrap_or((method_str + &target_str).as_bytes()),
+                request.headers_mut(),
+            );
         }
 
         if let Some(bd) = body {
-            if pow {
-                self.proof_of_work(&bd, request.headers_mut());
-            }
-
-            *request.body_mut() = Some(reqwest::blocking::Body::from(bd));
+            *request.body_mut() = Some(reqwest::blocking::Body::from(bd.to_vec()));
         }
 
         let response = self.client.execute(request);
@@ -125,13 +165,13 @@ impl Rest {
 
     fn authentication(
         &self,
-        signing_key: &KeyPair,
+        authenticate_as: &Identifier,
         method: &str,
         request_url: &str,
         headers: &mut reqwest::header::HeaderMap,
     ) {
         let token = Authentication::new(
-            &crate::identifier::Identifier::Owned(signing_key.clone()),
+            authenticate_as,
             (crate::time::now() + chrono::Duration::seconds(60)).timestamp(),
             (method.to_owned() + request_url).as_bytes(),
         );
@@ -141,16 +181,25 @@ impl Rest {
         headers.insert("Self-Authentication", auth.unwrap());
     }
 
+    fn authorization(&self, authorization: &Token, headers: &mut reqwest::header::HeaderMap) {
+        if let Ok(token) = authorization.encode() {
+            let auth = reqwest::header::HeaderValue::from_str(
+                &String::from_utf8(token).expect("token encoding failed"),
+            );
+            headers.insert("Self-Authorization", auth.unwrap());
+        };
+    }
+
     fn proof_of_work(&self, body: &[u8], headers: &mut reqwest::header::HeaderMap) {
         // compute proof of work hash over operation
-        // TODO load pow difficulty from some other sourcee
+        // TODO load pow difficulty from some other source
         let (hash, nonce) = ProofOfWork::new(20).calculate(body);
         let hash_encoded = base64::encode_config(hash, base64::URL_SAFE_NO_PAD);
         let pow_hash = reqwest::header::HeaderValue::from_str(&hash_encoded);
         let pow_nonce = reqwest::header::HeaderValue::from_str(&nonce.to_string());
 
-        headers.insert("Self-POW-Hash", pow_hash.unwrap());
-        headers.insert("Self-POW-Nonce", pow_nonce.unwrap());
+        headers.insert("Self-Pow-Hash", pow_hash.unwrap());
+        headers.insert("Self-Pow-Nonce", pow_nonce.unwrap());
     }
 }
 
@@ -193,10 +242,10 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new();
+        let id = Identifier::Owned(KeyPair::new());
         let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
-        let response = client.get("/v1/identities", Some(&kp), false);
+        let response = client.get("/v1/identities", Some(&id), None, false);
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();
@@ -223,13 +272,14 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new();
+        let id = Identifier::Owned(KeyPair::new());
         let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
         let response = client.post(
             "/v1/identities",
-            "{\"history\":[]\"}".as_bytes().to_vec(),
-            Some(&kp),
+            b"{\"history\":[]\"}",
+            Some(&id),
+            None,
             false,
         );
         assert!(response.is_ok());
@@ -258,13 +308,14 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new();
+        let id = Identifier::Owned(KeyPair::new());
         let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
         let response = client.put(
             "/v1/identities",
-            "{\"history\":[]\"}".as_bytes().to_vec(),
-            Some(&kp),
+            b"{\"history\":[]\"}",
+            Some(&id),
+            None,
             false,
         );
         assert!(response.is_ok());
@@ -292,10 +343,10 @@ mod tests {
         );
 
         // create a new client and siging keypair
-        let kp = KeyPair::new();
+        let id = Identifier::Owned(KeyPair::new());
         let client = Rest::new(&server.url_str("/")).expect("failed to configure rest client");
 
-        let response = client.delete("/v1/identities", Some(&kp), false);
+        let response = client.delete("/v1/identities", Some(&id), None, false);
         assert!(response.is_ok());
 
         let successful_response = response.unwrap();

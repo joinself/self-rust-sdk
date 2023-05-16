@@ -66,6 +66,23 @@ impl PublicKey {
             ) == 0
         }
     }
+
+    pub fn to_exchange_key(&self) -> Result<crate::keypair::exchange::PublicKey, SelfError> {
+        let mut curve25519_pk =
+            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
+
+        unsafe {
+            if sodium_sys::crypto_sign_ed25519_pk_to_curve25519(
+                curve25519_pk.as_mut_ptr(),
+                self.bytes.as_ptr(),
+            ) != 0
+            {
+                return Err(SelfError::KeyPairConversionFailed);
+            }
+        }
+
+        crate::keypair::exchange::PublicKey::from_bytes(&curve25519_pk, Algorithm::Curve25519)
+    }
 }
 
 impl std::hash::Hash for PublicKey {

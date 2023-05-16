@@ -3,6 +3,7 @@ use crate::identifier::Identifier;
 use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::keypair::Usage;
 use crate::message::{self, Content, Envelope};
+use crate::protocol::api::PrekeyResponse;
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
 use crate::token::Token;
@@ -132,11 +133,19 @@ impl Account {
         ciborium::ser::into_writer(&olm_account.one_time_keys(), &mut one_time_keys)
             .expect("failed to encode one time keys");
 
+        let device_identifier = Identifier::Owned(device_kp.clone());
+
         // submit public key operation to api
-        rest.post("/v2/identities", operation, None, true)?;
+        rest.post("/v2/identities", &operation, None, None, true)?;
 
         // upload prekeys for device key
-        rest.post("/v2/prekeys", one_time_keys, Some(&device_kp), false)?;
+        rest.post(
+            "/v2/prekeys",
+            &one_time_keys,
+            Some(&device_identifier),
+            None,
+            false,
+        )?;
 
         // persist account keys to keychain
         let mut storage = storage.lock().unwrap();
@@ -170,7 +179,24 @@ impl Account {
     }
 
     /// connect to another identifier
-    pub fn connect(&mut self, with: &Identifier) -> Result<(), SelfError> {
+    pub fn connect(
+        &mut self,
+        with: &Identifier,
+        authorization: Option<&Token>,
+        notification: Option<&Token>,
+    ) -> Result<(), SelfError> {
+        let using = match self.messaging_identifer() {
+            Some(using) => using,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        // attempt to acquire a one time key for the identifier
+        self.create_session(with, &using, authorization)?;
+
+        // create a 1-1 group for the identifier
+        self.group_add(with, with)?;
+
+        // send a connection request to the identifier
         let request_id = crate::crypto::random_id();
         let now = crate::time::now();
 
@@ -180,7 +206,11 @@ impl Account {
         msg.audience_set(&with.id());
         msg.issued_at_set(now.timestamp());
         msg.expires_at_set((now + chrono::Duration::days(7)).timestamp());
+
         self.socket_send(with, &msg.encode()?)?;
+
+        // if we have a notification token then send a notification
+        if let Some(notification) = notification {}
 
         Ok(())
     }
@@ -212,6 +242,43 @@ impl Account {
         Ok(())
     }
 
+    fn create_session(
+        &mut self,
+        with: &Identifier,
+        using: &Identifier,
+        authorization: Option<&Token>,
+    ) -> Result<(), SelfError> {
+        let rest = match &mut self.rest {
+            Some(rest) => rest,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let mut storage = match &mut self.storage {
+            Some(storage) => storage.lock().unwrap(),
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let response = rest.get(
+            &format!("/v2/prekeys/{}", &hex::encode(with.id())),
+            Some(using),
+            authorization,
+            authorization.is_none(),
+        )?;
+
+        let prekey = PrekeyResponse::new(&response.data)?;
+
+        storage.session_create_from_prekey(using, with, &prekey.key)
+    }
+
+    fn group_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
+        let mut storage = match &mut self.storage {
+            Some(storage) => storage.lock().unwrap(),
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        storage.member_add(group, member)
+    }
+
     fn socket_send(&mut self, to: &Identifier, plaintext: &[u8]) -> Result<(), SelfError> {
         let mut storage = match &mut self.storage {
             Some(storage) => storage.lock().unwrap(),
@@ -224,7 +291,6 @@ impl Account {
         };
 
         let (from, sequence, ciphertext) = storage.encrypt_and_queue(to, plaintext)?;
-        storage.outbox_dequeue(to, sequence)?;
         drop(storage);
 
         // TODO get tokens
@@ -252,6 +318,7 @@ impl Account {
             .expect("storage is set")
             .lock()
             .unwrap();
+
         storage.outbox_dequeue(to, sequence)
     }
 

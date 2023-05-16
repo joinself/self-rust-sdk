@@ -9,7 +9,6 @@ static INIT: Once = Once::new();
 pub fn test_server() {
     unsafe {
         INIT.call_once(|| {
-            println!("creating another server...");
             SERVER = Some(Server::new(3000, 3001));
         });
     }
@@ -78,7 +77,7 @@ fn account_connect_without_token() {
         .expect("must have an identifier");
 
     alices_account
-        .connect(&bobs_identifier)
+        .connect(&bobs_identifier, None, None)
         .expect("failed to send connection to bob");
 }
 

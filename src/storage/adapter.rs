@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct Storage {
     conn: Connection,
+    acache: HashMap<Identifier, Arc<Mutex<Account>>>,
     gcache: HashMap<Identifier, Arc<Mutex<Group>>>,
     kcache: HashMap<Identifier, Arc<KeyPair>>,
     scache: HashMap<Identifier, Arc<Mutex<Session>>>,
@@ -38,6 +39,7 @@ impl Storage {
 
         let mut storage = Storage {
             conn,
+            acache: HashMap::new(),
             gcache: HashMap::new(),
             kcache: HashMap::new(),
             scache: HashMap::new(),
@@ -317,10 +319,10 @@ impl Storage {
 
         let mut statement = txn
             .prepare(
-                "SELECT keypair FROM identifiers
-                INNER JOIN sessions ON
+                "SELECT keypair FROM keypairs
+                INNER JOIN identifiers ON
                     keypairs.for_identifier = identifiers.id
-                WHERE identifier = ?1",
+                WHERE identifiers.identifier = ?1;",
             )
             .expect("failed to prepare statement");
 
@@ -363,19 +365,20 @@ impl Storage {
             return Err(SelfError::KeychainKeyExists);
         };
 
-        // create the keypair
         let txn = self
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        if let Some(olm_account) = account {
-            txn.execute(
-                "INSERT INTO identifiers (identifier) VALUES (?1);",
-                [&identifier.id()],
-            )
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        // create an record for the identifier we are creating a session with
+        txn.execute(
+            "INSERT INTO identifiers (identifier) VALUES (?1);",
+            [&identifier.id()],
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
+        // create the keypair
+        if let Some(olm_account) = account {
             txn.execute(
                 "INSERT INTO keypairs (for_identifier, usage, persistent, keypair, olm_account) 
                 VALUES (
@@ -395,12 +398,6 @@ impl Storage {
             )
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         } else {
-            txn.execute(
-                "INSERT INTO identifiers (identifier) VALUES (?1);",
-                [&identifier.id()],
-            )
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
             txn.execute(
                 "INSERT INTO keypairs (for_identifier, usage, persistent, keypair) 
                 VALUES (
@@ -663,6 +660,111 @@ impl Storage {
 
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        Ok(())
+    }
+
+    pub fn session_create_from_prekey(
+        &mut self,
+        as_identifier: &Identifier,
+        with_identifier: &Identifier,
+        prekey: &[u8],
+    ) -> Result<(), SelfError> {
+        let txn = self
+            .conn
+            .transaction()
+            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+
+        // create an record for the identifier we are creating a session with
+        if txn
+            .execute(
+                "INSERT INTO identifiers (identifier) VALUES (?1)",
+                [&with_identifier.id()],
+            )
+            .is_err()
+        {
+            return Err(SelfError::StorageTransactionCommitFailed);
+        }
+
+        // check if the account exists in the cache or load it from the db
+        let account = match self.acache.get(as_identifier) {
+            Some(account) => account.clone(),
+            None => {
+                let mut statement = txn
+                    .prepare(
+                        "SELECT olm_account FROM keypairs
+                        INNER JOIN identifiers ON
+                            keypairs.for_identifier = identifiers.id
+                        WHERE identifiers.identifier = ?1;",
+                    )
+                    .expect("failed to prepare statement");
+
+                let mut rows = match statement.query([&as_identifier.id()]) {
+                    Ok(rows) => rows,
+                    Err(err) => {
+                        println!("{}", err);
+                        return Err(SelfError::StorageTransactionCommitFailed);
+                    }
+                };
+
+                let row = match rows.next() {
+                    Ok(row) => match row {
+                        Some(row) => row,
+                        None => return Err(SelfError::KeychainKeyNotFound),
+                    },
+                    Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
+                };
+
+                let mut acc_encoded: Vec<u8> = row.get(0).unwrap();
+                let acc = Account::from_pickle(&mut acc_encoded, None)?;
+                let account = Arc::new(Mutex::new(acc));
+
+                self.acache.insert(as_identifier.clone(), account.clone());
+
+                account
+            }
+        };
+
+        let with_identifier_curve25519 = match with_identifier {
+            Identifier::Referenced(pk) => pk.to_exchange_key()?,
+            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
+        };
+
+        let mut account = account.lock().unwrap();
+        let session = account.create_outbound_session(&with_identifier_curve25519, prekey)?;
+
+        let account_encoded = account.pickle(None)?;
+        let session_encoded = session.pickle(None)?;
+
+        txn.execute(
+            "UPDATE keypairs
+            SET olm_account = ?2
+            WHERE id = (
+                SELECT keypairs.id FROM keypairs
+                JOIN identifiers i1 ON
+                    i1.id = keypairs.for_identifier
+                WHERE i1.identifier = ?1
+            );",
+            (&as_identifier.id(), account_encoded),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.execute(
+            "INSERT INTO sessions (as_identifier, with_identifier, olm_session)
+            VALUES (
+                (SELECT id FROM identifiers WHERE identifier=?1),
+                (SELECT id FROM identifiers WHERE identifier=?2),
+                ?3
+            );",
+            (&as_identifier.id(), &with_identifier.id(), session_encoded),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        self.scache
+            .insert(with_identifier.clone(), Arc::new(Mutex::new(session)));
 
         Ok(())
     }
@@ -1079,6 +1181,9 @@ impl Storage {
             &grp_lock.id(),
             crate::keypair::Algorithm::Ed25519,
         )?);
+
+        let sender_identifier =
+            Identifier::Owned(self.keypair_get(&sender_identifier)?.as_ref().clone());
 
         let txn = self
             .conn
@@ -1685,17 +1790,18 @@ mod tests {
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
         let bob_curve25519_pk = bob_ekp.public();
+        let bob_skp_clone = bob_skp.clone();
         let mut bob_acc = crate::crypto::account::Account::new(bob_skp, bob_ekp);
 
         let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
 
         storage
+            .keypair_create(Usage::Messaging, &bob_skp_clone, None, true)
+            .expect("failed to create bob keypair");
+        storage
             .identifier_create(&alice_identifier)
             .expect("failed to create alice identifier");
-        storage
-            .identifier_create(&bob_identifier)
-            .expect("failed to create bob identifier");
 
         alice_acc
             .generate_one_time_keys(10)
@@ -1784,17 +1890,18 @@ mod tests {
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
         let bob_curve25519_pk = bob_ekp.public();
+        let bob_skp_clone = bob_skp.clone();
         let mut bob_acc = crate::crypto::account::Account::new(bob_skp, bob_ekp);
 
         let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
 
         storage
-            .identifier_create(&alice_identifier)
+            .keypair_create(Usage::Messaging, &bob_skp_clone, None, true)
             .expect("failed to create alice identifier");
         storage
-            .identifier_create(&bob_identifier)
-            .expect("failed to create bob identifier");
+            .identifier_create(&alice_identifier)
+            .expect("failed to create alice identifier");
 
         alice_acc
             .generate_one_time_keys(10)

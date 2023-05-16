@@ -12,7 +12,6 @@ pub struct KeyPair {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PublicKey {
-    id: Option<String>,
     algorithm: Algorithm,
     bytes: Vec<u8>,
 }
@@ -33,12 +32,21 @@ impl PublicKey {
         }
 
         Ok(PublicKey {
-            id: Some(String::from(id)),
             algorithm,
             bytes: decoded_public_key,
         })
     }
 
+    pub fn from_bytes(bytes: &[u8], algorithm: Algorithm) -> Result<PublicKey, SelfError> {
+        if bytes.len() < 32 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
+        }
+
+        Ok(PublicKey {
+            algorithm,
+            bytes: bytes.to_vec(),
+        })
+    }
     pub fn id(&self) -> Vec<u8> {
         self.bytes.clone()
     }
@@ -66,7 +74,6 @@ impl KeyPair {
 
         KeyPair {
             public_key: PublicKey {
-                id: None,
                 algorithm: Algorithm::Curve25519,
                 bytes: curve25519_pk.to_vec(),
             },
@@ -86,7 +93,6 @@ impl KeyPair {
 
         Ok(KeyPair {
             public_key: PublicKey {
-                id: None,
                 algorithm: Algorithm::Curve25519,
                 bytes: secret_key,
             },
@@ -133,7 +139,6 @@ impl KeyPair {
 
         Ok(KeyPair {
             public_key: PublicKey {
-                id: Some(String::from(key_id)),
                 algorithm: Algorithm::Curve25519,
                 bytes: curve25519_pk.to_vec(),
             },
@@ -143,12 +148,8 @@ impl KeyPair {
         })
     }
 
-    pub fn id(&self) -> String {
-        if self.public_key.id.is_some() {
-            return self.public_key.id.as_ref().unwrap().clone();
-        }
-
-        base64::encode_config(&self.public_key.bytes, base64::URL_SAFE_NO_PAD)
+    pub fn id(&self) -> Vec<u8> {
+        self.public_key.bytes.clone()
     }
 
     pub fn algorithm(&self) -> Algorithm {
