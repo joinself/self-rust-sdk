@@ -1,6 +1,6 @@
 use crate::error::SelfError;
 use crate::identifier::Identifier;
-use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::keypair::signing::KeyPair;
 use crate::keypair::Usage;
 use crate::message::{self, Content, Envelope};
 use crate::protocol::api::PrekeyResponse;
@@ -81,9 +81,10 @@ impl Account {
                     move |sender: &Identifier,
                           recipient: &Identifier,
                           sequence: u64,
+                          is_group: bool,
                           ciphertext: &[u8]| {
                         let mut storage = on_message_st.lock().unwrap();
-                        match storage.decrypt_and_queue(sender, ciphertext) {
+                        match storage.decrypt_and_queue(sender, recipient, is_group, ciphertext) {
                             Ok(plaintext) => {
                                 match crate::message::Content::decode(&plaintext) {
                                     Ok(content) => {
@@ -103,7 +104,7 @@ impl Account {
                             Err(err) => println!("failed to decrypt and queue message: {}", err),
                         }
                     },
-                ) as Arc<dyn Fn(&Identifier, &Identifier, u64, &[u8]) + Send + Sync>
+                ) as Arc<dyn Fn(&Identifier, &Identifier, u64, bool, &[u8]) + Send + Sync>
             }),
         };
 
@@ -234,7 +235,7 @@ impl Account {
         &mut self,
         with: &Identifier,
         authorization: Option<&Token>,
-        notification: Option<&Token>,
+        _notification: Option<&Token>,
     ) -> Result<(), SelfError> {
         let using = match self.messaging_identifer() {
             Some(using) => using,
@@ -261,7 +262,7 @@ impl Account {
         self.socket_send(with, &msg.encode()?)?;
 
         // if we have a notification token then send a notification
-        if let Some(notification) = notification {}
+        //if let Some(notification) = notification {}
 
         Ok(())
     }

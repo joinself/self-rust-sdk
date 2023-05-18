@@ -97,7 +97,13 @@ fn register_test_account(test_name: &str) -> Account {
             MessagingCallbacks {
                 on_connect: None,
                 on_disconnect: None,
-                on_message: None,
+                on_message: Some(Arc::new(|_, envelope| {
+                    println!(
+                        "got message from: {} typ: {:?}",
+                        hex::encode(envelope.from.id()),
+                        envelope.content.type_get()
+                    )
+                })),
                 on_request: None,
                 on_response: None,
             },

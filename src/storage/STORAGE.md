@@ -50,7 +50,7 @@ The clients account will use this table to retrieve keys to sign messages or sta
 
 ### Connections
 
-Holds records of other private key addresses that the account has mutually connected with.
+Holds records of other identifiers/addresses that the account has mutually connected with, including membership to groups.
 
 ### Sessions
 
@@ -61,10 +61,6 @@ When sending or receiving a message, this table will be used to encrypt or decry
 ### Tokens
 
 Holds records of tokens issued by other public key addresses for the purpose of interacting with or proving authorization to an action
-
-### Members
-
-Holds records of members of groups
 
 ### Credentials
 
@@ -141,6 +137,13 @@ Table operations {
 Table connections {
   id integer [primary key]
   as_identifier integer
+  #to_identifier integer
+  #via_identifier integer
+  #proxy_identifier integer
+  #broker_identifier integer
+  #agent_identifier integer
+  #through_identifier integer
+  via_identifier integer
   with_identifier integer
   connected_on integer
 }
@@ -160,12 +163,6 @@ Table tokens {
   for_identifier integer
   purpose integer
   token blob
-}
-
-Table members {
-  id integer [primary key]
-  group_identifier integer
-  member_identifier integer
 }
 
 Table credentials {
@@ -192,11 +189,10 @@ Table outbox {
 Ref: keypairs.for_identifier > identifiers.id
 Ref: operations.on_identifier > identifiers.id
 Ref: connections.as_identifier > identifiers.id
+Ref: connections.via_identifier > identifiers.id
 Ref: connections.with_identifier > identifiers.id
 Ref: sessions.as_identifier > identifiers.id
 Ref: sessions.with_identifier > identifiers.id
-Ref: members.group_identifier > identifiers.id
-Ref: members.member_identifier > identifiers.id
 Ref: credentials.from_identifier > identifiers.id
 Ref: credentials.about_identifier > identifiers.id
 Ref: tokens.from_identifier > identifiers.id

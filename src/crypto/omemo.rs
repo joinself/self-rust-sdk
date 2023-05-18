@@ -214,8 +214,6 @@ mod tests {
 
     use super::*;
     use crate::crypto::account::Account;
-    use serde_json::Value;
-    use std::collections::HashMap;
 
     #[test]
     fn encrypt_and_decrypt() {

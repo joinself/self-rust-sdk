@@ -20,7 +20,7 @@ use crate::token::Token;
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(&Identifier, &Identifier, u64, &[u8]) + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(&Identifier, &Identifier, u64, bool, &[u8]) + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
@@ -47,12 +47,10 @@ pub struct Subscription {
 pub struct Websocket {
     endpoint: Url,
     callbacks: Callbacks,
-    read_tx: Sender<(Vec<u8>, Vec<u8>)>,
-    read_rx: Receiver<(Vec<u8>, Vec<u8>)>,
     write_tx: Sender<Event>,
     write_rx: Receiver<Event>,
     runtime: Runtime,
-    subscriptions: Vec<Subscription>,
+    subscriptions: Arc<Mutex<HashMap<Vec<u8>, Subscription>>>,
 }
 
 // TODO fix subscriptions...
@@ -61,7 +59,6 @@ unsafe impl Sync for Websocket {}
 
 impl Websocket {
     pub fn new(endpoint: &str, callbacks: Callbacks) -> Result<Websocket, SelfError> {
-        let (read_tx, read_rx) = channel::bounded(256);
         let (write_tx, write_rx) = channel::bounded(256);
 
         let runtime = Runtime::new().unwrap();
@@ -74,12 +71,10 @@ impl Websocket {
         Ok(Websocket {
             endpoint,
             callbacks,
-            read_tx,
-            read_rx,
             write_tx,
             write_rx,
             runtime,
-            subscriptions: Vec::new(),
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -89,9 +84,9 @@ impl Websocket {
     ) -> std::result::Result<(), SelfError> {
         let handle = self.runtime.handle();
         let endpoint = self.endpoint.clone();
-        let read_tx = self.read_tx.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
+        let subs = self.subscriptions.clone();
 
         let on_connect_cb = self.callbacks.on_connect.clone();
         let on_message_cb = self.callbacks.on_message.clone();
@@ -101,13 +96,12 @@ impl Websocket {
         let requests: Arc<Mutex<HashMap<Vec<u8>, Response>>> = Arc::new(Mutex::new(HashMap::new()));
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
-
-        // TODO switch to hashmap to avoid duplicates
-        subscriptions
-            .iter()
-            .for_each(|sub| self.subscriptions.push(sub.clone()));
-
+        
         handle.spawn(async move {
+            for sub in subscriptions {
+                subs.lock().await.insert(sub.identifier.id(), sub.clone());
+            }
+
             let result = match connect_async(&endpoint).await {
                 Ok((socket, _)) => Ok(socket),
                 Err(err) => {
@@ -198,10 +192,27 @@ impl Websocket {
                                     None => continue,
                                 };
 
+                                // TODO authenticate message signatures!!!!
+
                                 if let Some(on_message) = &on_message_cb {
+                                    let sender = payload.sender().unwrap();
+                                    let recipient = payload.recipient().unwrap();
+
+                                    let active_subs = subs.lock().await;
+
+                                    let is_group = match active_subs.get(recipient) {
+                                        Some(sub) => sub.token.is_some(),
+                                        None => {
+                                            println!("message received for an unknown recipient: {}", hex::encode(recipient));
+                                            continue
+                                        },
+                                    };
+
+                                    drop(active_subs);
+
                                     let sender = Identifier::Referenced(
                                         PublicKey::from_bytes(
-                                            payload.sender().unwrap(),
+                                            sender,
                                             crate::keypair::Algorithm::Ed25519,
                                         )
                                         .expect("server has forwarded a message with a bad sender"),
@@ -209,7 +220,7 @@ impl Websocket {
 
                                     let recipient = Identifier::Referenced(
                                         PublicKey::from_bytes(
-                                            payload.recipient().unwrap(),
+                                            recipient,
                                             crate::keypair::Algorithm::Ed25519,
                                         )
                                         .expect(
@@ -219,17 +230,8 @@ impl Websocket {
 
                                     let content = payload.content().unwrap();
 
-                                    on_message(&sender, &recipient, payload.sequence(), content);
+                                    on_message(&sender, &recipient, payload.sequence(), is_group, content);
                                 }
-
-                                /*
-                                read_tx
-                                    .send((
-                                        payload.sender().unwrap().to_vec(),
-                                        payload.content().unwrap().to_vec(),
-                                    ))
-                                    .unwrap_or(());
-                                */
                             }
                         }
                         _ => {
@@ -264,14 +266,14 @@ impl Websocket {
         });
 
         let (tx, rx) = channel::bounded(1);
-
-        let (event_id, event_subscribe) = self.assemble_subscription(&self.subscriptions)?;
-
+        let (event_id, event_subscribe) = self.assemble_subscription(
+            &subscriptions,
+        )?;
         let deadline = Instant::now() + Duration::from_secs(5);
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {
             tx.send(result)
-                .expect("Failed to send authentication response");
+                .expect("Failed to send subscription response");
         });
 
         self.write_tx
@@ -344,14 +346,6 @@ impl Websocket {
             callback(Err(SelfError::RestRequestConnectionTimeout));
         }
     }
-
-    /*
-    pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
-        self.read_rx
-            .recv()
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)
-    }
-     */
 
     pub fn assemble_payload(
         &self,

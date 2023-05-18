@@ -17,7 +17,7 @@ pub struct Storage {
     acache: HashMap<Identifier, Arc<Mutex<Account>>>,
     gcache: HashMap<Identifier, Arc<Mutex<Group>>>,
     kcache: HashMap<Identifier, Arc<KeyPair>>,
-    scache: HashMap<Identifier, Arc<Mutex<Session>>>,
+    scache: HashMap<Identifier, Arc<Mutex<Vec<(Identifier, Session)>>>>,
 }
 
 unsafe impl Send for Storage {}
@@ -150,13 +150,14 @@ impl Storage {
                 "CREATE TABLE sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     as_identifier INTEGER NOT NULL,
+                    for_identifier INTEGER NOT NULL,
                     with_identifier INTEGER NOT NULL,
                     sequence_tx INTEGER,
                     sequence_rx INTEGER,
                     olm_session BLOB
                 );
                 CREATE UNIQUE INDEX idx_sessions_with_identifier
-                ON sessions (as_identifier, with_identifier);",
+                ON sessions (as_identifier, for_identifier, with_identifier);",
                 (),
             )
             .map_err(|err| {
@@ -563,21 +564,23 @@ impl Storage {
         Ok(subscriptions)
     }
 
+    /// get
     pub fn session_get(
         &mut self,
+        transaction: &mut Transaction<'_>,
+        as_identifier: &Identifier,
         with_identifier: &Identifier,
     ) -> Result<Arc<Mutex<Session>>, SelfError> {
         // check if the session exists in the cache
         if let Some(session) = self.scache.get(with_identifier) {
+
+
+
+
             return Ok(session.clone());
         };
 
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        let mut statement = txn
+        let mut statement = transaction
             .prepare(
                 "SELECT olm_session FROM identifiers
                 INNER JOIN sessions ON
@@ -1242,11 +1245,124 @@ impl Storage {
     pub fn decrypt_and_queue(
         &mut self,
         sender: &Identifier,
+        recipient: &Identifier,
+        sequence: u64,
+        is_group: bool,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, SelfError> {
         let mut gm = GroupMessage::decode(ciphertext)?;
 
-        let grp = self.group_get(sender)?;
+
+        self.session_get(with_identifier)
+        /*
+        let group = if is_group {
+            // lookup or load omemo group from group cache
+            match self.gcache.get(recipient) {
+                Some(group) => group.clone(),
+                None => { 
+                    let mut members = Vec::new();
+                    let mut as_identifier: Option<Vec<u8>> = None;
+            
+                    let txn = self
+                        .conn
+                        .transaction()
+                        .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
+            
+                    let mut statement = txn
+                        .prepare(
+                            "SELECT i2.identifier, i3.identifier, s1.olm_session FROM members
+                            JOIN identifiers i1 ON
+                                i1.id = members.group_identifier
+                            JOIN identifiers i2 ON
+                                i2.id = members.member_identifier
+                            JOIN sessions s1 ON
+                                i2.id = s1.with_identifier
+                            JOIN identifiers i3 ON
+                                i3.id = s1.as_identifier
+                            WHERE i1.identifier = ?1",
+                        )
+                        .expect("failed to prepare statement");
+            
+                    let mut rows = match statement.query([&recipient.id()]) {
+                        Ok(rows) => rows,
+                        Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+                    };
+            
+                    while let Some(row) = rows
+                        .next()
+                        .map_err(|_| SelfError::MessagingDestinationUnknown)? 
+                    {
+                        let with_identifier: Vec<u8> = row.get(0).unwrap();
+                        let mut session: Vec<u8> = row.get(2).unwrap();
+            
+                        if as_identifier.is_none() {
+                            as_identifier = row.get(1).unwrap();
+                        }
+            
+                        let public_key =
+                            PublicKey::from_bytes(&with_identifier, crate::keypair::Algorithm::Ed25519)?;
+            
+                        let identifier = Identifier::Referenced(public_key);
+            
+                        let session = match self.scache.get(&identifier) {
+                            Some(session) => session.clone(),
+                            None => {
+                                let s = Arc::new(Mutex::new(Session::from_pickle(&mut session, None)?));
+                                self.scache.insert(identifier, s.clone());
+                                s.clone()
+                            }
+                        };
+    
+                        if let Some(one_time_message) = gm.one_time_key_message(&recipient.id()) {
+                            if let Identifier::Referenced(pk) = sender {
+                                let s = session.lock().unwrap();
+                                if !s.matches_inbound_session(&pk.to_exchange_key()?, &one_time_message)? {
+    
+                                }
+                                drop(s);
+                            }
+                        }
+            
+                        members.push((with_identifier, session))
+                    }
+            
+                    let identifier = match as_identifier {
+                        Some(identifier) => identifier,
+                        None => return Err(SelfError::MessagingDestinationUnknown),
+                    };
+            
+                    let mut omemo_group = Group::new(&identifier);
+            
+                    for member in &members {
+                        omemo_group.add_participant(&member.0, member.1.clone());
+                    }
+            
+                    // TODO avoid the need for locking the group
+                    // by implementing a read only copy of the
+                    // group members list via a concurrent hashmap
+                    // like dashmap or a lock free linked list
+                    let grp = Arc::new(Mutex::new(omemo_group));
+                    self.gcache.insert(group.clone(), grp.clone());
+                }
+            };
+        } else {
+
+        };
+
+        /
+
+
+
+        if let Some(grp) = self.gcache.get(group) {
+            return Ok(grp.clone());
+        };
+
+        */
+        
+    
+        gm.one_time_key_message(&recipient.id());
+
+        let grp = self.group_get(recipient)?;
         let mut grp_lock = grp.lock().unwrap();
         let plaintext = grp_lock.decrypt_group_message(&sender.id(), &mut gm)?;
 
@@ -1258,6 +1374,8 @@ impl Storage {
         let olm_session = self.scache.get(sender).unwrap();
         let olm_session_encoded = olm_session.lock().unwrap().pickle(None)?;
 
+        // TODO handle out of order messages...
+
         txn.execute(
             "UPDATE sessions
             SET sequence_rx = ?2, olm_session = ?3
@@ -1267,7 +1385,7 @@ impl Storage {
                     i1.id = sessions.with_identifier
                 WHERE i1.identifier = ?1
             );",
-            (&sender.id(), 0, olm_session_encoded),
+            (&sender.id(), sequence, olm_session_encoded),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -1283,7 +1401,7 @@ impl Storage {
                 ?2,
                 ?3
             );",
-            (&sender.id(), 0, &plaintext),
+            (&sender.id(), sequence, &plaintext),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -1971,8 +2089,25 @@ mod tests {
 
         // decrypt message for bob
         let plaintext = storage
-            .decrypt_and_queue(&alice_identifier, &ciphertext)
+            .decrypt_and_queue(&alice_identifier, &bob_identifier, &ciphertext)
             .expect("failed to decrypt message from alice");
         assert_eq!(plaintext, b"hello bob");
     }
+
+    #[test]
+    fn receive_message_from_new_identifier() {
+
+    }
+
+    #[test]
+    fn receive_message_from_existing_identifier() {
+        
+    }
+
+    #[test]
+    fn receive_group_message_from_identifier() {
+        
+    }
+
+    
 }
