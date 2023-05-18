@@ -96,7 +96,7 @@ impl Websocket {
         let requests: Arc<Mutex<HashMap<Vec<u8>, Response>>> = Arc::new(Mutex::new(HashMap::new()));
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
-        
+
         handle.spawn(async move {
             for sub in subscriptions {
                 subs.lock().await.insert(sub.identifier.id(), sub.clone());
@@ -203,9 +203,12 @@ impl Websocket {
                                     let is_group = match active_subs.get(recipient) {
                                         Some(sub) => sub.token.is_some(),
                                         None => {
-                                            println!("message received for an unknown recipient: {}", hex::encode(recipient));
-                                            continue
-                                        },
+                                            println!(
+                                                "message received for an unknown recipient: {}",
+                                                hex::encode(recipient)
+                                            );
+                                            continue;
+                                        }
                                     };
 
                                     drop(active_subs);
@@ -230,7 +233,13 @@ impl Websocket {
 
                                     let content = payload.content().unwrap();
 
-                                    on_message(&sender, &recipient, payload.sequence(), is_group, content);
+                                    on_message(
+                                        &sender,
+                                        &recipient,
+                                        payload.sequence(),
+                                        is_group,
+                                        content,
+                                    );
                                 }
                             }
                         }
@@ -266,9 +275,7 @@ impl Websocket {
         });
 
         let (tx, rx) = channel::bounded(1);
-        let (event_id, event_subscribe) = self.assemble_subscription(
-            &subscriptions,
-        )?;
+        let (event_id, event_subscribe) = self.assemble_subscription(&subscriptions)?;
         let deadline = Instant::now() + Duration::from_secs(5);
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {

@@ -104,7 +104,8 @@ impl Account {
                             Err(err) => println!("failed to decrypt and queue message: {}", err),
                         }
                     },
-                ) as Arc<dyn Fn(&Identifier, &Identifier, u64, bool, &[u8]) + Send + Sync>
+                )
+                    as Arc<dyn Fn(&Identifier, &Identifier, u64, bool, &[u8]) + Send + Sync>
             }),
         };
 

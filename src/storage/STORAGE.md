@@ -134,15 +134,16 @@ Table operations {
   operation blob
 }
 
+Table metrics {
+  id integer [primary key]
+  as_identifier integer
+  with_identifier integer
+  sequence_tx
+}
+
 Table connections {
   id integer [primary key]
   as_identifier integer
-  #to_identifier integer
-  #via_identifier integer
-  #proxy_identifier integer
-  #broker_identifier integer
-  #agent_identifier integer
-  #through_identifier integer
   via_identifier integer
   with_identifier integer
   connected_on integer

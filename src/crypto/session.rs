@@ -1,18 +1,19 @@
 use crate::error::SelfError;
-use crate::keypair::exchange;
-
+use crate::identifier::Identifier;
 use olm_sys::*;
 
 pub struct Session {
     session: *mut OlmSession,
-    sequence_tx: i64,
-    sequence_rx: i64,
+    as_identifier: Identifier,
+    with_identifier: Identifier,
+    sequence_tx: u64,
+    sequence_rx: u64,
 }
 
 unsafe impl Send for Session {}
 
 impl Session {
-    pub fn new() -> Session {
+    pub fn new(as_identifier: Identifier, with_identifier: Identifier) -> Session {
         unsafe {
             let session_len = olm_session_size() as usize;
             let session_buf = vec![0_u8; session_len].into_boxed_slice();
@@ -20,13 +21,22 @@ impl Session {
 
             Session {
                 session,
+                as_identifier,
+                with_identifier,
                 sequence_tx: 0,
                 sequence_rx: 0,
             }
         }
     }
 
-    pub fn from_pickle(pickle: &mut [u8], password: Option<&[u8]>) -> Result<Session, SelfError> {
+    pub fn from_pickle(
+        as_identifier: Identifier,
+        with_identifier: Identifier,
+        sequence_tx: u64,
+        sequence_rx: u64,
+        pickle: &mut [u8],
+        password: Option<&[u8]>,
+    ) -> Result<Session, SelfError> {
         unsafe {
             let session_len = olm_session_size() as usize;
             let session_buf = vec![0_u8; session_len].into_boxed_slice();
@@ -48,19 +58,16 @@ impl Session {
 
             let session = Session {
                 session,
-                sequence_tx: 0,
-                sequence_rx: 0,
+                as_identifier,
+                with_identifier,
+                sequence_tx,
+                sequence_rx,
             };
 
             session.last_error()?;
 
             Ok(session)
         }
-    }
-
-    pub fn set_sequences(&mut self, sequence_tx: i64, sequence_rx: i64) {
-        self.sequence_tx = sequence_tx;
-        self.sequence_rx = sequence_rx;
     }
 
     /// # Safety
@@ -92,6 +99,7 @@ impl Session {
             );
 
             self.last_error()?;
+            self.sequence_tx += 1;
 
             Ok((mtype, message_buf[0..message_len as usize].to_vec()))
         }
@@ -120,16 +128,18 @@ impl Session {
             );
 
             self.last_error()?;
+            self.sequence_rx += 1;
 
             Ok(plaintext_buf[0..plaintext_len as usize].to_vec())
         }
     }
 
-    pub fn matches_inbound_session(
-        &self,
-        identity_key: &exchange::PublicKey,
-        one_time_message: &[u8],
-    ) -> Result<bool, SelfError> {
+    pub fn matches_inbound_session(&self, one_time_message: &[u8]) -> Result<bool, SelfError> {
+        let identity_key = match self.with_identifier {
+            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
+            Identifier::Referenced(pk) => pk.to_exchange_key()?,
+        };
+
         let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
 
         unsafe {
@@ -206,11 +216,21 @@ impl Session {
             };
         }
     }
-}
 
-impl Default for Session {
-    fn default() -> Self {
-        Session::new()
+    pub fn as_identifier(&self) -> &Identifier {
+        &self.as_identifier
+    }
+
+    pub fn with_identifier(&self) -> &Identifier {
+        &self.with_identifier
+    }
+
+    pub fn sequence_tx(&self) -> u64 {
+        self.sequence_tx
+    }
+
+    pub fn sequence_rx(&self) -> u64 {
+        self.sequence_rx
     }
 }
 
@@ -232,12 +252,12 @@ mod tests {
     fn encrypt_and_decrypt() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let alice_curve25519_pk = alice_ekp.public();
+        let alice_id = Identifier::Referenced(alice_skp.public());
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let bob_curve25519_pk = bob_ekp.public();
+        let bob_id = Identifier::Referenced(bob_skp.public());
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
 
         alice_acc
@@ -248,7 +268,7 @@ mod tests {
 
         // encrypt a message from bob with a new session to alice
         let mut bobs_session_with_alice = bob_acc
-            .create_outbound_session(&alice_curve25519_pk, &alices_one_time_keys[0])
+            .create_outbound_session(alice_id.clone(), &alices_one_time_keys[0])
             .expect("failed to create outbound session");
 
         let (mtype, mut bobs_message_to_alice_1) = bobs_session_with_alice
@@ -259,7 +279,7 @@ mod tests {
 
         // create alices session with bob from bobs first message
         let mut alices_session_with_bob = alice_acc
-            .create_inbound_session(&bob_curve25519_pk, &bobs_message_to_alice_1)
+            .create_inbound_session(bob_id.clone(), &bobs_message_to_alice_1)
             .expect("failed to create inbound session");
 
         // remove the one time key from alices account
@@ -285,7 +305,7 @@ mod tests {
 
         // check it's intended for the session alice currently has with bob
         let matches = alices_session_with_bob
-            .matches_inbound_session(&bob_curve25519_pk, &bobs_message_to_alice_2)
+            .matches_inbound_session(&bobs_message_to_alice_2)
             .expect("failed to check if one time key message matches session");
 
         assert!(matches);
@@ -322,12 +342,12 @@ mod tests {
     fn serialize_and_deserialize() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let alice_curve25519_pk = alice_ekp.public();
+        let alice_id = Identifier::Owned(alice_skp.clone());
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let bob_curve25519_pk = bob_ekp.public();
+        let bob_id = Identifier::Owned(bob_skp.clone());
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
 
         alice_acc
@@ -338,7 +358,7 @@ mod tests {
 
         // encrypt a message from bob with a new session to alice
         let mut bobs_session_with_alice = bob_acc
-            .create_outbound_session(&alice_curve25519_pk, &alices_one_time_keys[0])
+            .create_outbound_session(alice_id.clone(), &alices_one_time_keys[0])
             .expect("failed to create outbound session");
 
         let (mtype, mut bobs_message_to_alice_1) = bobs_session_with_alice
@@ -349,7 +369,7 @@ mod tests {
 
         // create alices session with bob from bobs first message
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(&bob_curve25519_pk, &bobs_message_to_alice_1)
+            .create_inbound_session(bob_id.clone(), &bobs_message_to_alice_1)
             .expect("failed to create inbound session");
 
         let mut alices_session_with_bob_pickle = alices_session_with_bob
@@ -357,6 +377,10 @@ mod tests {
             .expect("failed to pickle session");
 
         let mut alices_session_with_bob = Session::from_pickle(
+            alice_id,
+            bob_id,
+            0,
+            0,
             &mut alices_session_with_bob_pickle,
             Some("password".as_bytes()),
         )

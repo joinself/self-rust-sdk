@@ -1,6 +1,7 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
-use crate::keypair::exchange::{self, KeyPair as ExchangeKeyPair};
+use crate::identifier::Identifier;
+use crate::keypair::exchange::KeyPair as ExchangeKeyPair;
 use crate::keypair::signing::KeyPair as SigningKeyPair;
 
 use olm_sys::*;
@@ -10,6 +11,7 @@ use std::collections::HashMap;
 
 pub struct Account {
     account: *mut OlmAccount,
+    identifier: Identifier,
 }
 
 #[derive(Deserialize)]
@@ -19,6 +21,7 @@ struct OneTimeKeys {
 
 impl Account {
     pub fn new(signing_keypair: SigningKeyPair, exchange_keypair: ExchangeKeyPair) -> Account {
+        let identifier = Identifier::Owned(signing_keypair.clone());
         let mut ed25519_secret_key = signing_keypair.to_vec();
         let mut ed25519_public_key = signing_keypair.public().id();
         let mut curve25519_secret_key = exchange_keypair.to_vec();
@@ -37,11 +40,18 @@ impl Account {
                 curve25519_public_key.as_mut_ptr() as *mut libc::c_void,
             );
 
-            Account { account }
+            Account {
+                account,
+                identifier,
+            }
         }
     }
 
-    pub fn from_pickle(pickle: &mut [u8], password: Option<&[u8]>) -> Result<Account, SelfError> {
+    pub fn from_pickle(
+        pickle: &mut [u8],
+        identifier: Identifier,
+        password: Option<&[u8]>,
+    ) -> Result<Account, SelfError> {
         unsafe {
             let account_len = olm_account_size() as usize;
             let account_buf = vec![0_u8; account_len].into_boxed_slice();
@@ -61,7 +71,10 @@ impl Account {
                 pickle.len() as u64,
             );
 
-            let account = Account { account };
+            let account = Account {
+                account,
+                identifier,
+            };
 
             account.last_error()?;
 
@@ -172,12 +185,17 @@ impl Account {
 
     pub fn create_inbound_session(
         &mut self,
-        identity_key: &exchange::PublicKey,
+        with_identifier: Identifier,
         one_time_message: &[u8],
     ) -> Result<Session, SelfError> {
-        let session = Session::new();
+        let identity_key = match with_identifier {
+            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
+            Identifier::Referenced(pk) => pk.to_exchange_key()?,
+        };
 
         let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
+
+        let session = Session::new(self.identifier.clone(), with_identifier);
 
         unsafe {
             let mut one_time_message_buf = one_time_message.to_owned();
@@ -199,12 +217,17 @@ impl Account {
 
     pub fn create_outbound_session(
         &mut self,
-        identity_key: &exchange::PublicKey,
+        with_identifier: Identifier,
         one_time_key: &[u8],
     ) -> Result<Session, SelfError> {
-        let session = Session::new();
+        let identity_key = match with_identifier {
+            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
+            Identifier::Referenced(pk) => pk.to_exchange_key()?,
+        };
 
         let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
+
+        let session = Session::new(self.identifier.clone(), with_identifier);
 
         unsafe {
             let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());
@@ -327,6 +350,7 @@ mod tests {
         let ekp = crate::keypair::exchange::KeyPair::new();
         let spk = skp.public().id();
         let epk = ekp.public().id();
+        let idf = Identifier::Referenced(skp.public());
         let acc = Account::new(skp, ekp);
 
         // try pickle with both password and no password
@@ -335,7 +359,7 @@ mod tests {
             .pickle(Some("my-password".as_bytes()))
             .expect("failed to pickle account");
 
-        let acc = Account::from_pickle(&mut pickle, Some("my-password".as_bytes()))
+        let acc = Account::from_pickle(&mut pickle, idf, Some("my-password".as_bytes()))
             .expect("failed to unpickle account");
 
         let identity_keys_json = acc.identity_keys();

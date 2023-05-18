@@ -1,7 +1,11 @@
+use libc::group;
 use rusqlite::{Connection, Result, Transaction};
 
-use crate::crypto::omemo::GroupMessage;
-use crate::crypto::{account::Account, omemo::Group, session::Session};
+use crate::crypto::{
+    account::Account,
+    omemo::{Group, GroupMessage},
+    session::Session,
+};
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::{KeyPair, PublicKey};
@@ -9,19 +13,17 @@ use crate::keypair::Usage;
 use crate::token::Token;
 use crate::transport::websocket::Subscription;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 pub struct Storage {
     conn: Connection,
-    acache: HashMap<Identifier, Arc<Mutex<Account>>>,
-    gcache: HashMap<Identifier, Arc<Mutex<Group>>>,
-    kcache: HashMap<Identifier, Arc<KeyPair>>,
-    scache: HashMap<Identifier, Arc<Mutex<Vec<(Identifier, Session)>>>>,
+    acache: HashMap<Identifier, Rc<RefCell<Account>>>,
+    gcache: HashMap<Identifier, Rc<RefCell<Group>>>,
+    kcache: HashMap<Identifier, Rc<KeyPair>>,
+    scache: HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
 }
-
-unsafe impl Send for Storage {}
-unsafe impl Sync for Storage {}
 
 // This whole implementation is horrible and only temporary...
 // mutiple tables and caches are accessed for some higher level
@@ -51,7 +53,6 @@ impl Storage {
         storage.setup_connections_table()?;
         storage.setup_sessions_table()?;
         storage.setup_tokens_table()?;
-        storage.setup_members_table()?;
         storage.setup_credentials_table()?;
         storage.setup_inbox_table()?;
         storage.setup_outbox_table()?;
@@ -129,11 +130,12 @@ impl Storage {
                 "CREATE TABLE connections (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     as_identifier INTEGER NOT NULL,
+                    via_identifier INTEGER NOT NULL,
                     with_identifier INTEGER NOT NULL,
                     connected_on INTEGER NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_connections_connection
-                ON connections (as_identifier, with_identifier);",
+                ON connections (as_identifier, via_identifier, with_identifier);",
                 (),
             )
             .map_err(|err| {
@@ -150,14 +152,13 @@ impl Storage {
                 "CREATE TABLE sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     as_identifier INTEGER NOT NULL,
-                    for_identifier INTEGER NOT NULL,
                     with_identifier INTEGER NOT NULL,
                     sequence_tx INTEGER,
                     sequence_rx INTEGER,
-                    olm_session BLOB
+                    olm_session BLOB NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_sessions_with_identifier
-                ON sessions (as_identifier, for_identifier, with_identifier);",
+                ON sessions (as_identifier, with_identifier);",
                 (),
             )
             .map_err(|err| {
@@ -180,26 +181,6 @@ impl Storage {
                 );
                 CREATE UNIQUE INDEX idx_tokens_from
                 ON tokens (from_identifier, for_identifier, purpose);",
-                (),
-            )
-            .map_err(|err| {
-                println!("sql error: {}", err);
-                SelfError::StorageTableCreationFailed
-            })?;
-
-        Ok(())
-    }
-
-    fn setup_members_table(&mut self) -> Result<(), SelfError> {
-        self.conn
-            .execute(
-                "CREATE TABLE members (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    group_identifier INTEGER NOT NULL,
-                    member_identifier INTEGER NOT NULL
-                );
-                CREATE UNIQUE INDEX idx_members_membership
-                ON members (group_identifier, member_identifier);",
                 (),
             )
             .map_err(|err| {
@@ -307,7 +288,7 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCommitFailed)
     }
 
-    pub fn keypair_get(&mut self, identifier: &Identifier) -> Result<Arc<KeyPair>, SelfError> {
+    pub fn keypair_get(&mut self, identifier: &Identifier) -> Result<Rc<KeyPair>, SelfError> {
         // check if the key exists in the cache
         if let Some(kp) = self.kcache.get(identifier) {
             return Ok(kp.clone());
@@ -345,7 +326,7 @@ impl Storage {
 
         let kp_encoded: Vec<u8> = row.get(3).unwrap();
         let kp = KeyPair::decode(&kp_encoded)?;
-        let keypair = Arc::new(kp);
+        let keypair = Rc::new(kp);
 
         self.kcache.insert(identifier.clone(), keypair.clone());
 
@@ -420,7 +401,7 @@ impl Storage {
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        self.kcache.insert(identifier, Arc::new(keypair.clone()));
+        self.kcache.insert(identifier, Rc::new(keypair.clone()));
 
         Ok(())
     }
@@ -441,7 +422,7 @@ impl Storage {
             let mut statement = txn
                 .prepare(
                     "SELECT keypair FROM keypairs
-                WHERE usage = ?1 AND persistent = ?2;",
+                    WHERE usage = ?1 AND persistent = ?2;",
                 )
                 .expect("failed to prepare statement");
 
@@ -463,7 +444,7 @@ impl Storage {
             let mut statement = txn
                 .prepare(
                     "SELECT keypair FROM keypairs
-                WHERE persistent = ?1;",
+                    WHERE persistent = ?1;",
                 )
                 .expect("failed to prepare statement");
 
@@ -564,297 +545,6 @@ impl Storage {
         Ok(subscriptions)
     }
 
-    /// get
-    pub fn session_get(
-        &mut self,
-        transaction: &mut Transaction<'_>,
-        as_identifier: &Identifier,
-        with_identifier: &Identifier,
-    ) -> Result<Arc<Mutex<Session>>, SelfError> {
-        // check if the session exists in the cache
-        if let Some(session) = self.scache.get(with_identifier) {
-
-
-
-
-            return Ok(session.clone());
-        };
-
-        let mut statement = transaction
-            .prepare(
-                "SELECT olm_session FROM identifiers
-                INNER JOIN sessions ON
-                    sessions.with_identifier = identifiers.id
-				WHERE identifier = ?1",
-            )
-            .expect("failed to prepare statement");
-
-        let mut rows = match statement.query([&with_identifier.id()]) {
-            Ok(rows) => rows,
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-        };
-
-        let row = match rows.next() {
-            Ok(row) => match row {
-                Some(row) => row,
-                None => return Err(SelfError::StorageSessionNotFound),
-            },
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-        };
-
-        let mut session_encoded: Vec<u8> = row.get(0).unwrap();
-
-        // TODO handle encryption for values
-        let session = Session::from_pickle(&mut session_encoded, None)?;
-        let s = Arc::new(Mutex::new(session));
-        self.scache.insert(with_identifier.clone(), s.clone());
-
-        Ok(s)
-    }
-
-    pub fn session_create(
-        &mut self,
-        as_identifier: &Identifier,
-        with_identifier: &Identifier,
-        session: Option<Session>,
-    ) -> Result<(), SelfError> {
-        // check if the session exists in the cache
-        if self.scache.contains_key(with_identifier) {
-            return Err(SelfError::KeychainKeyExists);
-        };
-
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        // TODO handle encryption for values
-        if let Some(s) = session {
-            let session_encoded = s.pickle(None)?;
-
-            txn.execute(
-                "INSERT INTO sessions (as_identifier, with_identifier, olm_session)
-                VALUES (
-                    (SELECT id FROM identifiers WHERE identifier=?1),
-                    (SELECT id FROM identifiers WHERE identifier=?2),
-                    ?3
-                );",
-                (&as_identifier.id(), &with_identifier.id(), session_encoded),
-            )
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-            self.scache
-                .insert(with_identifier.clone(), Arc::new(Mutex::new(s)));
-
-            txn.commit()
-                .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-            return Ok(());
-        }
-        txn.execute(
-            "INSERT INTO sessions (as_identifier, with_identifier)
-            VALUES (
-                (SELECT id FROM identifiers WHERE identifier=?1),
-                (SELECT id FROM identifiers WHERE identifier=?2)
-            );",
-            (&as_identifier.id(), &with_identifier.id()),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        Ok(())
-    }
-
-    pub fn session_create_from_prekey(
-        &mut self,
-        as_identifier: &Identifier,
-        with_identifier: &Identifier,
-        prekey: &[u8],
-    ) -> Result<(), SelfError> {
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        // create an record for the identifier we are creating a session with
-        if txn
-            .execute(
-                "INSERT INTO identifiers (identifier) VALUES (?1)",
-                [&with_identifier.id()],
-            )
-            .is_err()
-        {
-            return Err(SelfError::StorageTransactionCommitFailed);
-        }
-
-        // check if the account exists in the cache or load it from the db
-        let account = match self.acache.get(as_identifier) {
-            Some(account) => account.clone(),
-            None => {
-                let mut statement = txn
-                    .prepare(
-                        "SELECT olm_account FROM keypairs
-                        INNER JOIN identifiers ON
-                            keypairs.for_identifier = identifiers.id
-                        WHERE identifiers.identifier = ?1;",
-                    )
-                    .expect("failed to prepare statement");
-
-                let mut rows = match statement.query([&as_identifier.id()]) {
-                    Ok(rows) => rows,
-                    Err(err) => {
-                        println!("{}", err);
-                        return Err(SelfError::StorageTransactionCommitFailed);
-                    }
-                };
-
-                let row = match rows.next() {
-                    Ok(row) => match row {
-                        Some(row) => row,
-                        None => return Err(SelfError::KeychainKeyNotFound),
-                    },
-                    Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
-                };
-
-                let mut acc_encoded: Vec<u8> = row.get(0).unwrap();
-                let acc = Account::from_pickle(&mut acc_encoded, None)?;
-                let account = Arc::new(Mutex::new(acc));
-
-                self.acache.insert(as_identifier.clone(), account.clone());
-
-                account
-            }
-        };
-
-        let with_identifier_curve25519 = match with_identifier {
-            Identifier::Referenced(pk) => pk.to_exchange_key()?,
-            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
-        };
-
-        let mut account = account.lock().unwrap();
-        let session = account.create_outbound_session(&with_identifier_curve25519, prekey)?;
-
-        let account_encoded = account.pickle(None)?;
-        let session_encoded = session.pickle(None)?;
-
-        txn.execute(
-            "UPDATE keypairs
-            SET olm_account = ?2
-            WHERE id = (
-                SELECT keypairs.id FROM keypairs
-                JOIN identifiers i1 ON
-                    i1.id = keypairs.for_identifier
-                WHERE i1.identifier = ?1
-            );",
-            (&as_identifier.id(), account_encoded),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.execute(
-            "INSERT INTO sessions (as_identifier, with_identifier, olm_session)
-            VALUES (
-                (SELECT id FROM identifiers WHERE identifier=?1),
-                (SELECT id FROM identifiers WHERE identifier=?2),
-                ?3
-            );",
-            (&as_identifier.id(), &with_identifier.id(), session_encoded),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        self.scache
-            .insert(with_identifier.clone(), Arc::new(Mutex::new(session)));
-
-        Ok(())
-    }
-
-    pub fn group_get(&mut self, group: &Identifier) -> Result<Arc<Mutex<Group>>, SelfError> {
-        // lookup or load omemo group from group cache
-        if let Some(grp) = self.gcache.get(group) {
-            return Ok(grp.clone());
-        };
-
-        let mut members = Vec::new();
-        let mut as_identifier: Option<Vec<u8>> = None;
-
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        let mut statement = txn
-            .prepare(
-                "SELECT i2.identifier, i3.identifier, s1.olm_session FROM members
-                JOIN identifiers i1 ON
-                    i1.id = members.group_identifier
-                JOIN identifiers i2 ON
-                    i2.id = members.member_identifier
-                JOIN sessions s1 ON
-                    i2.id = s1.with_identifier
-				JOIN identifiers i3 ON
-                    i3.id = s1.as_identifier
-				WHERE i1.identifier = ?1",
-            )
-            .expect("failed to prepare statement");
-
-        let mut rows = match statement.query([&group.id()]) {
-            Ok(rows) => rows,
-            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-        };
-
-        while let Some(row) = rows
-            .next()
-            .map_err(|_| SelfError::MessagingDestinationUnknown)?
-        {
-            let with_identifier: Vec<u8> = row.get(0).unwrap();
-            let mut session: Vec<u8> = row.get(2).unwrap();
-
-            if as_identifier.is_none() {
-                as_identifier = row.get(1).unwrap();
-            }
-
-            let public_key =
-                PublicKey::from_bytes(&with_identifier, crate::keypair::Algorithm::Ed25519)?;
-
-            let identifier = Identifier::Referenced(public_key);
-
-            let session = match self.scache.get(&identifier) {
-                Some(session) => session.clone(),
-                None => {
-                    let s = Arc::new(Mutex::new(Session::from_pickle(&mut session, None)?));
-                    self.scache.insert(identifier, s.clone());
-                    s.clone()
-                }
-            };
-
-            members.push((with_identifier, session))
-        }
-
-        let identifier = match as_identifier {
-            Some(identifier) => identifier,
-            None => return Err(SelfError::MessagingDestinationUnknown),
-        };
-
-        let mut omemo_group = Group::new(&identifier);
-
-        for member in &members {
-            omemo_group.add_participant(&member.0, member.1.clone());
-        }
-
-        // TODO avoid the need for locking the group
-        // by implementing a read only copy of the
-        // group members list via a concurrent hashmap
-        // like dashmap or a lock free linked list
-        let grp = Arc::new(Mutex::new(omemo_group));
-        self.gcache.insert(group.clone(), grp.clone());
-
-        Ok(grp)
-    }
-
     pub fn token_create(
         &mut self,
         from_identifier: &Identifier,
@@ -894,107 +584,26 @@ impl Storage {
         Ok(())
     }
 
-    pub fn member_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
-        // check the session exists and assume it's been pre-created
-        // before adding a member to the group
-        let session = self.session_get(member)?;
-
-        // create the membership
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        txn.execute(
-            "INSERT INTO members (group_identifier, member_identifier) 
-                VALUES (
-                    (SELECT id FROM identifiers WHERE identifier=?1),
-                    (SELECT id FROM identifiers WHERE identifier=?2)
-                );",
-            (&group.id(), &member.id()),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        // if the group exists, update the member list
-        if let Some(grp) = self.gcache.get(group) {
-            grp.lock().unwrap().add_participant(&member.id(), session);
-        }
-
-        Ok(())
-    }
-
-    pub fn member_remove(
+    pub fn connection_add(
         &mut self,
-        group: &Identifier,
-        member: &Identifier,
+        with_identifier: &Identifier,
+        as_identifier: &Identifier,
+        via_identifier: Option<&Identifier>,
     ) -> Result<(), SelfError> {
-        // remove the membership
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        txn.execute(
-            "DELETE FROM members (group_identifier, member_identifier) 
-                JOIN identifiers i1 ON
-                    i1.id = members.group_identifier
-                JOIN identifiers i2 ON
-                    i2.id = members.member_identifier
-                WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
-            (&group.id(), &member.id()),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        // if the group exists, update the member list
-        if let Some(grp) = self.gcache.get(group) {
-            grp.lock().unwrap().remove_participant(&member.id());
-        }
-
         Ok(())
     }
 
-    pub fn outbox_queue(
+    pub fn connection_remove(
         &mut self,
-        recipient: &Identifier,
-        sequence: u64,
-        ciphertext: &[u8],
+        with_identifier: &Identifier,
+        as_identifier: &Identifier,
+        via_identifier: Option<&Identifier>,
     ) -> Result<(), SelfError> {
-        // add the encrypted message to the outbox
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        txn.execute(
-            "INSERT INTO outbox (session, sequence, message)
-                VALUES (
-                    (
-                        SELECT sessions.id FROM sessions
-                        JOIN identifiers i1 ON
-                            i1.id = sessions.with_identifier
-                        WHERE i1.identifier=?1
-                    ),
-                    ?2,
-                    ?3
-                );",
-            (&recipient.id(), sequence, ciphertext),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
         Ok(())
     }
 
-    pub fn outbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
-        // get the next item in the outbox to be sent to the server
+    pub fn inbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
+        // get the next item in the inbox to be sent to the server
         let txn = self
             .conn
             .transaction()
@@ -1002,12 +611,12 @@ impl Storage {
 
         let mut statement = txn
             .prepare(
-                "SELECT i1.identifier, sequence, message FROM outbox
+                "SELECT i1.identifier, sequence, message FROM inbox
                 JOIN sessions s1 ON
-                    s1.id = outbox.session
+                    s1.id = inbox.session
                 JOIN identifiers i1 ON
                     i1.id = s1.with_identifier
-                ORDER BY outbox.id ASC LIMIT 1;",
+                ORDER BY inbox.id ASC LIMIT 1;",
             )
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
@@ -1037,42 +646,8 @@ impl Storage {
         )))
     }
 
-    pub fn inbox_queue(
-        &mut self,
-        sender: &Identifier,
-        sequence: u64,
-        plaintext: &[u8],
-    ) -> Result<(), SelfError> {
-        // add the encrypted message to the inbox
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        txn.execute(
-            "INSERT INTO inbox (session, sequence, message)
-                VALUES (
-                    (
-                        SELECT sessions.id FROM sessions
-                        JOIN identifiers i1 ON
-                            i1.id = sessions.with_identifier
-                        WHERE i1.identifier=?1
-                    ),
-                    ?2,
-                    ?3
-                );",
-            (&sender.id(), sequence, plaintext),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        Ok(())
-    }
-
-    pub fn inbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
-        // get the next item in the inbox to be sent to the server
+    pub fn outbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
+        // get the next item in the outbox to be sent to the server
         let txn = self
             .conn
             .transaction()
@@ -1080,12 +655,12 @@ impl Storage {
 
         let mut statement = txn
             .prepare(
-                "SELECT i1.identifier, sequence, message FROM inbox
+                "SELECT i1.identifier, sequence, message FROM outbox
                 JOIN sessions s1 ON
-                    s1.id = inbox.session
+                    s1.id = outbox.session
                 JOIN identifiers i1 ON
                     i1.id = s1.with_identifier
-                ORDER BY inbox.id ASC LIMIT 1;",
+                ORDER BY outbox.id ASC LIMIT 1;",
             )
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
@@ -1176,239 +751,251 @@ impl Storage {
         recipient: &Identifier,
         plaintext: &[u8],
     ) -> Result<(Identifier, u64, Vec<u8>), SelfError> {
-        let grp = self.group_get(recipient)?;
-        let mut grp_lock = grp.lock().unwrap();
-        let gm = grp_lock.encrypt_group_message(plaintext)?;
-
-        let sender_identifier = Identifier::Referenced(PublicKey::from_bytes(
-            &grp_lock.id(),
-            crate::keypair::Algorithm::Ed25519,
-        )?);
-
-        let sender_identifier =
-            Identifier::Owned(self.keypair_get(&sender_identifier)?.as_ref().clone());
-
         let txn = self
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        for m in &gm.recipients() {
-            let mid = Identifier::Referenced(PublicKey::from_bytes(
-                m,
-                crate::keypair::Algorithm::Ed25519,
-            )?);
-
-            let olm_session = self.scache.get(&mid).unwrap();
-            let olm_session_encoded = olm_session.lock().unwrap().pickle(None)?;
-
-            txn.execute(
-                "UPDATE sessions
-                SET sequence_tx = ?2, olm_session = ?3
-                WHERE id = (
-                    SELECT sessions.id FROM sessions
-                    JOIN identifiers i1 ON
-                        i1.id = sessions.with_identifier
-                    WHERE i1.identifier = ?1
-                );",
-                (&recipient.id(), 0, olm_session_encoded),
-            )
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-        }
-
-        let message = gm.encode();
-
-        // TODO set the correct sequence here!
-        txn.execute(
-            "INSERT INTO outbox (session, sequence, message)
-            VALUES (
-                (
-                    SELECT sessions.id FROM sessions
-                    JOIN identifiers i1 ON
-                        i1.id = sessions.with_identifier
-                    WHERE i1.identifier=?1
-                ),
-                ?2,
-                ?3
-            );",
-            (&recipient.id(), 0, &message),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
         // TODO correctly select and return the rigth sequence
-        Ok((sender_identifier, 0, gm.encode()))
+        Ok((sender_identifier, sequence, gm.encode()))
     }
 
     pub fn decrypt_and_queue(
         &mut self,
         sender: &Identifier,
         recipient: &Identifier,
-        sequence: u64,
         is_group: bool,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, SelfError> {
-        let mut gm = GroupMessage::decode(ciphertext)?;
-
-
-        self.session_get(with_identifier)
-        /*
-        let group = if is_group {
-            // lookup or load omemo group from group cache
-            match self.gcache.get(recipient) {
-                Some(group) => group.clone(),
-                None => { 
-                    let mut members = Vec::new();
-                    let mut as_identifier: Option<Vec<u8>> = None;
-            
-                    let txn = self
-                        .conn
-                        .transaction()
-                        .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-            
-                    let mut statement = txn
-                        .prepare(
-                            "SELECT i2.identifier, i3.identifier, s1.olm_session FROM members
-                            JOIN identifiers i1 ON
-                                i1.id = members.group_identifier
-                            JOIN identifiers i2 ON
-                                i2.id = members.member_identifier
-                            JOIN sessions s1 ON
-                                i2.id = s1.with_identifier
-                            JOIN identifiers i3 ON
-                                i3.id = s1.as_identifier
-                            WHERE i1.identifier = ?1",
-                        )
-                        .expect("failed to prepare statement");
-            
-                    let mut rows = match statement.query([&recipient.id()]) {
-                        Ok(rows) => rows,
-                        Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-                    };
-            
-                    while let Some(row) = rows
-                        .next()
-                        .map_err(|_| SelfError::MessagingDestinationUnknown)? 
-                    {
-                        let with_identifier: Vec<u8> = row.get(0).unwrap();
-                        let mut session: Vec<u8> = row.get(2).unwrap();
-            
-                        if as_identifier.is_none() {
-                            as_identifier = row.get(1).unwrap();
-                        }
-            
-                        let public_key =
-                            PublicKey::from_bytes(&with_identifier, crate::keypair::Algorithm::Ed25519)?;
-            
-                        let identifier = Identifier::Referenced(public_key);
-            
-                        let session = match self.scache.get(&identifier) {
-                            Some(session) => session.clone(),
-                            None => {
-                                let s = Arc::new(Mutex::new(Session::from_pickle(&mut session, None)?));
-                                self.scache.insert(identifier, s.clone());
-                                s.clone()
-                            }
-                        };
-    
-                        if let Some(one_time_message) = gm.one_time_key_message(&recipient.id()) {
-                            if let Identifier::Referenced(pk) = sender {
-                                let s = session.lock().unwrap();
-                                if !s.matches_inbound_session(&pk.to_exchange_key()?, &one_time_message)? {
-    
-                                }
-                                drop(s);
-                            }
-                        }
-            
-                        members.push((with_identifier, session))
-                    }
-            
-                    let identifier = match as_identifier {
-                        Some(identifier) => identifier,
-                        None => return Err(SelfError::MessagingDestinationUnknown),
-                    };
-            
-                    let mut omemo_group = Group::new(&identifier);
-            
-                    for member in &members {
-                        omemo_group.add_participant(&member.0, member.1.clone());
-                    }
-            
-                    // TODO avoid the need for locking the group
-                    // by implementing a read only copy of the
-                    // group members list via a concurrent hashmap
-                    // like dashmap or a lock free linked list
-                    let grp = Arc::new(Mutex::new(omemo_group));
-                    self.gcache.insert(group.clone(), grp.clone());
-                }
-            };
-        } else {
-
-        };
-
-        /
-
-
-
-        if let Some(grp) = self.gcache.get(group) {
-            return Ok(grp.clone());
-        };
-
-        */
-        
-    
-        gm.one_time_key_message(&recipient.id());
-
-        let grp = self.group_get(recipient)?;
-        let mut grp_lock = grp.lock().unwrap();
-        let plaintext = grp_lock.decrypt_group_message(&sender.id(), &mut gm)?;
-
         let txn = self
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        let olm_session = self.scache.get(sender).unwrap();
-        let olm_session_encoded = olm_session.lock().unwrap().pickle(None)?;
+        // decrypt from
 
-        // TODO handle out of order messages...
+        // queue to inbox
+    }
+
+    pub fn encrypt_for(
+        &mut self,
+        txn: &mut Transaction,
+        recipient: &Identifier,
+        plaintext: &[u8],
+    ) -> Result<(Identifier, u64, Vec<u8>), SelfError> {
+        // search cache for group
+        let mut group = match self.group_get(txn, recipient)? {
+            Some(group) => group.as_ref().borrow(),
+            None => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        // encrypt the group message
+        let ciphertext = group.encrypt(plaintext)?;
+
+        // update each session in the group
+        for session in group.participants() {
+            self.session_update(txn, session)?;
+        }
+
+        // update connection transmit sequence
+        self.metrics_update_sequence(txn, &group.as_identifier(), recipient, group.sequence())?;
+
+        Ok((group.as_identifier(), group.sequence(), ciphertext))
+    }
+
+    pub fn decrypt_from(
+        &mut self,
+        txn: &mut Transaction,
+        sender: &Identifier,
+        recipient: &Identifier,
+    ) {
+    }
+
+    fn group_get(
+        &mut self,
+        txn: &mut Transaction,
+        group_identifier: &Identifier,
+    ) -> Result<Option<Rc<RefCell<Group>>>, SelfError> {
+        // check the cache first to determine if there is an existing group that can be reused to send messages
+        if let Some(group) = self.gcache.get(group_identifier) {
+            return Ok(Some(group.clone()));
+        };
+
+        let mut sessions = Vec::new();
+
+        // query all connections for the destination that matches the 'via' identifier
+        // and join all matching sessions
+        let mut statement = txn
+            .prepare(
+                "SELECT i2.identifier, i3.identifier, s1.sequence_tx, s1.sequence_rx, s1.olm_session FROM connections
+                JOIN identifiers i1 ON
+                    i1.id = connections.via_identifier
+                JOIN identifiers i2 ON
+                    i2.id = connections.as_identifier
+                JOIN identifiers i3 ON
+                    i3.id = connections.with_identifier
+                JOIN sessions s1 ON
+                    i2.id = s1.as_identifier AND i3.id = s1.with_identifier
+                WHERE i1.identifier = ?1;",
+            )
+            .expect("failed to prepare statement");
+
+        let mut rows = match statement.query([&group_identifier.id()]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        // loop over all connections and build list of sessions that comprise the group
+        while let Some(row) = rows
+            .next()
+            .map_err(|_| SelfError::MessagingDestinationUnknown)?
+        {
+            let as_identifier: Vec<u8> = row.get(0).unwrap();
+            let with_identifier: Vec<u8> = row.get(1).unwrap();
+            let sequence_tx: u64 = row.get(2).unwrap();
+            let sequence_rx: u64 = row.get(3).unwrap();
+            let mut session: Vec<u8> = row.get(4).unwrap();
+
+            let as_identifier = Identifier::Referenced(PublicKey::from_bytes(
+                &as_identifier,
+                crate::keypair::Algorithm::Ed25519,
+            )?);
+
+            let with_identifier = Identifier::Referenced(PublicKey::from_bytes(
+                &with_identifier,
+                crate::keypair::Algorithm::Ed25519,
+            )?);
+
+            let session_identifier = (as_identifier.clone(), with_identifier.clone());
+
+            // check to see if we have an existing session in our cache that we can use directly
+            let session = self
+                .scache
+                .get(&session_identifier)
+                .unwrap_or({
+                    // if there is no session in the cache, use the session from the query and add it to the cache
+                    let s = Rc::new(RefCell::new(Session::from_pickle(
+                        as_identifier.clone(),
+                        with_identifier.clone(),
+                        sequence_tx,
+                        sequence_rx,
+                        &mut session,
+                        None,
+                    )?));
+
+                    self.scache.insert(session_identifier, s.clone());
+
+                    &s
+                })
+                .clone();
+
+            sessions.push(session)
+        }
+
+        if let Some(session) = sessions.first() {
+            // get the latest sequence number for sending messages to the group
+            let sequence = self.metrics_get_sequence(
+                txn,
+                session.as_ref().borrow().as_identifier(),
+                session.as_ref().borrow().with_identifier(),
+            )?;
+
+            let group = Rc::new(RefCell::new(Group::new(
+                session.as_ref().borrow().as_identifier().clone(),
+                sequence,
+            )));
+
+            self.gcache.insert(group_identifier.clone(), group.clone());
+
+            return Ok(Some(group));
+        }
+
+        Ok(None)
+    }
+
+    fn session_update(
+        &mut self,
+        txn: &mut Transaction,
+        session: &Rc<RefCell<Session>>,
+    ) -> Result<(), SelfError> {
+        let session = session.as_ref().borrow();
+        let encoded_session = session.pickle(None)?;
 
         txn.execute(
             "UPDATE sessions
-            SET sequence_rx = ?2, olm_session = ?3
-            WHERE id = (
-                SELECT sessions.id FROM sessions
+            SET sequence_tx = ?3, sequence_rx = ?4, olm_session = ?5
+            OIN identifiers i1 ON
+                i1.id = sessions.as_identifier
+            JOIN identifiers i2 ON
+                i2.id = sessions.with_identifier
+            WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
+            (
+                &session.as_identifier().id(),
+                &session.with_identifier().id(),
+                session.sequence_tx(),
+                session.sequence_rx(),
+                encoded_session,
+            ),
+        )
+        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+        Ok(())
+    }
+
+    fn metrics_get_sequence(
+        &mut self,
+        txn: &mut Transaction,
+        as_identifier: &Identifier,
+        with_identifier: &Identifier,
+    ) -> Result<u64, SelfError> {
+        // get the metrcis (transmission sequence) for the recipient group
+        let mut statement = txn
+            .prepare(
+                "SELECT sequence FROM metrics
                 JOIN identifiers i1 ON
-                    i1.id = sessions.with_identifier
-                WHERE i1.identifier = ?1
-            );",
-            (&sender.id(), sequence, olm_session_encoded),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+                    i1.id = metrics.as_identifier
+                JOIN identifiers i2 ON
+                    i2.id = metrics.with_identifier
+                WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
+            )
+            .expect("failed to prepare statement");
 
+        let mut rows = match statement.query([&as_identifier.id(), &with_identifier.id()]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        match rows.next() {
+            Ok(row) => match row {
+                Some(row) => row
+                    .get(0)
+                    .map_err(|_| SelfError::StorageTransactionCommitFailed),
+                None => Err(SelfError::MessagingDestinationUnknown),
+            },
+            Err(_) => Err(SelfError::StorageTransactionCommitFailed),
+        }
+    }
+
+    fn metrics_update_sequence(
+        &mut self,
+        txn: &mut Transaction,
+        as_identifier: &Identifier,
+        with_identifier: &Identifier,
+        sequence: u64,
+    ) -> Result<(), SelfError> {
         txn.execute(
-            "INSERT INTO inbox (session, sequence, message)
-            VALUES (
-                (
-                    SELECT sessions.id FROM sessions
-                    JOIN identifiers i1 ON
-                        i1.id = sessions.with_identifier
-                    WHERE i1.identifier=?1
-                ),
-                ?2,
-                ?3
-            );",
-            (&sender.id(), sequence, &plaintext),
+            "UPDATE metrics
+            SET sequence = ?3
+            JOIN identifiers i1 ON
+                i1.id = metrics.as_identifier
+            JOIN identifiers i2 ON
+                i2.id = metrics.with_identifier
+            WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
+            (&as_identifier.id(), &with_identifier.id(), sequence),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        Ok(plaintext)
+        Ok(())
     }
 }
 
@@ -2095,19 +1682,11 @@ mod tests {
     }
 
     #[test]
-    fn receive_message_from_new_identifier() {
-
-    }
+    fn receive_message_from_new_identifier() {}
 
     #[test]
-    fn receive_message_from_existing_identifier() {
-        
-    }
+    fn receive_message_from_existing_identifier() {}
 
     #[test]
-    fn receive_group_message_from_identifier() {
-        
-    }
-
-    
+    fn receive_group_message_from_identifier() {}
 }
