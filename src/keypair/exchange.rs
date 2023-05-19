@@ -90,9 +90,9 @@ impl KeyPair {
         Ok(KeyPair {
             public_key: PublicKey {
                 algorithm: Algorithm::Curve25519,
-                bytes: secret_key,
+                bytes: public_key,
             },
-            secret_key: SecretKey { bytes: public_key },
+            secret_key: SecretKey { bytes: secret_key },
         })
     }
 

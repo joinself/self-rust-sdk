@@ -192,18 +192,12 @@ impl Account {
         with_identifier: Identifier,
         one_time_message: &[u8],
     ) -> Result<Session, SelfError> {
-        println!(
-            "with_identifier: {}",
-            base64::encode_config(with_identifier.id(), base64::STANDARD_NO_PAD)
-        );
-
         let identity_key = match with_identifier.clone() {
             Identifier::Owned(kp) => kp.public().to_exchange_key()?,
             Identifier::Referenced(pk) => pk.to_exchange_key()?,
         };
 
         let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
-        println!("converted key... {}", identity_key_buf);
 
         let session = Session::new(self.identifier.clone(), with_identifier);
 
