@@ -282,7 +282,7 @@ impl Websocket {
         });
 
         let (tx, rx) = channel::bounded(1);
-        let (event_id, event_subscribe) = self.assemble_subscription(&subscriptions)?;
+        let (event_id, event_subscribe) = self.assemble_subscription(subscriptions)?;
         let deadline = Instant::now() + Duration::from_secs(5);
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {

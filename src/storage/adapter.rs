@@ -1159,7 +1159,7 @@ fn account_get(
 
     if let Some(row) = rows
         .next()
-        .map_err(|err| SelfError::StorageTransactionCommitFailed)?
+        .map_err(|_err| SelfError::StorageTransactionCommitFailed)?
     {
         let mut encoded_account: Vec<u8> = row.get(0).unwrap();
 
@@ -1174,7 +1174,7 @@ fn account_get(
         return Ok(account);
     }
 
-    return Err(SelfError::MessagingDestinationUnknown);
+    Err(SelfError::MessagingDestinationUnknown)
 }
 
 fn account_update(txn: &mut Transaction, account: &Rc<RefCell<Account>>) -> Result<(), SelfError> {
@@ -1217,28 +1217,26 @@ fn session_get(
         Err(_) => return Err(SelfError::MessagingDestinationUnknown),
     };
 
-    if let Ok(row) = rows.next() {
-        if let Some(row) = row {
-            let sequence_tx: u64 = row.get(0).unwrap();
-            let sequence_rx: u64 = row.get(1).unwrap();
-            let mut encoded_session: Vec<u8> = row.get(2).unwrap();
+    if let Ok(Some(row)) = rows.next() {
+        let sequence_tx: u64 = row.get(0).unwrap();
+        let sequence_rx: u64 = row.get(1).unwrap();
+        let mut encoded_session: Vec<u8> = row.get(2).unwrap();
 
-            let session = Rc::new(RefCell::new(Session::from_pickle(
-                session_identifier.0.clone(),
-                session_identifier.1.clone(),
-                sequence_tx,
-                sequence_rx,
-                &mut encoded_session,
-                None,
-            )?));
+        let session = Rc::new(RefCell::new(Session::from_pickle(
+            session_identifier.0.clone(),
+            session_identifier.1.clone(),
+            sequence_tx,
+            sequence_rx,
+            &mut encoded_session,
+            None,
+        )?));
 
-            scache.insert(session_identifier.clone(), session.clone());
+        scache.insert(session_identifier.clone(), session.clone());
 
-            return Ok(Some(session));
-        }
+        return Ok(Some(session));
     }
 
-    return Ok(None);
+    Ok(None)
 }
 
 fn session_create(
