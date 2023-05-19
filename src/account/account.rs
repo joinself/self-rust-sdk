@@ -80,11 +80,13 @@ impl Account {
                 Arc::new(
                     move |sender: &Identifier,
                           recipient: &Identifier,
+                          subscriber: Option<&Identifier>,
                           sequence: u64,
-                          is_group: bool,
                           ciphertext: &[u8]| {
                         let mut storage = on_message_st.lock().unwrap();
-                        match storage.decrypt_and_queue(sender, recipient, is_group, ciphertext) {
+                        match storage
+                            .decrypt_and_queue(sender, recipient, subscriber, sequence, ciphertext)
+                        {
                             Ok(plaintext) => {
                                 match crate::message::Content::decode(&plaintext) {
                                     Ok(content) => {
@@ -105,7 +107,11 @@ impl Account {
                         }
                     },
                 )
-                    as Arc<dyn Fn(&Identifier, &Identifier, u64, bool, &[u8]) + Send + Sync>
+                    as Arc<
+                        dyn Fn(&Identifier, &Identifier, Option<&Identifier>, u64, &[u8])
+                            + Send
+                            + Sync,
+                    >
             }),
         };
 
@@ -244,10 +250,8 @@ impl Account {
         };
 
         // attempt to acquire a one time key for the identifier
-        self.create_session(with, &using, authorization)?;
-
-        // create a 1-1 group for the identifier
-        self.group_add(with, with)?;
+        // and create a connection and session with the identifier
+        self.connect_and_create_session(with, &using, authorization)?;
 
         // send a connection request to the identifier
         let request_id = crate::crypto::random_id();
@@ -295,7 +299,7 @@ impl Account {
         Ok(())
     }
 
-    fn create_session(
+    fn connect_and_create_session(
         &mut self,
         with: &Identifier,
         using: &Identifier,
@@ -320,16 +324,7 @@ impl Account {
 
         let prekey = PrekeyResponse::new(&response.data)?;
 
-        storage.session_create_from_prekey(using, with, &prekey.key)
-    }
-
-    fn group_add(&mut self, group: &Identifier, member: &Identifier) -> Result<(), SelfError> {
-        let mut storage = match &mut self.storage {
-            Some(storage) => storage.lock().unwrap(),
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        storage.member_add(group, member)
+        storage.connection_add(using, with, None, Some(&prekey.key))
     }
 
     fn socket_send(&mut self, to: &Identifier, plaintext: &[u8]) -> Result<(), SelfError> {

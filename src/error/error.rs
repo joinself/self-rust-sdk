@@ -3,6 +3,7 @@ use std::fmt;
 #[derive(Debug, PartialEq)]
 pub enum SelfError {
     AccountNotConfigured,
+    CryptoBadAccountKey,
     CryptoBadLegacyAccountPickle,
     CryptoBadMessageFormat,
     CryptoBadMessageKeyID,
@@ -22,7 +23,7 @@ pub enum SelfError {
     CryptoUnknownGroupParticipant,
     CryptoUnknownMessageIndex,
     CryptoUnknownPickleVersion,
-    CrytpoBadAccountKey,
+    CryptoUnknownSession,
     KeychainKeyExists,
     KeychainKeyNotFound,
     KeyPairConversionFailed,
@@ -111,6 +112,7 @@ impl fmt::Display for SelfError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             SelfError::AccountNotConfigured => write!(f, "Account has not been configured"),
+            SelfError::CryptoBadAccountKey => write!(f, "Crypto supplied account key is invalid"),
             SelfError::CryptoBadLegacyAccountPickle => write!(f, "Crypto attempt to unpickle an account which uses pickle version 1"),
             SelfError::CryptoBadMessageFormat => write!(f, "Crypto message couldn't be decoded"),
             SelfError::CryptoBadMessageKeyID => write!(f, "Crypto message references an unknown key id"),
@@ -130,7 +132,7 @@ impl fmt::Display for SelfError {
             SelfError::CryptoUnknownGroupParticipant => write!(f, "Crypto unknown group participant"),
             SelfError::CryptoUnknownMessageIndex => write!(f, "Crypto attempt to decode a message whose index is earlier than our earliest known session key"),
             SelfError::CryptoUnknownPickleVersion => write!(f, "Crypto pickled object is too new"),
-            SelfError::CrytpoBadAccountKey => write!(f, "Crypto supplied account key is invalid"),
+            SelfError::CryptoUnknownSession => write!(f, "Crypto received a non-one time message, but there is no existing session to decrypt it with"),
             SelfError::KeychainKeyExists => write!(f, "Keychain key already exists"),
             SelfError::KeychainKeyNotFound => write!(f, "Keychain key not found"),
             SelfError::KeyPairConversionFailed => write!(f, "Keypair conversion failed"),

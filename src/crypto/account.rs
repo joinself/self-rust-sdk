@@ -82,6 +82,10 @@ impl Account {
         }
     }
 
+    pub fn identifier(&self) -> &Identifier {
+        &self.identifier
+    }
+
     pub fn one_time_keys(&self) -> Vec<Vec<u8>> {
         unsafe {
             let mut one_time_keys_len = olm_account_one_time_keys_length(self.account);
@@ -265,7 +269,7 @@ impl Account {
                 OlmErrorCode_OLM_BAD_MESSAGE_MAC => Err(SelfError::CryptoBadMessageMac),
                 OlmErrorCode_OLM_BAD_MESSAGE_KEY_ID => Err(SelfError::CryptoBadMessageKeyID),
                 OlmErrorCode_OLM_INVALID_BASE64 => Err(SelfError::CryptoInvalidBase64),
-                OlmErrorCode_OLM_BAD_ACCOUNT_KEY => Err(SelfError::CrytpoBadAccountKey),
+                OlmErrorCode_OLM_BAD_ACCOUNT_KEY => Err(SelfError::CryptoBadAccountKey),
                 OlmErrorCode_OLM_UNKNOWN_PICKLE_VERSION => {
                     Err(SelfError::CryptoUnknownPickleVersion)
                 }

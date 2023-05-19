@@ -56,7 +56,11 @@ Holds records of other identifiers/addresses that the account has mutually conne
 
 Holds records of e2e encrypted sessions with other public key addresses.
 
-When sending or receiving a message, this table will be used to encrypt or decrypt a message via the olm session, and to track recevied and sent sequence numbers.
+When sending or receiving a message, this table will be used to encrypt or decrypt a message via the olm session, and to track recevied and sent sequence numbers for the given session.
+
+### Metrics
+
+Holds records that track metrcis related to messages exchanged with a given recipient. For instance, it is used to track metrics related to how many messages have been sent to a given recipient. This value is distinct from the metrics tracked on a per session basis, as some recipients are comprised of multiple sessions ana extracting a useful sequence number for tracking purposes from this session is not possible.
 
 ### Tokens
 
@@ -175,14 +179,14 @@ Table credentials {
 
 Table inbox {
   id integer [primary key]
-  session integer
+  connection integer
   sequence integer
   message blob
 }
 
 Table outbox {
   id integer [primary key]
-  session integer
+  connection integer
   sequence integer
   message blob
 }
@@ -197,6 +201,6 @@ Ref: sessions.with_identifier > identifiers.id
 Ref: credentials.from_identifier > identifiers.id
 Ref: credentials.about_identifier > identifiers.id
 Ref: tokens.from_identifier > identifiers.id
-Ref: inbox.session > sessions.id
-Ref: outbox.session > sessions.id
+Ref: inbox.connection > connections.id
+Ref: outbox.connection > connections.id
 ```

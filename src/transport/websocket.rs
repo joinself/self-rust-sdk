@@ -20,7 +20,8 @@ use crate::token::Token;
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(&Identifier, &Identifier, u64, bool, &[u8]) + Sync + Send>;
+pub type OnMessageCB =
+    Arc<dyn Fn(&Identifier, &Identifier, Option<&Identifier>, u64, &[u8]) + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
@@ -203,8 +204,8 @@ impl Websocket {
 
                                     let active_subs = subs.lock().await;
 
-                                    let is_group = match active_subs.get(recipient) {
-                                        Some(sub) => sub.token.is_some(),
+                                    let subscriber = match active_subs.get(recipient) {
+                                        Some(sub) => sub.as_identifier.and_then(|i| Some(&i)),
                                         None => {
                                             println!(
                                                 "message received for an unknown recipient: {}",
@@ -239,8 +240,8 @@ impl Websocket {
                                     on_message(
                                         &sender,
                                         &recipient,
+                                        subscriber,
                                         payload.sequence(),
-                                        is_group,
                                         content,
                                     );
                                 }

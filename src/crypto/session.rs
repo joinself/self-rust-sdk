@@ -196,7 +196,7 @@ impl Session {
                 OlmErrorCode_OLM_BAD_MESSAGE_MAC => Err(SelfError::CryptoBadMessageMac),
                 OlmErrorCode_OLM_BAD_MESSAGE_KEY_ID => Err(SelfError::CryptoBadMessageKeyID),
                 OlmErrorCode_OLM_INVALID_BASE64 => Err(SelfError::CryptoInvalidBase64),
-                OlmErrorCode_OLM_BAD_ACCOUNT_KEY => Err(SelfError::CrytpoBadAccountKey),
+                OlmErrorCode_OLM_BAD_ACCOUNT_KEY => Err(SelfError::CryptoBadAccountKey),
                 OlmErrorCode_OLM_UNKNOWN_PICKLE_VERSION => {
                     Err(SelfError::CryptoUnknownPickleVersion)
                 }
