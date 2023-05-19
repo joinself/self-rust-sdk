@@ -150,12 +150,11 @@ impl Group {
         let key_and_nonce = [key_buf, nonce_buf].concat();
 
         for s in &mut self.participants {
-            let (mtype, ciphertext) = s.as_ref().borrow_mut().encrypt(&key_and_nonce)?;
-            group_message.set_recipient_ciphertext(
-                &s.borrow().with_identifier().id(),
-                mtype,
-                &ciphertext,
-            );
+            let mut s = s.as_ref().borrow_mut();
+
+            let (mtype, ciphertext) = s.encrypt(&key_and_nonce)?;
+
+            group_message.set_recipient_ciphertext(&s.with_identifier().id(), mtype, &ciphertext);
         }
 
         self.sequence_tx += 1;
@@ -232,17 +231,23 @@ mod tests {
     #[test]
     fn encrypt_and_decrypt() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_ekp = alice_skp
+            .to_exchange_key()
+            .expect("can't convert to exchange key");
         let alice_id = Identifier::Referenced(alice_skp.public());
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let bob_id = Identifier::Referenced(bob_skp.public());
+        let bob_ekp = bob_skp
+            .to_exchange_key()
+            .expect("can't convert to exchange key");
+        let bob_id = Identifier::Owned(bob_skp.clone());
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
 
         let carol_skp = crate::keypair::signing::KeyPair::new();
-        let carol_ekp = crate::keypair::exchange::KeyPair::new();
+        let carol_ekp = carol_skp
+            .to_exchange_key()
+            .expect("can't convert to exchange key");
         let carol_id = Identifier::Referenced(carol_skp.public());
         let mut carol_acc = Account::new(carol_skp, carol_ekp);
 

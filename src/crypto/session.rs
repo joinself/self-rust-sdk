@@ -341,14 +341,27 @@ mod tests {
     #[test]
     fn serialize_and_deserialize() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_ekp = alice_skp
+            .to_exchange_key()
+            .expect("failed to convert to exchange key");
         let alice_id = Identifier::Owned(alice_skp.clone());
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = crate::keypair::exchange::KeyPair::new();
+        let bob_ekp = bob_skp
+            .to_exchange_key()
+            .expect("failed to convert to exchange key");
         let bob_id = Identifier::Owned(bob_skp.clone());
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
+
+        println!(
+            "olm account id keys for alice: {}",
+            String::from_utf8(alice_acc.identity_keys()).unwrap()
+        );
+        println!(
+            "olm account id keys for bob: {}",
+            String::from_utf8(bob_acc.identity_keys()).unwrap()
+        );
 
         alice_acc
             .generate_one_time_keys(10)

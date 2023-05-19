@@ -1657,15 +1657,13 @@ mod tests {
         let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
-        let bob_skp_clone = bob_skp.clone();
 
         let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
 
         storage
-            .keypair_create(Usage::Messaging, &bob_skp_clone, None, true)
+            .keypair_create(Usage::Messaging, &bob_skp, None, true)
             .expect("failed to create bob keypair");
         storage
             .identifier_create(&alice_identifier)
@@ -1742,15 +1740,13 @@ mod tests {
         let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
-        let bob_skp_clone = bob_skp.clone();
 
         let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
 
         storage
-            .keypair_create(Usage::Messaging, &bob_skp_clone, None, true)
+            .keypair_create(Usage::Messaging, &bob_skp, None, true)
             .expect("failed to create alice identifier");
         storage
             .identifier_create(&alice_identifier)

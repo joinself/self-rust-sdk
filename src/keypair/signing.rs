@@ -68,6 +68,8 @@ impl PublicKey {
     }
 
     pub fn to_exchange_key(&self) -> Result<crate::keypair::exchange::PublicKey, SelfError> {
+        println!("to exchange key (from public key)...........................................");
+
         let mut curve25519_pk =
             vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
 
