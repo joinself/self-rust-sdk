@@ -600,7 +600,7 @@ impl Storage {
         one_time_key: Option<&[u8]>,
     ) -> Result<(), SelfError> {
         // get the next item in the inbox to be sent to the server
-        let txn = self
+        let mut txn = self
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
@@ -629,20 +629,21 @@ impl Storage {
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        if let (one_time_key) = one_time_key {}
+        if let Some(one_time_key) = one_time_key {
+            let account_rc = account_get(&mut txn, &mut self.acache, as_identifier)?;
+
+            let mut account = account_rc.as_ref().borrow_mut();
+            let session = account.create_outbound_session(with_identifier.clone(), one_time_key)?;
+
+            account.remove_one_time_keys(&session)?;
+
+            account_update(&mut txn, &account_rc)?;
+            session_create(&mut txn, &mut self.scache, &Rc::new(RefCell::new(session)))?;
+        }
 
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        Ok(())
-    }
-
-    pub fn connection_remove(
-        &mut self,
-        as_identifier: &Identifier,
-        with_identifier: &Identifier,
-        via_identifier: Option<&Identifier>,
-    ) -> Result<(), SelfError> {
         Ok(())
     }
 
@@ -950,7 +951,7 @@ fn decrypt_from(
     let mut group_message = GroupMessage::decode(ciphertext)?;
 
     let as_identifier = subscriber.unwrap_or(recipient.clone());
-    let session_identifier = (as_identifier.clone(), sender.clone());
+    let session_identifier = (as_identifier, sender.clone());
 
     let session = match scache.get(&session_identifier) {
         Some(session) => {

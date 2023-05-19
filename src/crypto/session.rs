@@ -268,7 +268,7 @@ mod tests {
 
         // encrypt a message from bob with a new session to alice
         let mut bobs_session_with_alice = bob_acc
-            .create_outbound_session(alice_id.clone(), &alices_one_time_keys[0])
+            .create_outbound_session(alice_id, &alices_one_time_keys[0])
             .expect("failed to create outbound session");
 
         let (mtype, mut bobs_message_to_alice_1) = bobs_session_with_alice
@@ -279,7 +279,7 @@ mod tests {
 
         // create alices session with bob from bobs first message
         let mut alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_id.clone(), &bobs_message_to_alice_1)
+            .create_inbound_session(bob_id, &bobs_message_to_alice_1)
             .expect("failed to create inbound session");
 
         // remove the one time key from alices account
