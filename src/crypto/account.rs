@@ -48,8 +48,8 @@ impl Account {
     }
 
     pub fn from_pickle(
-        pickle: &mut [u8],
         identifier: Identifier,
+        pickle: &mut [u8],
         password: Option<&[u8]>,
     ) -> Result<Account, SelfError> {
         unsafe {
@@ -359,7 +359,7 @@ mod tests {
             .pickle(Some("my-password".as_bytes()))
             .expect("failed to pickle account");
 
-        let acc = Account::from_pickle(&mut pickle, idf, Some("my-password".as_bytes()))
+        let acc = Account::from_pickle(idf, &mut pickle, Some("my-password".as_bytes()))
             .expect("failed to unpickle account");
 
         let identity_keys_json = acc.identity_keys();

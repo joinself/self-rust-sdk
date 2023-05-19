@@ -47,8 +47,8 @@ impl GroupMessage {
         encoded
     }
 
-    pub fn one_time_key_message(&self, recipient: &[u8]) -> Option<Vec<u8>> {
-        match self.recipients.get(recipient) {
+    pub fn one_time_key_message(&self, recipient: &Identifier) -> Option<Vec<u8>> {
+        match self.recipients.get(&recipient.id()) {
             Some(message) => {
                 if message.mtype != 0 {
                     return None;
@@ -281,7 +281,7 @@ mod tests {
 
         // create alices session with bob
         let alices_one_time_message = alices_message_from_bob
-            .one_time_key_message(b"alice")
+            .one_time_key_message(&alice_id)
             .expect("failed to find alice in the recipients");
         let alices_session_with_bob = alice_acc
             .create_inbound_session(bob_id.clone(), &alices_one_time_message)
@@ -289,7 +289,7 @@ mod tests {
 
         // create carols session with bob
         let carols_one_time_message = carols_message_from_bob
-            .one_time_key_message(b"carol")
+            .one_time_key_message(&carol_id)
             .expect("failed to find carol in the recipients");
         let carols_session_with_bob = carol_acc
             .create_inbound_session(bob_id.clone(), &carols_one_time_message)

@@ -1,5 +1,5 @@
 use libc::group;
-use rusqlite::{Connection, Result, Transaction};
+use rusqlite::{Connection, Result, Statement, Transaction};
 
 use crate::crypto::{
     account::Account,
@@ -746,6 +746,7 @@ impl Storage {
         Ok(())
     }
 
+    /*
     pub fn encrypt_and_queue(
         &mut self,
         recipient: &Identifier,
@@ -759,6 +760,8 @@ impl Storage {
         // TODO correctly select and return the rigth sequence
         Ok((sender_identifier, sequence, gm.encode()))
     }
+
+    */
 
     pub fn decrypt_and_queue(
         &mut self,
@@ -808,7 +811,184 @@ impl Storage {
         txn: &mut Transaction,
         sender: &Identifier,
         recipient: &Identifier,
-    ) {
+        subscriber: Option<&Identifier>,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, SelfError> {
+        let mut group_message = GroupMessage::decode(ciphertext)?;
+
+        let as_identifier = subscriber.unwrap_or(recipient);
+        let session_identifier = (as_identifier.clone(), sender.clone());
+
+        let session = match self.scache.get(&session_identifier) {
+            Some(session) => {
+                // the senders session is in the cache!
+                if let Some(one_time_message) = group_message.one_time_key_message(recipient) {
+                    // check if the sender has re-established a new session
+                    if !session
+                        .as_ref()
+                        .borrow()
+                        .matches_inbound_session(&one_time_message)?
+                    {
+                        // this is a new inbound session, so lets update the existing one
+                        let account = self.account_get(txn, recipient)?;
+                        let new_session = account
+                            .as_ref()
+                            .borrow_mut()
+                            .create_inbound_session(sender.clone(), ciphertext)?;
+
+                        session.replace(new_session);
+                        session
+                    }
+                }
+            }
+            None => {}
+        };
+
+        // check if we have the session in the cache, if not, create it
+        if let Some(session) = self.scache.get(&session_identifier) {
+            if let Some(one_time_message) = group_message.one_time_key_message(recipient) {
+                // check if the sender has re-established a new session
+                if !session
+                    .as_ref()
+                    .borrow()
+                    .matches_inbound_session(&one_time_message)?
+                {
+                    // this is a new inbound session, so lets update the existing one
+                    let account = self.account_get(txn, recipient)?;
+                    let new_session = account
+                        .as_ref()
+                        .borrow_mut()
+                        .create_inbound_session(sender.clone(), ciphertext)?;
+
+                    session.replace(new_session);
+                }
+            }
+
+            let mut group = Group::new(recipient.clone(), 0);
+            group.add_participant(session.clone());
+
+            let plaintext = group.decrypt_group_message(sender, &mut group_message);
+            self.session_update(txn, session);
+
+            return plaintext;
+        }
+
+        // if this is not a group message, we can search the session cache directly and attempt to decrypt
+        // as a shortcut to making the connections db query
+        if !is_group {
+            let session_identifier = (recipient.clone(), sender.clone());
+        }
+
+        // if there exists no session in the session cache for this, or this is a message to a group address load the
+        // connection that matches the sender and recipient identifiers on the message and load the correct session
+
+        // is the recipient's address a group address? if so, match the connection on the 'for_identifier
+        // field that will contain the group identifier. if not, match on the as_identifier that will
+        // contain the identifier used in the 1-1 conversation
+        let mut statement = if is_group {
+            // if this is a group, search for the connection where the recipient matches the via_identifier
+            txn
+            .prepare(
+                "SELECT i2.identifier, i3.identifier, s1.sequence_tx, s1.sequence_rx, s1.olm_session FROM connections
+                JOIN identifiers i1 ON
+                    i1.id = connections.via_identifier
+                JOIN identifiers i2 ON
+                    i2.id = connections.as_identifier
+                JOIN identifiers i3 ON
+                    i3.id = connections.with_identifier
+                JOIN sessions s1 ON
+                    i2.id = s1.via_identifier AND i3.id = s1.with_identifier
+                WHERE i1.identifier = ?1;",
+            )
+            .expect("failed to prepare statement")
+        } else {
+            // if this is not a group, search for the connection where the recipient matches the as_identifier
+            txn
+            .prepare(
+                "SELECT i2.identifier, i3.identifier, s1.sequence_tx, s1.sequence_rx, s1.olm_session FROM connections
+                JOIN identifiers i1 ON
+                    i1.id = connections.via_identifier
+                JOIN identifiers i2 ON
+                    i2.id = connections.as_identifier
+                JOIN identifiers i3 ON
+                    i3.id = connections.with_identifier
+                JOIN sessions s1 ON
+                    i2.id = s1.as_identifier AND i3.id = s1.with_identifier
+                WHERE i1.identifier = ?1;",
+            )
+            .expect("failed to prepare statement")
+        };
+
+        let mut rows = match statement.query([&recipient.id(), &sender.id()]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        if let Ok(row) = rows.next() {
+            if let Some(row) = row {
+                let as_identifier: Vec<u8> = row.get(0).unwrap();
+                let with_identifier: Vec<u8> = row.get(1).unwrap();
+                let sequence_tx: u64 = row.get(2).unwrap();
+                let sequence_rx: u64 = row.get(3).unwrap();
+                let mut session: Vec<u8> = row.get(4).unwrap();
+
+                let as_identifier = Identifier::Referenced(PublicKey::from_bytes(
+                    &as_identifier,
+                    crate::keypair::Algorithm::Ed25519,
+                )?);
+
+                let with_identifier = Identifier::Referenced(PublicKey::from_bytes(
+                    &with_identifier,
+                    crate::keypair::Algorithm::Ed25519,
+                )?);
+
+                let session_identifier = (as_identifier.clone(), with_identifier.clone());
+
+                // check to see if we have an existing session in our cache that we can use directly
+                let session = self
+                    .scache
+                    .get(&session_identifier)
+                    .unwrap_or({
+                        // if there is no session in the cache, use the session from the query and add it to the cache
+                        let s = Rc::new(RefCell::new(Session::from_pickle(
+                            as_identifier.clone(),
+                            with_identifier.clone(),
+                            sequence_tx,
+                            sequence_rx,
+                            &mut session,
+                            None,
+                        )?));
+
+                        self.scache.insert(session_identifier, s.clone());
+
+                        &s
+                    })
+                    .clone();
+
+                // if we have a session that matches, then use it construct a new temporary group
+                // to decrypt the message with the 'as_identifier' we use to communicate with that session.
+                // for 1-1 sessions, 'as_identifier' will be the same as 'for_identifier'. for group messages,
+                // 'as_identifier' will be use the identifier we use to send messages to the group,
+                // i.e. our group membership identifier that we use only for that group
+                let mut group = Group::new(recipient.clone(), 0);
+                group.add_participant(session.clone());
+
+                let plaintext = group.decrypt_group_message(sender, &mut group_message);
+                self.session_update(txn, &session);
+
+                return plaintext;
+            }
+        }
+
+        // we didn't find any existing session, so create one
+
+        // first, we need to find
+        if is_group {
+            if let Some(one_time_message) = group_message.one_time_key_message(recipient) {}
+        } else {
+        }
+
+        Err(SelfError::MessagingDestinationUnknown)
     }
 
     fn group_get(
@@ -913,6 +1093,69 @@ impl Storage {
         Ok(None)
     }
 
+    fn account_get(
+        &mut self,
+        txn: &mut Transaction,
+        account_identifier: &Identifier,
+    ) -> Result<Rc<RefCell<Account>>, SelfError> {
+        if let Some(account) = self.acache.get(account_identifier) {
+            return Ok(account.clone());
+        };
+
+        let mut statement = txn
+            .prepare(
+                "SELECT olm_account from keypairs
+                JOIN identifiers i1 ON
+                    i1.id = keypairs.for_identifier
+                WHERE i1.identifier = ?1 AND olm_account != NULL;",
+            )
+            .expect("failed to prepare statement");
+
+        let mut rows = match statement.query([&account_identifier.id()]) {
+            Ok(rows) => rows,
+            Err(_) => return Err(SelfError::MessagingDestinationUnknown),
+        };
+
+        if let Some(row) = rows
+            .next()
+            .map_err(|err| SelfError::StorageTransactionCommitFailed)?
+        {
+            let mut encoded_account: Vec<u8> = row.get(0).unwrap();
+            let account = Rc::new(RefCell::new(Account::from_pickle(
+                account_identifier.clone(),
+                &mut encoded_account,
+                None,
+            )?));
+            self.acache
+                .insert(account_identifier.clone(), account.clone());
+            return Ok(account);
+        }
+
+        return Err(SelfError::MessagingDestinationUnknown);
+    }
+
+    fn account_update(
+        &mut self,
+        txn: &mut Transaction,
+        account_identifier: &Identifier,
+    ) -> Result<(), SelfError> {
+        if let Some(account) = self.acache.get(account_identifier) {
+            let encoded_account = account.as_ref().borrow().pickle(None)?;
+
+            txn.execute(
+                "UPDATE keypairs
+                SET olm_account = ?2
+                JOIN identifiers i1 ON
+                    i1.id = keypairs.for_identifier
+                WHERE i1.identifier = ?1;",
+                (&account_identifier.id(), &encoded_account),
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        };
+
+        return Err(SelfError::MessagingDestinationUnknown);
+    }
+
     fn session_update(
         &mut self,
         txn: &mut Transaction,
@@ -924,7 +1167,7 @@ impl Storage {
         txn.execute(
             "UPDATE sessions
             SET sequence_tx = ?3, sequence_rx = ?4, olm_session = ?5
-            OIN identifiers i1 ON
+            JOIN identifiers i1 ON
                 i1.id = sessions.as_identifier
             JOIN identifiers i2 ON
                 i2.id = sessions.with_identifier

@@ -39,7 +39,8 @@ enum Event {
 
 #[derive(Clone)]
 pub struct Subscription {
-    pub identifier: Identifier,
+    pub to_identifier: Identifier,
+    pub as_identifier: Option<Identifier>,
     pub from: i64,
     pub token: Option<Token>,
 }
@@ -99,7 +100,9 @@ impl Websocket {
 
         handle.spawn(async move {
             for sub in subscriptions {
-                subs.lock().await.insert(sub.identifier.id(), sub.clone());
+                subs.lock()
+                    .await
+                    .insert(sub.to_identifier.id(), sub.clone());
             }
 
             let result = match connect_async(&endpoint).await {
@@ -502,12 +505,16 @@ impl Websocket {
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
         for subscription in subscriptions {
-            let owned_identifier = match &subscription.identifier {
+            let owned_identifier = subscription
+                .as_identifier
+                .unwrap_or(subscription.to_identifier);
+
+            let owned_identifier = match &owned_identifier {
                 Identifier::Owned(owned) => owned,
                 _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
             };
 
-            let inbox = builder.create_vector(&subscription.identifier.id());
+            let inbox = builder.create_vector(&subscription.to_identifier.id());
 
             let details = messaging::SubscriptionDetails::create(
                 &mut builder,
@@ -1026,7 +1033,8 @@ mod tests {
         let alice_id = Identifier::Owned(alice_kp);
 
         let subs = vec![Subscription {
-            identifier: alice_id.clone(),
+            to_identifier: alice_id.clone(),
+            as_identifier: None,
             from: crate::time::unix(),
             token: None,
         }];
