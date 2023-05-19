@@ -150,7 +150,7 @@ impl Group {
         let key_and_nonce = [key_buf, nonce_buf].concat();
 
         for s in &mut self.participants {
-            let (mtype, ciphertext) = s.get_mut().encrypt(&key_and_nonce)?;
+            let (mtype, ciphertext) = s.as_ref().borrow_mut().encrypt(&key_and_nonce)?;
             group_message.set_recipient_ciphertext(
                 &s.borrow().with_identifier().id(),
                 mtype,
@@ -195,7 +195,8 @@ impl Group {
 
         unsafe {
             let key_and_nonce = sender
-                .get_mut()
+                .as_ref()
+                .borrow_mut()
                 .decrypt(message.mtype, &mut message.ciphertext)?;
 
             let status = sodium_sys::crypto_aead_xchacha20poly1305_ietf_decrypt(
@@ -296,7 +297,7 @@ mod tests {
             .expect("failed to create carols session with bob");
 
         // attempt to decrypt the group message intended for alice
-        let mut alices_group = Group::new(alice_id.clone(), 0);
+        let mut alices_group = Group::new(alice_id, 0);
         alices_group.add_participant(Rc::new(RefCell::new(alices_session_with_bob)));
         let plaintext = alices_group
             .decrypt_group_message(&bob_id, &mut alices_message_from_bob)
@@ -305,7 +306,7 @@ mod tests {
         assert_eq!(plaintext, b"hello alice and carol");
 
         // attempt to decrypt the group message intended for alice
-        let mut carols_group = Group::new(carol_id.clone(), 0);
+        let mut carols_group = Group::new(carol_id, 0);
         carols_group.add_participant(Rc::new(RefCell::new(carols_session_with_bob)));
         let plaintext = carols_group
             .decrypt_group_message(&bob_id, &mut carols_message_from_bob)

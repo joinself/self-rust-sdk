@@ -192,7 +192,7 @@ impl Account {
         with_identifier: Identifier,
         one_time_message: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key = match with_identifier {
+        let identity_key = match with_identifier.clone() {
             Identifier::Owned(kp) => kp.public().to_exchange_key()?,
             Identifier::Referenced(pk) => pk.to_exchange_key()?,
         };
@@ -224,7 +224,7 @@ impl Account {
         with_identifier: Identifier,
         one_time_key: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key = match with_identifier {
+        let identity_key = match with_identifier.clone() {
             Identifier::Owned(kp) => kp.public().to_exchange_key()?,
             Identifier::Referenced(pk) => pk.to_exchange_key()?,
         };

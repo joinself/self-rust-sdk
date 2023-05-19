@@ -80,7 +80,7 @@ impl Account {
                 Arc::new(
                     move |sender: &Identifier,
                           recipient: &Identifier,
-                          subscriber: Option<&Identifier>,
+                          subscriber: Option<Identifier>,
                           sequence: u64,
                           ciphertext: &[u8]| {
                         let mut storage = on_message_st.lock().unwrap();
@@ -108,7 +108,7 @@ impl Account {
                     },
                 )
                     as Arc<
-                        dyn Fn(&Identifier, &Identifier, Option<&Identifier>, u64, &[u8])
+                        dyn Fn(&Identifier, &Identifier, Option<Identifier>, u64, &[u8])
                             + Send
                             + Sync,
                     >

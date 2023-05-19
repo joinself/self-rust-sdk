@@ -21,7 +21,7 @@ use crate::token::Token;
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 pub type OnMessageCB =
-    Arc<dyn Fn(&Identifier, &Identifier, Option<&Identifier>, u64, &[u8]) + Sync + Send>;
+    Arc<dyn Fn(&Identifier, &Identifier, Option<Identifier>, u64, &[u8]) + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
@@ -88,7 +88,9 @@ impl Websocket {
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
+        let subs_connect = self.subscriptions.clone();
         let subs = self.subscriptions.clone();
+        let new_subscriptions = subscriptions.to_owned();
 
         let on_connect_cb = self.callbacks.on_connect.clone();
         let on_message_cb = self.callbacks.on_message.clone();
@@ -100,8 +102,9 @@ impl Websocket {
         let requests_tx = requests.clone();
 
         handle.spawn(async move {
-            for sub in subscriptions {
-                subs.lock()
+            for sub in new_subscriptions {
+                subs_connect
+                    .lock()
                     .await
                     .insert(sub.to_identifier.id(), sub.clone());
             }
@@ -205,7 +208,7 @@ impl Websocket {
                                     let active_subs = subs.lock().await;
 
                                     let subscriber = match active_subs.get(recipient) {
-                                        Some(sub) => sub.as_identifier.and_then(|i| Some(&i)),
+                                        Some(sub) => sub.as_identifier.clone(),
                                         None => {
                                             println!(
                                                 "message received for an unknown recipient: {}",
@@ -508,7 +511,8 @@ impl Websocket {
         for subscription in subscriptions {
             let owned_identifier = subscription
                 .as_identifier
-                .unwrap_or(subscription.to_identifier);
+                .clone()
+                .unwrap_or(subscription.to_identifier.clone());
 
             let owned_identifier = match &owned_identifier {
                 Identifier::Owned(owned) => owned,

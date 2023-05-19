@@ -135,7 +135,7 @@ impl Session {
     }
 
     pub fn matches_inbound_session(&self, one_time_message: &[u8]) -> Result<bool, SelfError> {
-        let identity_key = match self.with_identifier {
+        let identity_key = match &self.with_identifier {
             Identifier::Owned(kp) => kp.public().to_exchange_key()?,
             Identifier::Referenced(pk) => pk.to_exchange_key()?,
         };
