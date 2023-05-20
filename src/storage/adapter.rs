@@ -16,6 +16,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+pub type QueuedInboxMessage = (Identifier, Identifier, Identifier, u64, Vec<u8>);
+pub type QueuedOutboxMessage = (Identifier, Identifier, u64, Vec<u8>);
+
 pub struct Storage {
     conn: Connection,
     acache: HashMap<Identifier, Rc<RefCell<Account>>>,
@@ -290,26 +293,6 @@ impl Storage {
         Ok(())
     }
 
-    pub fn identifier_create(&mut self, identifier: &Identifier) -> Result<(), SelfError> {
-        let txn = self
-            .conn
-            .transaction()
-            .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        if txn
-            .execute(
-                "INSERT INTO identifiers (identifier) VALUES (?1)",
-                [&identifier.id()],
-            )
-            .is_err()
-        {
-            return Err(SelfError::StorageTransactionCommitFailed);
-        }
-
-        txn.commit()
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)
-    }
-
     pub fn keypair_get(&mut self, identifier: &Identifier) -> Result<Rc<KeyPair>, SelfError> {
         // check if the key exists in the cache
         if let Some(kp) = self.kcache.get(identifier) {
@@ -369,17 +352,13 @@ impl Storage {
             return Err(SelfError::KeychainKeyExists);
         };
 
-        let txn = self
+        let mut txn = self
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        // create an record for the identifier we are creating a session with
-        txn.execute(
-            "INSERT INTO identifiers (identifier) VALUES (?1);",
-            [&identifier.id()],
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        // create an record for the identifier we are creating a keypair with
+        identifier_create(&mut txn, &identifier)?;
 
         // create the keypair
         if let Some(olm_account) = account {
@@ -626,51 +605,15 @@ impl Storage {
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        println!(
-            "ceating a connection for: {:?}",
-            via_identifier.unwrap_or(with_identifier)
-        );
-
-        txn.execute(
-            "INSERT INTO connections (as_identifier, with_identifier, via_identifier)
-            VALUES (
-                (
-                    SELECT identifiers.id FROM identifiers
-                    WHERE identifiers.identifier = ?1
-                ),
-                (
-                    SELECT identifiers.id FROM identifiers
-                    WHERE identifiers.identifier = ?2
-                ),
-                (
-                    SELECT identifiers.id FROM identifiers
-                    WHERE identifiers.identifier = ?3
-                )
-            );",
-            (
-                &as_identifier.id(),
-                &with_identifier.id(),
-                &via_identifier.unwrap_or(with_identifier).id(),
-            ),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-        if let Some(one_time_key) = one_time_key {
-            let account_rc = account_get(&mut txn, &mut self.acache, as_identifier)?;
-
-            let mut account = account_rc.as_ref().borrow_mut();
-            let session = account.create_outbound_session(with_identifier.clone(), one_time_key)?;
-            drop(account);
-
-            account_update(&mut txn, &account_rc)?;
-            session_create(&mut txn, &mut self.scache, &Rc::new(RefCell::new(session)))?;
-        }
-
-        // if this is an address we will send messages to directly, then create a
-        // metrics entry for it to track send sequence
-        if via_identifier.unwrap_or(with_identifier) == with_identifier {
-            metrics_create(&mut txn, as_identifier, with_identifier)?;
-        }
+        connection_add(
+            &mut txn,
+            &mut self.acache,
+            &mut self.scache,
+            as_identifier,
+            with_identifier,
+            via_identifier,
+            one_time_key,
+        )?;
 
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -678,9 +621,7 @@ impl Storage {
         Ok(())
     }
 
-    pub fn inbox_next(
-        &mut self,
-    ) -> Result<Option<(Identifier, Identifier, Identifier, u64, Vec<u8>)>, SelfError> {
+    pub fn inbox_next(&mut self) -> Result<Option<QueuedInboxMessage>, SelfError> {
         // get the next item in the inbox to be sent to the server
         let txn = self
             .conn
@@ -737,9 +678,7 @@ impl Storage {
         )))
     }
 
-    pub fn outbox_next(
-        &mut self,
-    ) -> Result<Option<(Identifier, Identifier, u64, Vec<u8>)>, SelfError> {
+    pub fn outbox_next(&mut self) -> Result<Option<QueuedOutboxMessage>, SelfError> {
         // get the next item in the outbox to be sent to the server
         let txn = self
             .conn
@@ -808,11 +747,6 @@ impl Storage {
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
-
-        println!(
-            "dequeueing message sender: {:?} recipient:{:?}",
-            sender, recipient
-        );
 
         txn.execute(
             "DELETE FROM inbox WHERE connection = (
@@ -936,6 +870,75 @@ impl Storage {
     }
 }
 
+fn identifier_create(txn: &mut Transaction, identifier: &Identifier) -> Result<(), SelfError> {
+    txn.execute(
+        "INSERT OR IGNORE INTO identifiers (identifier) VALUES (?1)",
+        [&identifier.id()],
+    )
+    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+    Ok(())
+}
+
+fn connection_add(
+    txn: &mut Transaction,
+    acache: &mut HashMap<Identifier, Rc<RefCell<Account>>>,
+    scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
+    as_identifier: &Identifier,
+    with_identifier: &Identifier,
+    via_identifier: Option<&Identifier>,
+    one_time_key: Option<&[u8]>,
+) -> Result<(), SelfError> {
+    identifier_create(txn, with_identifier)?;
+
+    if let Some(via_identifier) = via_identifier {
+        identifier_create(txn, via_identifier)?;
+    }
+
+    txn.execute(
+        "INSERT INTO connections (as_identifier, with_identifier, via_identifier)
+        VALUES (
+            (
+                SELECT identifiers.id FROM identifiers
+                WHERE identifiers.identifier = ?1
+            ),
+            (
+                SELECT identifiers.id FROM identifiers
+                WHERE identifiers.identifier = ?2
+            ),
+            (
+                SELECT identifiers.id FROM identifiers
+                WHERE identifiers.identifier = ?3
+            )
+        );",
+        (
+            &as_identifier.id(),
+            &with_identifier.id(),
+            &via_identifier.unwrap_or(with_identifier).id(),
+        ),
+    )
+    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+    if let Some(one_time_key) = one_time_key {
+        let account_rc = account_get(txn, acache, as_identifier)?;
+
+        let mut account = account_rc.as_ref().borrow_mut();
+        let session = account.create_outbound_session(with_identifier.clone(), one_time_key)?;
+        drop(account);
+
+        account_update(txn, &account_rc)?;
+        session_create(txn, scache, &Rc::new(RefCell::new(session)))?;
+    }
+
+    // if this is an address we will send messages to directly, then create a
+    // metrics entry for it to track send sequence
+    if via_identifier.unwrap_or(with_identifier) == with_identifier {
+        metrics_create(txn, as_identifier, with_identifier)?;
+    }
+
+    Ok(())
+}
+
 fn inbox_queue(
     txn: &mut Transaction,
     sender: &Identifier,
@@ -949,14 +952,6 @@ fn inbox_queue(
     } else {
         sender
     };
-
-    println!("searching for connection...");
-    println!(
-        "as_identifier: {:?}",
-        subscriber.as_ref().unwrap_or(recipient)
-    );
-    println!("with_identifier: {:?}", sender);
-    println!("via_identifier: {:?}", recipient);
 
     txn.execute(
         "INSERT INTO inbox (connection, sequence, message)
@@ -1055,8 +1050,9 @@ fn decrypt_from(
 ) -> Result<Vec<u8>, SelfError> {
     let mut group_message = GroupMessage::decode(ciphertext)?;
 
+    let via_identifier = subscriber.clone().and(Some(recipient));
     let as_identifier = subscriber.unwrap_or(recipient.clone());
-    let session_identifier = (as_identifier, sender.clone());
+    let session_identifier = (as_identifier.clone(), sender.clone());
 
     let session = match scache.get(&session_identifier) {
         Some(session) => {
@@ -1072,11 +1068,14 @@ fn decrypt_from(
                     // update the existing one
                     let account_rc = account_get(txn, acache, recipient)?;
                     let mut account = account_rc.as_ref().borrow_mut();
+
                     let new_session =
                         account.create_inbound_session(sender.clone(), &one_time_message)?;
 
                     // remove the one time keys used to create the session and update the account
                     account.remove_one_time_keys(&new_session)?;
+                    drop(account);
+
                     account_update(txn, &account_rc)?;
 
                     session.replace(new_session);
@@ -1097,15 +1096,31 @@ fn decrypt_from(
                             // update the existing one
                             let account_rc = account_get(txn, acache, recipient)?;
                             let mut account = account_rc.as_ref().borrow_mut();
+
                             let inbound_session = account
                                 .create_inbound_session(sender.clone(), &one_time_message)?;
 
                             // remove the one time keys used to create the session and update the account
                             account.remove_one_time_keys(&inbound_session)?;
+                            drop(account);
+
                             account_update(txn, &account_rc)?;
 
                             let session = Rc::new(RefCell::new(inbound_session));
+
                             session_create(txn, scache, &session)?;
+
+                            // create a connection for the new sender (not implicitly accepted...)
+                            connection_add(
+                                txn,
+                                acache,
+                                scache,
+                                &as_identifier,
+                                sender,
+                                via_identifier,
+                                None,
+                            )?;
+
                             session
                         }
                         None => return Err(SelfError::CryptoUnknownSession),
@@ -1120,7 +1135,11 @@ fn decrypt_from(
     group.add_participant(session.clone());
 
     let plaintext = group.decrypt_group_message(sender, &mut group_message);
-    session_update(txn, &session)?;
+
+    if plaintext.is_ok() {
+        // only update the session if decryption was successful
+        session_update(txn, &session)?;
+    }
 
     plaintext
 }
@@ -1238,8 +1257,6 @@ fn group_get_session(
 
         sessions.push(session)
     }
-
-    println!("GROUP OK");
 
     Ok(sessions)
 }
@@ -1359,11 +1376,7 @@ fn session_create(
         session_ref.with_identifier().clone(),
     );
 
-    println!(
-        "create session as_identifier: {:?} with_identifier: {:?}",
-        session_ref.as_identifier(),
-        session_ref.with_identifier()
-    );
+    identifier_create(txn, session_ref.with_identifier())?;
 
     txn.execute(
         "INSERT INTO sessions (as_identifier, with_identifier, sequence_tx, sequence_rx, olm_session)
@@ -1579,23 +1592,6 @@ mod tests {
             .keypair_create(Usage::Messaging, &alice_skp, Some(alice_acc), true)
             .expect("failed to create bob keypair");
 
-        // create all identifiers
-        storage
-            .identifier_create(&alice_identifier)
-            .expect("failed to create alice identifier");
-
-        storage
-            .identifier_create(&bob_identifier)
-            .expect("failed to create bob identifier");
-
-        storage
-            .identifier_create(&carol_identifier)
-            .expect("failed to create carol identifier");
-
-        storage
-            .identifier_create(&group_identifier)
-            .expect("failed to create group identifier");
-
         // create a connection for the group
         storage
             .connection_add(&alice_identifier, &group_identifier, None, None)
@@ -1681,7 +1677,9 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
+        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
         let alice_ed25519_pk = alice_skp.public();
+        let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
@@ -1697,22 +1695,10 @@ mod tests {
         let carol_identifier = Identifier::Referenced(carol_ed25519_pk);
         let group_identifier = Identifier::Referenced(group_ed25519_pk);
 
-        // create all identifiers
+        // create alices keypair
         storage
-            .identifier_create(&alice_identifier)
-            .expect("failed to create alice identifier");
-
-        storage
-            .identifier_create(&bob_identifier)
-            .expect("failed to create bob identifier");
-
-        storage
-            .identifier_create(&carol_identifier)
-            .expect("failed to create bob identifier");
-
-        storage
-            .identifier_create(&group_identifier)
-            .expect("failed to create bob identifier");
+            .keypair_create(Usage::Messaging, &alice_skp, Some(alice_acc), true)
+            .expect("failed to create bob keypair");
 
         // create a connection for the group
         storage
@@ -1737,9 +1723,6 @@ mod tests {
                 None,
             )
             .expect("failed to create alices group connection with carol");
-
-        println!("alice identifier: {:?}", alice_identifier);
-        println!("group identifier: {:?}", group_identifier);
 
         // queue a message intended for the group
         storage
@@ -1818,9 +1801,6 @@ mod tests {
         storage
             .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
             .expect("failed to create bob keypair");
-        storage
-            .identifier_create(&alice_identifier)
-            .expect("failed to create alice identifier");
 
         alice_acc
             .generate_one_time_keys(10)
@@ -1903,9 +1883,6 @@ mod tests {
         storage
             .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
             .expect("failed to create alice identifier");
-        storage
-            .identifier_create(&alice_identifier)
-            .expect("failed to create alice identifier");
 
         alice_acc
             .generate_one_time_keys(10)
@@ -1960,9 +1937,6 @@ mod tests {
         let alices_message_for_bob = group
             .encrypt(b"hello bob")
             .expect("failed to encrypt message for bob");
-
-        println!("sender: (alice) {:?}", alice_identifier);
-        println!("recipient: (bob) {:?}", bob_identifier);
 
         // decrypt message for bob
         let plaintext = storage

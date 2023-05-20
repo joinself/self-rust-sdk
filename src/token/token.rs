@@ -3,7 +3,7 @@ use crate::{error::SelfError, keypair::signing::PublicKey};
 
 use serde::{Deserialize, Serialize};
 
-const FLAG_DELEGATION_PERMIT: u8 = 1 << 1;
+// const FLAG_DELEGATION_PERMIT: u8 = 1 << 1;
 const FLAG_BEARER_PROMISCUOUS: u8 = 1 << 2;
 
 const TOKEN_VERSION_1: u8 = 1;

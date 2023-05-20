@@ -342,7 +342,6 @@ impl Account {
         drop(storage);
 
         // TODO get tokens
-
         let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
 
         websocket.send(
