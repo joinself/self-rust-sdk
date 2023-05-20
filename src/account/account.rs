@@ -367,7 +367,7 @@ impl Account {
             .lock()
             .unwrap();
 
-        storage.outbox_dequeue(to, sequence)
+        storage.outbox_dequeue(&from, to, sequence)
     }
 
     /*

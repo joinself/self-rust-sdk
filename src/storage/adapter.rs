@@ -34,10 +34,10 @@ impl Storage {
         let conn = Connection::open_in_memory().map_err(|_| SelfError::StorageConnectionFailed)?;
 
         /*
-        let conn = Connection::open("/tmp/test.db").map_err(|_| SelfError::StorageConnectionFailed)?;
-        conn.pragma_update(None, "synchronous", &"NORMAL").unwrap();
-        conn.pragma_update(None, "journal_mode", &"WAL").unwrap();
-        conn.pragma_update(None, "temp_store", &"MEMORY").unwrap();
+           let conn = Connection::open("/tmp/test.db").map_err(|_| SelfError::StorageConnectionFailed)?;
+           conn.pragma_update(None, "synchronous", &"NORMAL").unwrap();
+           conn.pragma_update(None, "journal_mode", &"WAL").unwrap();
+           conn.pragma_update(None, "temp_store", &"MEMORY").unwrap();
         */
 
         let mut storage = Storage {
@@ -55,6 +55,7 @@ impl Storage {
         storage.setup_sessions_table()?;
         storage.setup_tokens_table()?;
         storage.setup_credentials_table()?;
+        storage.setup_metrics_table()?;
         storage.setup_inbox_table()?;
         storage.setup_outbox_table()?;
 
@@ -132,8 +133,7 @@ impl Storage {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     as_identifier INTEGER NOT NULL,
                     via_identifier INTEGER NOT NULL,
-                    with_identifier INTEGER NOT NULL,
-                    connected_on INTEGER NOT NULL
+                    with_identifier INTEGER NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_connections_connection
                 ON connections (as_identifier, via_identifier, with_identifier);",
@@ -154,8 +154,8 @@ impl Storage {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     as_identifier INTEGER NOT NULL,
                     with_identifier INTEGER NOT NULL,
-                    sequence_tx INTEGER,
-                    sequence_rx INTEGER,
+                    sequence_tx INTEGER NOT NULL,
+                    sequence_rx INTEGER NOT NULL,
                     olm_session BLOB NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_sessions_with_identifier
@@ -201,6 +201,27 @@ impl Storage {
                     about_identifier INTEGER NOT NULL,
                     credential BLOB NOT NULL
                 );",
+                (),
+            )
+            .map_err(|err| {
+                println!("sql error: {}", err);
+                SelfError::StorageTableCreationFailed
+            })?;
+
+        Ok(())
+    }
+
+    fn setup_metrics_table(&mut self) -> Result<(), SelfError> {
+        self.conn
+            .execute(
+                "CREATE TABLE metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    as_identifier INTEGER NOT NULL,
+                    with_identifier INTEGER NOT NULL,
+                    sequence INTEGER NOT NULL
+                );
+                CREATE UNIQUE INDEX idx_metrics_for
+                ON tokens (as_identifier, with_identifier);",
                 (),
             )
             .map_err(|err| {
@@ -605,6 +626,11 @@ impl Storage {
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
+        println!(
+            "ceating a connection for: {:?}",
+            via_identifier.unwrap_or(with_identifier)
+        );
+
         txn.execute(
             "INSERT INTO connections (as_identifier, with_identifier, via_identifier)
             VALUES (
@@ -623,8 +649,8 @@ impl Storage {
             );",
             (
                 &as_identifier.id(),
-                &via_identifier.unwrap_or(with_identifier).id(),
                 &with_identifier.id(),
+                &via_identifier.unwrap_or(with_identifier).id(),
             ),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -634,11 +660,16 @@ impl Storage {
 
             let mut account = account_rc.as_ref().borrow_mut();
             let session = account.create_outbound_session(with_identifier.clone(), one_time_key)?;
-
-            account.remove_one_time_keys(&session)?;
+            drop(account);
 
             account_update(&mut txn, &account_rc)?;
             session_create(&mut txn, &mut self.scache, &Rc::new(RefCell::new(session)))?;
+        }
+
+        // if this is an address we will send messages to directly, then create a
+        // metrics entry for it to track send sequence
+        if via_identifier.unwrap_or(with_identifier) == with_identifier {
+            metrics_create(&mut txn, as_identifier, with_identifier)?;
         }
 
         txn.commit()
@@ -647,7 +678,9 @@ impl Storage {
         Ok(())
     }
 
-    pub fn inbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
+    pub fn inbox_next(
+        &mut self,
+    ) -> Result<Option<(Identifier, Identifier, Identifier, u64, Vec<u8>)>, SelfError> {
         // get the next item in the inbox to be sent to the server
         let txn = self
             .conn
@@ -656,11 +689,15 @@ impl Storage {
 
         let mut statement = txn
             .prepare(
-                "SELECT i1.identifier, sequence, message FROM inbox
-                JOIN sessions s1 ON
-                    s1.id = inbox.session
+                "SELECT i1.identifier, i2.identifier, i3.identifier, sequence, message FROM inbox
+                JOIN connections c1 ON
+                    c1.id = inbox.connection
                 JOIN identifiers i1 ON
-                    i1.id = s1.with_identifier
+                    i1.id = c1.as_identifier
+                JOIN identifiers i2 ON
+                    i2.id = c1.with_identifier
+                JOIN identifiers i3 ON
+                    i3.id = c1.via_identifier
                 ORDER BY inbox.id ASC LIMIT 1;",
             )
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
@@ -678,20 +715,31 @@ impl Storage {
             Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
         };
 
-        let session: Vec<u8> = row.get(0).unwrap();
-        let sequence: u64 = row.get(1).unwrap();
-        let message: Vec<u8> = row.get(2).unwrap();
+        let as_identifier: Vec<u8> = row.get(0).unwrap();
+        let with_identifier: Vec<u8> = row.get(1).unwrap();
+        let via_identifier: Vec<u8> = row.get(2).unwrap();
+        let sequence: u64 = row.get(3).unwrap();
+        let message: Vec<u8> = row.get(4).unwrap();
 
-        let public_key = PublicKey::from_bytes(&session, crate::keypair::Algorithm::Ed25519)?;
+        let as_identifier =
+            PublicKey::from_bytes(&as_identifier, crate::keypair::Algorithm::Ed25519)?;
+        let with_identifier =
+            PublicKey::from_bytes(&with_identifier, crate::keypair::Algorithm::Ed25519)?;
+        let via_identifier =
+            PublicKey::from_bytes(&via_identifier, crate::keypair::Algorithm::Ed25519)?;
 
         Ok(Some((
-            Identifier::Referenced(public_key),
+            Identifier::Referenced(as_identifier),
+            Identifier::Referenced(with_identifier),
+            Identifier::Referenced(via_identifier),
             sequence,
             message,
         )))
     }
 
-    pub fn outbox_next(&mut self) -> Result<Option<(Identifier, u64, Vec<u8>)>, SelfError> {
+    pub fn outbox_next(
+        &mut self,
+    ) -> Result<Option<(Identifier, Identifier, u64, Vec<u8>)>, SelfError> {
         // get the next item in the outbox to be sent to the server
         let txn = self
             .conn
@@ -700,11 +748,13 @@ impl Storage {
 
         let mut statement = txn
             .prepare(
-                "SELECT i1.identifier, sequence, message FROM outbox
-                JOIN sessions s1 ON
-                    s1.id = outbox.session
+                "SELECT i1.identifier, i2.identifier, sequence, message FROM outbox
+                JOIN connections c1 ON
+                    c1.id = outbox.connection
                 JOIN identifiers i1 ON
-                    i1.id = s1.with_identifier
+                    i1.id = c1.as_identifier
+                JOIN identifiers i2 ON
+                    i2.id = c1.via_identifier
                 ORDER BY outbox.id ASC LIMIT 1;",
             )
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
@@ -722,14 +772,19 @@ impl Storage {
             Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
         };
 
-        let session: Vec<u8> = row.get(0).unwrap();
-        let sequence: u64 = row.get(1).unwrap();
-        let message: Vec<u8> = row.get(2).unwrap();
+        let as_identifier: Vec<u8> = row.get(0).unwrap();
+        let via_identifier: Vec<u8> = row.get(1).unwrap();
+        let sequence: u64 = row.get(2).unwrap();
+        let message: Vec<u8> = row.get(3).unwrap();
 
-        let public_key = PublicKey::from_bytes(&session, crate::keypair::Algorithm::Ed25519)?;
+        let as_identifier =
+            PublicKey::from_bytes(&as_identifier, crate::keypair::Algorithm::Ed25519)?;
+        let via_identifier =
+            PublicKey::from_bytes(&via_identifier, crate::keypair::Algorithm::Ed25519)?;
 
         Ok(Some((
-            Identifier::Referenced(public_key),
+            Identifier::Referenced(as_identifier),
+            Identifier::Referenced(via_identifier),
             sequence,
             message,
         )))
@@ -737,23 +792,45 @@ impl Storage {
 
     pub fn inbox_dequeue(
         &mut self,
+        sender: &Identifier,
         recipient: &Identifier,
+        subscriber: Option<Identifier>,
         sequence: u64,
     ) -> Result<(), SelfError> {
+        let via_identifier = if subscriber.is_some() {
+            recipient
+        } else {
+            sender
+        };
+
         // remove the messaage from the inbox once it has been confirmed as received by the server
         let txn = self
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
+        println!(
+            "dequeueing message sender: {:?} recipient:{:?}",
+            sender, recipient
+        );
+
         txn.execute(
-            "DELETE FROM inbox WHERE session = (
-                SELECT sessions.id FROM sessions
+            "DELETE FROM inbox WHERE connection = (
+                SELECT connections.id FROM connections
                 JOIN identifiers i1 ON
-                    i1.id = sessions.with_identifier
-                WHERE i1.identifier=?1
-            ) AND sequence = ?2;",
-            (&recipient.id(), sequence),
+                    i1.id = connections.as_identifier
+                JOIN identifiers i2 ON
+                    i2.id = connections.with_identifier
+                JOIN identifiers i3 ON
+                    i3.id = connections.via_identifier
+                WHERE i1.identifier = ?1 AND i2.identifier = ?2 AND i3.identifier = ?3
+            ) AND sequence = ?4;",
+            (
+                &subscriber.as_ref().unwrap_or(recipient).id(),
+                &sender.id(),
+                via_identifier.id(),
+                sequence,
+            ),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -765,6 +842,7 @@ impl Storage {
 
     pub fn outbox_dequeue(
         &mut self,
+        sender: &Identifier,
         recipient: &Identifier,
         sequence: u64,
     ) -> Result<(), SelfError> {
@@ -775,13 +853,15 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
         txn.execute(
-            "DELETE FROM outbox WHERE session = (
-                SELECT sessions.id FROM sessions
+            "DELETE FROM outbox WHERE connection = (
+                SELECT connections.id FROM connections
                 JOIN identifiers i1 ON
-                    i1.id = sessions.with_identifier
-                WHERE i1.identifier=?1
-            ) AND sequence = ?2;",
-            (&recipient.id(), sequence),
+                    i1.id = connections.as_identifier
+                JOIN identifiers i2 ON
+                    i2.id = connections.via_identifier
+                WHERE i1.identifier = ?1 AND i2.identifier = ?2
+            ) AND sequence = ?3;",
+            (&sender.id(), &recipient.id(), sequence),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -840,12 +920,14 @@ impl Storage {
             &mut self.scache,
             sender,
             recipient,
-            subscriber,
+            subscriber.clone(),
             ciphertext,
         )?;
 
         // queue to inbox
-        inbox_queue(&mut txn, sender, recipient, sequence, &plaintext)?;
+        inbox_queue(
+            &mut txn, sender, recipient, subscriber, sequence, &plaintext,
+        )?;
 
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -858,24 +940,47 @@ fn inbox_queue(
     txn: &mut Transaction,
     sender: &Identifier,
     recipient: &Identifier,
+    subscriber: Option<Identifier>,
     sequence: u64,
     plaintext: &[u8],
 ) -> Result<(), SelfError> {
+    let via_identifier = if subscriber.is_some() {
+        recipient
+    } else {
+        sender
+    };
+
+    println!("searching for connection...");
+    println!(
+        "as_identifier: {:?}",
+        subscriber.as_ref().unwrap_or(recipient)
+    );
+    println!("with_identifier: {:?}", sender);
+    println!("via_identifier: {:?}", recipient);
+
     txn.execute(
         "INSERT INTO inbox (connection, sequence, message)
         VALUES (
             (
                 SELECT connections.id FROM connections
                 JOIN identifiers i1 ON
-                    i1.id = connections.with_identifier
+                    i1.id = connections.as_identifier
                 JOIN identifiers i2 ON
-                    i2.id = connections.via_identifier
-                WHERE i1.identifier=?1
+                    i2.id = connections.with_identifier
+                JOIN identifiers i3 ON
+                    i3.id = connections.via_identifier
+                WHERE i1.identifier = ?1 AND i2.identifier = ?2 AND i3.identifier = ?3
             ),
-            ?2,
-            ?3
+            ?4,
+            ?5
         );",
-        (&sender.id(), &recipient.id(), sequence, plaintext),
+        (
+            &subscriber.as_ref().unwrap_or(recipient).id(),
+            &sender.id(),
+            via_identifier.id(),
+            sequence,
+            plaintext,
+        ),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -897,11 +1002,11 @@ fn outbox_queue(
                 JOIN identifiers i1 ON
                     i1.id = connections.as_identifier
                 JOIN identifiers i2 ON
-                    i2.id = connections.with_identifier
+                    i2.id = connections.via_identifier
                 WHERE i1.identifier = ?1 AND i2.identifier = ?2
             ),
-            ?2,
-            ?3
+            ?3,
+            ?4
         );",
         (&sender.id(), &recipient.id(), sequence, ciphertext),
     )
@@ -1041,10 +1146,13 @@ fn group_get(
             session.as_ref().borrow().with_identifier(),
         )?;
 
-        let group = Rc::new(RefCell::new(Group::new(
-            session.as_ref().borrow().as_identifier().clone(),
-            sequence,
-        )));
+        let mut group = Group::new(session.as_ref().borrow().as_identifier().clone(), sequence);
+
+        for s in &sessions {
+            group.add_participant(s.clone());
+        }
+
+        let group = Rc::new(RefCell::new(group));
 
         gcache.insert(group_identifier.clone(), group.clone());
 
@@ -1131,6 +1239,8 @@ fn group_get_session(
         sessions.push(session)
     }
 
+    println!("GROUP OK");
+
     Ok(sessions)
 }
 
@@ -1148,7 +1258,7 @@ fn account_get(
             "SELECT olm_account from keypairs
             JOIN identifiers i1 ON
                 i1.id = keypairs.for_identifier
-            WHERE i1.identifier = ?1 AND olm_account != NULL;",
+            WHERE i1.identifier = ?1;",
         )
         .expect("failed to prepare statement");
 
@@ -1183,10 +1293,8 @@ fn account_update(txn: &mut Transaction, account: &Rc<RefCell<Account>>) -> Resu
 
     txn.execute(
         "UPDATE keypairs
-            SET olm_account = ?2
-            JOIN identifiers i1 ON
-                i1.id = keypairs.for_identifier
-            WHERE i1.identifier = ?1;",
+        SET olm_account = ?2
+        WHERE for_identifier = (SELECT id FROM identifiers WHERE identifier=?1);",
         (&account.identifier().id(), &encoded_account),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -1251,13 +1359,19 @@ fn session_create(
         session_ref.with_identifier().clone(),
     );
 
+    println!(
+        "create session as_identifier: {:?} with_identifier: {:?}",
+        session_ref.as_identifier(),
+        session_ref.with_identifier()
+    );
+
     txn.execute(
         "INSERT INTO sessions (as_identifier, with_identifier, sequence_tx, sequence_rx, olm_session)
         VALUES (
             (SELECT id FROM identifiers WHERE identifier=?1),
             (SELECT id FROM identifiers WHERE identifier=?2),
             ?3,
-            ?4
+            ?4,
             ?5
         );",
         (
@@ -1267,8 +1381,7 @@ fn session_create(
             session_ref.sequence_rx(),
             encoded_session,
         ),
-    )
-    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+    ).map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
     scache.insert(session_identifier, session.clone());
 
@@ -1282,11 +1395,8 @@ fn session_update(txn: &mut Transaction, session: &Rc<RefCell<Session>>) -> Resu
     txn.execute(
         "UPDATE sessions
         SET sequence_tx = ?3, sequence_rx = ?4, olm_session = ?5
-        JOIN identifiers i1 ON
-            i1.id = sessions.as_identifier
-        JOIN identifiers i2 ON
-            i2.id = sessions.with_identifier
-        WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
+        WHERE as_identifier = (SELECT id FROM identifiers WHERE identifier=?1)
+        AND with_identifier = (SELECT id FROM identifiers WHERE identifier=?2);",
         (
             &session.as_identifier().id(),
             &session.with_identifier().id(),
@@ -1294,6 +1404,25 @@ fn session_update(txn: &mut Transaction, session: &Rc<RefCell<Session>>) -> Resu
             session.sequence_rx(),
             encoded_session,
         ),
+    )
+    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+
+    Ok(())
+}
+
+fn metrics_create(
+    txn: &mut Transaction,
+    as_identifier: &Identifier,
+    with_identifier: &Identifier,
+) -> Result<(), SelfError> {
+    txn.execute(
+        "INSERT INTO metrics (as_identifier, with_identifier, sequence)
+            VALUES(
+                (SELECT id FROM identifiers WHERE identifier = ?1),
+                (SELECT id FROM identifiers WHERE identifier = ?2),
+                0
+            );",
+        (&as_identifier.id(), &with_identifier.id()),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -1342,11 +1471,8 @@ fn metrics_update_sequence(
     txn.execute(
         "UPDATE metrics
         SET sequence = ?3
-        JOIN identifiers i1 ON
-            i1.id = metrics.as_identifier
-        JOIN identifiers i2 ON
-            i2.id = metrics.with_identifier
-        WHERE i1.identifier = ?1 AND i2.identifier = ?2;",
+        WHERE as_identifier = (SELECT id FROM identifiers WHERE identifier=?1)
+        AND with_identifier = (SELECT id FROM identifiers WHERE identifier=?2);",
         (&as_identifier.id(), &with_identifier.id(), sequence),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -1380,7 +1506,7 @@ mod tests {
         storage
             .transaction(|txn| {
                 txn.execute(
-                    "INSERT INTO sessions (as_identifier, with_identifier, olm_session) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO sessions (as_identifier, with_identifier, sequence_tx, sequence_rx, olm_session) VALUES (?1, ?2, 0, 0, ?3)",
                     (alice_id, bob_id, b"session-with-bob"),
                 ).is_ok()
             })
@@ -1390,14 +1516,14 @@ mod tests {
         storage
             .transaction(|txn| {
                 let mut statement = txn
-                    .prepare("SELECT * FROM sessions WHERE with_identifier = ?1")
+                    .prepare("SELECT with_identifier, olm_session FROM sessions WHERE with_identifier = ?1")
                     .expect("failed to prepare statement");
 
                 let mut rows = statement.query([bob_id]).expect("failed to execute query");
                 let row = rows.next().expect("no rows found").unwrap();
 
-                let identity: i32 = row.get(2).unwrap();
-                let session: Vec<u8> = row.get(5).unwrap();
+                let identity: i32 = row.get(0).unwrap();
+                let session: Vec<u8> = row.get(1).unwrap();
 
                 assert_eq!(identity, bob_id);
                 assert_eq!(session, b"session-with-bob");
@@ -1431,7 +1557,9 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
+        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
         let alice_ed25519_pk = alice_skp.public();
+        let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
@@ -1446,6 +1574,10 @@ mod tests {
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
         let carol_identifier = Identifier::Referenced(carol_ed25519_pk);
         let group_identifier = Identifier::Referenced(group_ed25519_pk);
+
+        storage
+            .keypair_create(Usage::Messaging, &alice_skp, Some(alice_acc), true)
+            .expect("failed to create bob keypair");
 
         // create all identifiers
         storage
@@ -1510,8 +1642,10 @@ mod tests {
 
         assert!(next_item.is_some());
 
-        let (session_identifier, sequence, message) = next_item.expect("next item isn't a tuple?");
-        assert!(group_identifier.eq(&session_identifier));
+        let (as_identifier, via_identifier, sequence, message) =
+            next_item.expect("next item isn't a tuple?");
+        assert!(alice_identifier.eq(&as_identifier));
+        assert!(group_identifier.eq(&via_identifier));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
@@ -1522,14 +1656,16 @@ mod tests {
 
         assert!(next_item.is_some());
 
-        let (session_identifier, sequence, message) = next_item.expect("next item isn't a tuple?");
-        assert!(group_identifier.eq(&session_identifier));
+        let (as_identifier, via_identifier, sequence, message) =
+            next_item.expect("next item isn't a tuple?");
+        assert!(alice_identifier.eq(&as_identifier));
+        assert!(group_identifier.eq(&via_identifier));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
         // dequeue the item
         storage
-            .outbox_dequeue(&group_identifier, sequence)
+            .outbox_dequeue(&alice_identifier, &group_identifier, sequence)
             .expect("dequeue failed");
 
         // there should be no items left in the queue
@@ -1602,13 +1738,17 @@ mod tests {
             )
             .expect("failed to create alices group connection with carol");
 
+        println!("alice identifier: {:?}", alice_identifier);
+        println!("group identifier: {:?}", group_identifier);
+
         // queue a message intended for the group
         storage
             .transaction(|txn| {
                 inbox_queue(
                     txn,
-                    &alice_identifier,
+                    &bob_identifier,
                     &group_identifier,
+                    Some(alice_identifier.clone()),
                     0,
                     b"hello everyone",
                 )
@@ -1621,8 +1761,11 @@ mod tests {
 
         assert!(next_item.is_some());
 
-        let (session_identifier, sequence, message) = next_item.expect("next item isn't a tuple?");
-        assert!(group_identifier.eq(&session_identifier));
+        let (as_identifier, with_identifier, via_identifier, sequence, message) =
+            next_item.expect("next item isn't a tuple?");
+        assert!(alice_identifier.eq(&as_identifier));
+        assert!(bob_identifier.eq(&with_identifier));
+        assert!(group_identifier.eq(&via_identifier));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
@@ -1631,14 +1774,22 @@ mod tests {
 
         assert!(next_item.is_some());
 
-        let (session_identifier, sequence, message) = next_item.expect("next item isn't a tuple?");
-        assert!(group_identifier.eq(&session_identifier));
+        let (as_identifier, with_identifier, via_identifier, sequence, message) =
+            next_item.expect("next item isn't a tuple?");
+        assert!(alice_identifier.eq(&as_identifier));
+        assert!(bob_identifier.eq(&with_identifier));
+        assert!(group_identifier.eq(&via_identifier));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
         // dequeue the item
         storage
-            .inbox_dequeue(&group_identifier, sequence)
+            .inbox_dequeue(
+                &bob_identifier,
+                &group_identifier,
+                Some(alice_identifier),
+                sequence,
+            )
             .expect("dequeue failed");
 
         // there should be no items left in the queue
@@ -1652,18 +1803,20 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
         let alice_ed25519_pk = alice_skp.public();
         let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = bob_skp.to_exchange_key().expect("conversion failed");
         let bob_ed25519_pk = bob_skp.public();
+        let bob_acc = crate::crypto::account::Account::new(bob_skp.clone(), bob_ekp);
 
         let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
 
         storage
-            .keypair_create(Usage::Messaging, &bob_skp, None, true)
+            .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
             .expect("failed to create bob keypair");
         storage
             .identifier_create(&alice_identifier)
@@ -1735,18 +1888,20 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
         let alice_ed25519_pk = alice_skp.public();
         let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = bob_skp.to_exchange_key().expect("conversion failed");
         let bob_ed25519_pk = bob_skp.public();
+        let bob_acc = crate::crypto::account::Account::new(bob_skp.clone(), bob_ekp);
 
         let alice_identifier = Identifier::Referenced(alice_ed25519_pk);
         let bob_identifier = Identifier::Referenced(bob_ed25519_pk);
 
         storage
-            .keypair_create(Usage::Messaging, &bob_skp, None, true)
+            .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
             .expect("failed to create alice identifier");
         storage
             .identifier_create(&alice_identifier)
@@ -1802,13 +1957,22 @@ mod tests {
         assert_eq!(&plaintext, "hello alice pt1".as_bytes());
 
         // encrypt a message for bob
-        let ciphertext = group
+        let alices_message_for_bob = group
             .encrypt(b"hello bob")
             .expect("failed to encrypt message for bob");
 
+        println!("sender: (alice) {:?}", alice_identifier);
+        println!("recipient: (bob) {:?}", bob_identifier);
+
         // decrypt message for bob
         let plaintext = storage
-            .decrypt_and_queue(&alice_identifier, &bob_identifier, None, 1, &ciphertext)
+            .decrypt_and_queue(
+                &alice_identifier,
+                &bob_identifier,
+                None,
+                1,
+                &alices_message_for_bob,
+            )
             .expect("failed to decrypt message from alice");
         assert_eq!(plaintext, b"hello bob");
     }
