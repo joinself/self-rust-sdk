@@ -8,8 +8,8 @@ pub enum Request {
 
 #[derive(Serialize, Deserialize)]
 pub struct ConnectionRequest {
-    pub ath: Option<Token>, // authentication token
-    pub ntf: Option<Token>, // notification token
+    pub ath: Option<Vec<u8>>, // authentication token
+    pub ntf: Option<Vec<u8>>, // notification token
 }
 
 impl ConnectionRequest {
@@ -21,5 +21,21 @@ impl ConnectionRequest {
 
     pub fn decode(data: &[u8]) -> Result<ConnectionRequest, SelfError> {
         ciborium::de::from_reader(data).map_err(|_| SelfError::MessageDecodingInvalid)
+    }
+
+    pub fn authorization_token(&self) -> Option<Result<Token, SelfError>> {
+        if let Some(ath) = &self.ath {
+            return Some(Token::decode(ath));
+        }
+
+        None
+    }
+
+    pub fn notification_token(&self) -> Option<Result<Token, SelfError>> {
+        if let Some(ntf) = &self.ntf {
+            return Some(Token::decode(ntf));
+        }
+
+        None
     }
 }

@@ -1,9 +1,11 @@
+use crate::crypto::random_id;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
 use crate::keypair::Usage;
 use crate::message::{
-    self, ConnectionRequest, ConnectionResponse, Content, Envelope, ResponseStatus,
+    self, ChatDelivered, ConnectionRequest, ConnectionResponse, Content, Envelope, ResponseStatus,
+    MESSAGE_TYPE_CHAT_MSG,
 };
 use crate::protocol::api::PrekeyResponse;
 use crate::siggraph::SignatureGraph;
@@ -120,6 +122,35 @@ impl Account {
                                                 },
                                             );
                                         } else {
+                                            if msg_type == MESSAGE_TYPE_CHAT_MSG {
+                                                if let Some(message_id) = content.cti_get() {
+                                                    drop(storage);
+
+                                                    // send a response accepting the request to the sender
+                                                    let mut msg = Content::new();
+                                                    msg.cti_set(&random_id());
+                                                    msg.type_set(
+                                                        message::MESSAGE_TYPE_CHAT_DELIVERED,
+                                                    );
+                                                    msg.issued_at_set(
+                                                        crate::time::now().timestamp(),
+                                                    );
+                                                    msg.content_set(
+                                                        &ChatDelivered {
+                                                            dlm: vec![message_id],
+                                                        }
+                                                        .encode()
+                                                        .unwrap(),
+                                                    );
+
+                                                    self.encrypt_and_send(
+                                                        &sender,
+                                                        &msg.encode().unwrap(),
+                                                    )
+                                                    .unwrap();
+                                                }
+                                            }
+
                                             on_message_cb(
                                                 on_message_ud.clone(),
                                                 &Envelope {
@@ -298,12 +329,9 @@ impl Account {
         };
 
         let content = ConnectionRequest {
-            ath: Some(token_create_authorization(
-                &mut storage,
-                Some(with),
-                &using,
-                None,
-            )?),
+            ath: Some(
+                token_create_authorization(&mut storage, Some(with), &using, None)?.encode()?,
+            ),
             ntf: None,
         }
         .encode()?;
@@ -360,6 +388,7 @@ impl Account {
 
     /// sends a message to a given identifier
     pub fn send(&mut self, to: &Identifier, message: &Content) -> Result<(), SelfError> {
+        message.validate()?;
         self.encrypt_and_send(to, &message.encode()?)
     }
 
@@ -381,7 +410,7 @@ impl Account {
                                 &message.from,
                                 Some(&message.to),
                                 i64::MAX,
-                                &authorization_token,
+                                &Token::decode(&authorization_token)?,
                             )?;
                         }
 
@@ -390,7 +419,7 @@ impl Account {
                                 &message.from,
                                 Some(&message.to),
                                 i64::MAX,
-                                &notification_token,
+                                &Token::decode(&notification_token)?,
                             )?;
                         }
 
@@ -425,8 +454,28 @@ impl Account {
                         self.encrypt_and_send(&message.from, &msg.encode()?)?;
                     }
                 }
-                message::MESSAGE_TYPE_CREDENTIALS_REQ => {}
+                message::MESSAGE_TYPE_CHAT_MSG => {
+                    if let Some(message_id) = message.content.cti_get() {
+                        drop(storage);
+                        // respond to sender
+                        let content = ChatDelivered {
+                            dlm: vec![message_id],
+                        }
+                        .encode()?;
 
+                        // send a response accepting the request to the sender
+                        let mut msg = Content::new();
+
+                        if let Some(cti) = message.content.cti_get() {
+                            msg.cti_set(&cti);
+                        }
+                        msg.type_set(message::MESSAGE_TYPE_CHAT_DELIVERED);
+                        msg.issued_at_set(crate::time::now().timestamp());
+                        msg.content_set(&content);
+
+                        self.encrypt_and_send(&message.from, &msg.encode()?)?;
+                    }
+                }
                 _ => {}
             }
         };
@@ -453,7 +502,7 @@ impl Account {
                                 &message.from,
                                 Some(&message.to),
                                 i64::MAX,
-                                &authorization_token,
+                                &Token::decode(&authorization_token)?,
                             )?;
                         }
 
@@ -462,7 +511,7 @@ impl Account {
                                 &message.from,
                                 Some(&message.to),
                                 i64::MAX,
-                                &notification_token,
+                                &Token::decode(&notification_token)?,
                             )?;
                         }
 

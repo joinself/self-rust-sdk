@@ -41,6 +41,18 @@ impl Content {
         Ok(encoded_c)
     }
 
+    pub fn validate(&self) -> Result<(), SelfError> {
+        /*
+        if let Some(cti) = &self.cti {
+
+        } else {
+            // invalid cti
+        }
+
+        */
+        Ok(())
+    }
+
     pub fn audience_set(&mut self, aud: &[u8]) {
         self.aud = Some(aud.to_vec());
     }

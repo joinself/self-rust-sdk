@@ -1,7 +1,12 @@
 use crossbeam::channel::Sender;
 use self_sdk::{
     account::{Account, MessagingCallbacks},
-    message::{self, ConnectionRequest, ConnectionResponse, Envelope, ResponseStatus},
+    crypto::random_id,
+    message::{
+        self, ChatDelivered, ChatMessage, ChatRead, ConnectionRequest, ConnectionResponse, Content,
+        Envelope, ResponseStatus,
+    },
+    time::unix,
 };
 use self_test_mock::Server;
 
@@ -241,7 +246,7 @@ fn account_connect_without_token_reject() {
     // reject the request
     bobs_account
         .reject(&request)
-        .expect("failed to accept alices request");
+        .expect("failed to reject alices request");
 
     // receive bobs response
     let response = alices_on_response_rx
@@ -431,7 +436,7 @@ fn account_connect_with_auth_token_reject() {
     // reject the request
     bobs_account
         .reject(&request)
-        .expect("failed to accept alices request");
+        .expect("failed to reject alices request");
 
     // receive bobs response
     let response = alices_on_response_rx
@@ -456,6 +461,138 @@ fn account_connect_with_auth_token_reject() {
 
     let response_id = response.content.cti_get().expect("response cti is missing");
     assert_eq!(request_id, response_id);
+}
+
+#[test]
+fn account_send_chat_message() {
+    test_server();
+
+    let (alices_on_message_tx, alices_on_message_rx) = crossbeam::channel::bounded::<Envelope>(64);
+    let (alices_on_request_tx, alices_on_request_rx) = crossbeam::channel::bounded::<Envelope>(64);
+    let (bobs_on_response_tx, bobs_on_response_rx) = crossbeam::channel::bounded::<Envelope>(64);
+
+    let mut alices_account = register_test_account(
+        "test_account_connect_alice",
+        Some(MessagingChannels {
+            on_request: Some(alices_on_request_tx),
+            on_response: None,
+            on_message: Some(alices_on_message_tx),
+        }),
+    );
+
+    let mut bobs_account = register_test_account(
+        "test_account_connect_bob",
+        Some(MessagingChannels {
+            on_request: None,
+            on_response: Some(bobs_on_response_tx),
+            on_message: None,
+        }),
+    );
+
+    let alices_identifier = alices_account
+        .messaging_identifer()
+        .expect("must have an identifier");
+
+    let bobs_identifier = bobs_account
+        .messaging_identifer()
+        .expect("must have an identifier");
+
+    let (auth_token, _) = alices_account
+        .token_generate(Some(&bobs_identifier), None)
+        .expect("failed to create token");
+
+    bobs_account
+        .connect(&alices_identifier, Some(&auth_token), None)
+        .expect("failed to send connection to alice");
+
+    // receive bobs request
+    let request = alices_on_request_rx
+        .recv_deadline(default_timeout())
+        .expect("request wait timeout");
+
+    // accept the request
+    alices_account
+        .accept(&request)
+        .expect("failed to accept bobs request");
+
+    // receive bobs response
+    let _ = bobs_on_response_rx
+        .recv_deadline(default_timeout())
+        .expect("response wait timeout");
+
+    // create a new chat message
+    let mut content = Content::new();
+    content.cti_set(&random_id());
+    content.type_set(message::MESSAGE_TYPE_CHAT_MSG);
+    content.issued_at_set(unix());
+
+    let message = ChatMessage {
+        mrf: None,
+        msg: String::from("hello alice"),
+    }
+    .encode()
+    .expect("failed to encode message");
+
+    content.content_set(&message);
+
+    // send a chat message to alice
+    bobs_account
+        .send(&alices_identifier, &content)
+        .expect("failed to send message to alice?");
+
+    // wait to receive message from bob
+    let message = alices_on_message_rx
+        .recv_deadline(default_timeout())
+        .expect("timeout waiting for bobs message");
+    assert_eq!(message.to, alices_identifier);
+    assert_eq!(message.from, bobs_identifier);
+
+    let message_id = message.content.cti_get().expect("message cti empty");
+    let content = message
+        .content
+        .content_get()
+        .expect("message content empty");
+    let chat_message = ChatMessage::decode(&content).expect("failed to decode message");
+    assert_eq!(chat_message.msg, "hello alice");
+
+    // wait to receive delivered receipt from bob
+    let delivery_response = bobs_on_response_rx
+        .recv_deadline(default_timeout())
+        .expect("timeout waiting for delivery receipt");
+    assert_eq!(delivery_response.to, bobs_identifier);
+    assert_eq!(delivery_response.from, alices_identifier);
+
+    // check the delivery receipt has acknowledged the message from bob
+    let content = delivery_response
+        .content
+        .content_get()
+        .expect("message content missing");
+    let delivered = ChatDelivered::decode(&content).expect("failed to decode encoded receipt");
+    assert_eq!(&message_id, delivered.dlm.first().expect("no message id"));
+
+    // emulate mobile client storing this request and accepting it later on...
+    let encoded_message = message.encode().expect("encoding message envelope failed");
+    let message = Envelope::decode(&encoded_message).expect("decoding message envelope failed");
+
+    // accept the message to send a read receipt to bob
+    alices_account
+        .accept(&message)
+        .expect("failed to send read receipt to bob");
+
+    // wait to receive delivered receipt from bob
+    let read_response = bobs_on_response_rx
+        .recv_deadline(default_timeout())
+        .expect("timeout waiting for delivery receipt");
+    assert_eq!(read_response.to, bobs_identifier);
+    assert_eq!(read_response.from, alices_identifier);
+
+    // get the read receipt from alice
+    let content = read_response
+        .content
+        .content_get()
+        .expect("message content missing");
+    let read = ChatRead::decode(&content).expect("failed to decode encoded receipt");
+    assert_eq!(&message_id, read.rdm.first().expect("no message id"));
 }
 
 fn register_test_account(test_name: &str, channels: Option<MessagingChannels>) -> Account {

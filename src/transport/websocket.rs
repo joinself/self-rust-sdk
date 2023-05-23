@@ -268,6 +268,7 @@ impl Websocket {
                             lock.insert(id, cb);
                             drop(lock);
                         }
+                        println!("sending message of size: {}", msg.len());
                         socket_tx.send(msg).await
                     } {
                         Ok(_) => continue,
