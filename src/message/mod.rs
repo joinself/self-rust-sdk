@@ -1,9 +1,15 @@
 mod content;
 mod envelope;
-mod signed_content;
+mod request;
+mod response;
+mod signed;
+mod status;
 mod types;
 
 pub use self::content::*;
 pub use self::envelope::*;
-pub use self::signed_content::*;
+pub use self::request::*;
+pub use self::response::*;
+pub use self::signed::*;
+pub use self::status::*;
 pub use self::types::*;

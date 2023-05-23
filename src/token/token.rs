@@ -177,8 +177,8 @@ impl Authorization {
             token[67..99].copy_from_slice(&for_identifier.id());
 
             if let Identifier::Owned(signer) = issued_by {
-                let signature = signer.sign(&token[0..100]);
-                token[100..164].copy_from_slice(&signature);
+                let signature = signer.sign(&token[0..99]);
+                token[99..163].copy_from_slice(&signature);
             };
 
             Authorization { token }
@@ -193,8 +193,8 @@ impl Authorization {
             token[35..67].copy_from_slice(&issued_by.id());
 
             if let Identifier::Owned(signer) = issued_by {
-                let signature = signer.sign(&token[0..68]);
-                token[68..132].copy_from_slice(&signature);
+                let signature = signer.sign(&token[0..67]);
+                token[67..131].copy_from_slice(&signature);
             };
 
             Authorization { token }

@@ -1,17 +1,8 @@
 use crate::error::SelfError;
 
-use ciborium::value::Value;
-use coset::iana;
+use serde::{Deserialize, Serialize};
 
-const SUB: i64 = iana::CwtClaimName::Sub as i64;
-const AUD: i64 = iana::CwtClaimName::Aud as i64;
-const EXP: i64 = iana::CwtClaimName::Exp as i64;
-const IAT: i64 = iana::CwtClaimName::Iat as i64;
-const CTI: i64 = iana::CwtClaimName::Cti as i64;
-const TYP: i64 = -100000;
-const CNT: i64 = -100001;
-
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Content {
     typ: Option<String>,
     sub: Option<Vec<u8>>,
@@ -36,121 +27,18 @@ impl Content {
     }
 
     pub fn decode(data: &[u8]) -> Result<Content, SelfError> {
-        let mut m = Content::new();
-
-        let payload: Value =
+        let c: Content =
             ciborium::de::from_reader(data).map_err(|_| SelfError::MessagePayloadInvalid)?;
-
-        for entry in payload.as_map().into_iter() {
-            if entry.is_empty() {
-                continue;
-            }
-
-            match &entry[0].0 {
-                x if x.eq(&Value::from(AUD)) => {
-                    m.aud = Some(
-                        entry[0]
-                            .1
-                            .as_bytes()
-                            .ok_or(SelfError::MessageDecodingInvalid)?
-                            .clone(),
-                    );
-                }
-                x if x.eq(&Value::from(SUB)) => {
-                    m.sub = Some(
-                        entry[0]
-                            .1
-                            .as_bytes()
-                            .ok_or(SelfError::MessageDecodingInvalid)?
-                            .clone(),
-                    );
-                }
-                x if x.eq(&Value::from(CTI)) => {
-                    m.cti = Some(
-                        entry[0]
-                            .1
-                            .as_bytes()
-                            .ok_or(SelfError::MessageDecodingInvalid)?
-                            .clone(),
-                    );
-                }
-                x if x.eq(&Value::from(TYP)) => {
-                    m.typ = Some(
-                        entry[0]
-                            .1
-                            .as_text()
-                            .ok_or(SelfError::MessageDecodingInvalid)?
-                            .to_string(),
-                    );
-                }
-                x if x.eq(&Value::from(IAT)) => {
-                    m.iat = Some(
-                        entry[0]
-                            .1
-                            .as_integer()
-                            .ok_or(SelfError::MessageDecodingInvalid)?
-                            .try_into()
-                            .map_err(|_| SelfError::MessageDecodingInvalid)?,
-                    );
-                }
-                x if x.eq(&Value::from(EXP)) => {
-                    m.exp = Some(
-                        entry[0]
-                            .1
-                            .as_integer()
-                            .ok_or(SelfError::MessageDecodingInvalid)?
-                            .try_into()
-                            .map_err(|_| SelfError::MessageDecodingInvalid)?,
-                    );
-                }
-                x if x.eq(&Value::from(CNT)) => {
-                    m.content = Some(
-                        entry[0]
-                            .1
-                            .as_bytes()
-                            .ok_or(SelfError::MessageDecodingInvalid)?
-                            .clone(),
-                    );
-                }
-                _ => {}
-            }
-        }
-
-        Ok(m)
+        Ok(c)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
-        // construct and encode the payload
-        let mut payload: Vec<(Value, Value)> = Vec::new();
-        let mut encoded_payload = Vec::new();
+        let mut encoded_c = Vec::new();
 
-        // map all of the standard fields
-        if let Some(aud) = self.aud.as_ref() {
-            payload.push((Value::from(AUD), Value::from(aud.clone())));
-        }
-        if let Some(sub) = self.sub.as_ref() {
-            payload.push((Value::from(SUB), Value::from(sub.clone())));
-        }
-        if let Some(cti) = self.cti.as_ref() {
-            payload.push((Value::from(CTI), Value::from(cti.clone())));
-        }
-        if let Some(typ) = self.typ.as_ref() {
-            payload.push((Value::from(TYP), Value::from(typ.clone())));
-        }
-        if let Some(iat) = self.iat.as_ref() {
-            payload.push((Value::from(IAT), Value::from(*iat)));
-        }
-        if let Some(exp) = self.exp.as_ref() {
-            payload.push((Value::from(EXP), Value::from(*exp)));
-        }
-        if let Some(cnt) = self.content.as_ref() {
-            payload.push((Value::from(CNT), Value::from(cnt.clone())));
-        }
-
-        ciborium::ser::into_writer(&Value::Map(payload), &mut encoded_payload)
+        ciborium::ser::into_writer(self, &mut encoded_c)
             .map_err(|_| SelfError::MessageEncodingInvalid)?;
 
-        Ok(encoded_payload)
+        Ok(encoded_c)
     }
 
     pub fn audience_set(&mut self, aud: &[u8]) {
@@ -219,6 +107,7 @@ impl Default for Content {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ciborium::value::Value;
 
     #[test]
     fn audience() {

@@ -15,6 +15,7 @@ use crate::transport::websocket::Subscription;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub type QueuedInboxMessage = (Identifier, Identifier, Identifier, u64, Vec<u8>);
 pub type QueuedOutboxMessage = (Identifier, Identifier, u64, Vec<u8>);
@@ -23,10 +24,14 @@ pub struct Storage {
     conn: Connection,
     acache: HashMap<Identifier, Rc<RefCell<Account>>>,
     gcache: HashMap<Identifier, Rc<RefCell<Group>>>,
-    kcache: HashMap<Identifier, Rc<KeyPair>>,
+    kcache: HashMap<Identifier, Arc<KeyPair>>,
     scache: HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
 }
 
+// TODO verify this is actually safe
+// storage is always used with an arc + mutex, so it should be safe to use
+// any values returned are either retured as owned obhjects, or are wrapped
+// with an arc (such as keypairs)
 unsafe impl Send for Storage {}
 
 // This whole implementation is horrible and only temporary...
@@ -293,47 +298,21 @@ impl Storage {
         Ok(())
     }
 
-    pub fn keypair_get(&mut self, identifier: &Identifier) -> Result<Rc<KeyPair>, SelfError> {
+    pub fn keypair_get(&mut self, identifier: &Identifier) -> Result<Arc<KeyPair>, SelfError> {
         // check if the key exists in the cache
         if let Some(kp) = self.kcache.get(identifier) {
             return Ok(kp.clone());
         };
 
-        let txn = self
+        let mut txn = self
             .conn
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        let mut statement = txn
-            .prepare(
-                "SELECT keypair FROM keypairs
-                INNER JOIN identifiers ON
-                    keypairs.for_identifier = identifiers.id
-                WHERE identifiers.identifier = ?1;",
-            )
-            .expect("failed to prepare statement");
+        let keypair = keypair_get(&mut txn, &mut self.kcache, identifier)?;
 
-        let mut rows = match statement.query([&identifier.id()]) {
-            Ok(rows) => rows,
-            Err(err) => {
-                println!("{}", err);
-                return Err(SelfError::StorageTransactionCommitFailed);
-            }
-        };
-
-        let row = match rows.next() {
-            Ok(row) => match row {
-                Some(row) => row,
-                None => return Err(SelfError::KeychainKeyNotFound),
-            },
-            Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
-        };
-
-        let kp_encoded: Vec<u8> = row.get(3).unwrap();
-        let kp = KeyPair::decode(&kp_encoded)?;
-        let keypair = Rc::new(kp);
-
-        self.kcache.insert(identifier.clone(), keypair.clone());
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
         Ok(keypair)
     }
@@ -402,7 +381,7 @@ impl Storage {
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        self.kcache.insert(identifier, Rc::new(keypair.clone()));
+        self.kcache.insert(identifier, Arc::new(keypair.clone()));
 
         Ok(())
     }
@@ -464,6 +443,9 @@ impl Storage {
                 keypairs.push(keypair);
             }
         }
+
+        txn.commit()
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
         Ok(keypairs)
     }
@@ -557,7 +539,7 @@ impl Storage {
         &mut self,
         from_identifier: &Identifier,
         for_identifier: &Identifier,
-        token: Token,
+        token: &Token,
     ) -> Result<(), SelfError> {
         // create the token
         let txn = self
@@ -570,7 +552,7 @@ impl Storage {
             .map_err(|_| SelfError::TokenEncodingInvalid)?;
 
         txn.execute(
-            "INSERT INTO tokens (from_identifier, purpose, token) 
+            "INSERT INTO tokens (from_identifier, for_identifier, purpose, token) 
             VALUES (
                 (SELECT id FROM identifiers WHERE identifier=?1),
                 (SELECT id FROM identifiers WHERE identifier=?2),
@@ -819,6 +801,7 @@ impl Storage {
         let result = encrypt_for(
             &mut txn,
             &mut self.gcache,
+            &mut self.kcache,
             &mut self.scache,
             recipient,
             plaintext,
@@ -1013,12 +996,13 @@ fn outbox_queue(
 fn encrypt_for(
     txn: &mut Transaction,
     gcache: &mut HashMap<Identifier, Rc<RefCell<Group>>>,
+    kcache: &mut HashMap<Identifier, Arc<KeyPair>>,
     scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
     recipient: &Identifier,
     plaintext: &[u8],
 ) -> Result<(Identifier, u64, Vec<u8>), SelfError> {
     // search cache for group
-    let group = match group_get(txn, gcache, scache, recipient)? {
+    let group = match group_get(txn, gcache, kcache, scache, recipient)? {
         Some(group) => group,
         None => return Err(SelfError::MessagingDestinationUnknown),
     };
@@ -1147,6 +1131,7 @@ fn decrypt_from(
 fn group_get(
     txn: &mut Transaction,
     gcache: &mut HashMap<Identifier, Rc<RefCell<Group>>>,
+    kcache: &mut HashMap<Identifier, Arc<KeyPair>>,
     scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
     group_identifier: &Identifier,
 ) -> Result<Option<Rc<RefCell<Group>>>, SelfError> {
@@ -1165,7 +1150,18 @@ fn group_get(
             session.as_ref().borrow().with_identifier(),
         )?;
 
-        let mut group = Group::new(session.as_ref().borrow().as_identifier().clone(), sequence);
+        let session_identifier = session.as_ref().borrow().as_identifier().clone();
+
+        let as_identifier = match session_identifier {
+            Identifier::Owned(_) => session_identifier,
+            Identifier::Referenced(_) => Identifier::Owned(
+                keypair_get(txn, kcache, &session_identifier)?
+                    .as_ref()
+                    .clone(),
+            ),
+        };
+
+        let mut group = Group::new(as_identifier, sequence);
 
         for s in &sessions {
             group.add_participant(s.clone());
@@ -1317,6 +1313,50 @@ fn account_update(txn: &mut Transaction, account: &Rc<RefCell<Account>>) -> Resu
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
     Ok(())
+}
+
+fn keypair_get(
+    txn: &mut Transaction,
+    kcache: &mut HashMap<Identifier, Arc<KeyPair>>,
+    identifier: &Identifier,
+) -> Result<Arc<KeyPair>, SelfError> {
+    // check if the key exists in the cache
+    if let Some(kp) = kcache.get(identifier) {
+        return Ok(kp.clone());
+    };
+
+    let mut statement = txn
+        .prepare(
+            "SELECT keypair FROM keypairs
+            INNER JOIN identifiers ON
+                keypairs.for_identifier = identifiers.id
+            WHERE identifiers.identifier = ?1;",
+        )
+        .expect("failed to prepare statement");
+
+    let mut rows = match statement.query([&identifier.id()]) {
+        Ok(rows) => rows,
+        Err(err) => {
+            println!("{}", err);
+            return Err(SelfError::StorageTransactionCommitFailed);
+        }
+    };
+
+    let row = match rows.next() {
+        Ok(row) => match row {
+            Some(row) => row,
+            None => return Err(SelfError::KeychainKeyNotFound),
+        },
+        Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
+    };
+
+    let kp_encoded: Vec<u8> = row.get(3).unwrap();
+    let kp = KeyPair::decode(&kp_encoded)?;
+    let keypair = Arc::new(kp);
+
+    kcache.insert(identifier.clone(), keypair.clone());
+
+    Ok(keypair)
 }
 
 fn session_get(
