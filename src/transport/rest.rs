@@ -183,9 +183,8 @@ impl Rest {
 
     fn authorization(&self, authorization: &Token, headers: &mut reqwest::header::HeaderMap) {
         if let Ok(token) = authorization.encode() {
-            let auth = reqwest::header::HeaderValue::from_str(
-                &String::from_utf8(token).expect("token encoding failed"),
-            );
+            let token_encoded = base64::encode_config(token, base64::URL_SAFE_NO_PAD);
+            let auth = reqwest::header::HeaderValue::from_str(&token_encoded);
             headers.insert("Self-Authorization", auth.unwrap());
         };
     }

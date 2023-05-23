@@ -298,7 +298,12 @@ impl Account {
         };
 
         let content = ConnectionRequest {
-            ath: Some(token_create_authorization(&mut storage, with, &using)?),
+            ath: Some(token_create_authorization(
+                &mut storage,
+                Some(with),
+                &using,
+                None,
+            )?),
             ntf: None,
         }
         .encode()?;
@@ -324,6 +329,35 @@ impl Account {
         Ok(())
     }
 
+    /// creates an authorization and notification token (if a notification secret has been set) for the primary messaging identifier that can be shared with other identifier(s)
+    pub fn token_generate(
+        &mut self,
+        with: Option<&Identifier>,
+        expires: Option<i64>,
+    ) -> Result<(Token, Option<Token>), SelfError> {
+        let as_identifier = match self.messaging_identifer() {
+            Some(as_identifier) => as_identifier,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let mut storage = match &mut self.storage {
+            Some(storage) => storage.lock().unwrap(),
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let authentication_token =
+            token_create_authorization(&mut storage, with, &as_identifier, expires)?;
+
+        Ok((authentication_token, None))
+    }
+
+    /*
+        /// creates an authorization and notification token for a new anonymous identifier that can be shared with other identifier(s)
+        pub fn token_generate_anonymously(&mut self, with: Option<&Identifier>, expires: Option<i64>) -> Result<(Token, Token), SelfError> {
+
+        }
+    */
+
     /// sends a message to a given identifier
     pub fn send(&mut self, to: &Identifier, message: &Content) -> Result<(), SelfError> {
         self.encrypt_and_send(to, &message.encode()?)
@@ -345,7 +379,8 @@ impl Account {
                         if let Some(authorization_token) = connection_req.ath {
                             storage.token_create(
                                 &message.from,
-                                &message.to,
+                                Some(&message.to),
+                                i64::MAX,
                                 &authorization_token,
                             )?;
                         }
@@ -353,15 +388,19 @@ impl Account {
                         if let Some(notification_token) = connection_req.ntf {
                             storage.token_create(
                                 &message.from,
-                                &message.to,
+                                Some(&message.to),
+                                i64::MAX,
                                 &notification_token,
                             )?;
                         }
 
                         // generate tokens for the sender of the request
-                        let token =
-                            token_create_authorization(&mut storage, &message.from, &message.to)?;
-
+                        let token = token_create_authorization(
+                            &mut storage,
+                            Some(&message.from),
+                            &message.to,
+                            None,
+                        )?;
                         // drop the storage lock
                         drop(storage);
 
@@ -412,7 +451,8 @@ impl Account {
                         if let Some(authorization_token) = connection_req.ath {
                             storage.token_create(
                                 &message.from,
-                                &message.to,
+                                Some(&message.to),
+                                i64::MAX,
                                 &authorization_token,
                             )?;
                         }
@@ -420,7 +460,8 @@ impl Account {
                         if let Some(notification_token) = connection_req.ntf {
                             storage.token_create(
                                 &message.from,
-                                &message.to,
+                                Some(&message.to),
+                                i64::MAX,
                                 &notification_token,
                             )?;
                         }
@@ -541,24 +582,35 @@ impl Default for Account {
 
 fn token_create_authorization(
     storage: &mut MutexGuard<Storage>,
-    to: &Identifier,
+    to: Option<&Identifier>,
     from: &Identifier,
+    expires: Option<i64>,
 ) -> Result<Token, SelfError> {
     // get keypair for signing...
-    let signing_key = storage.keypair_get(from)?;
-    let signing_identifier = Identifier::Owned(signing_key.as_ref().clone());
+    let signing_identifier = match from {
+        Identifier::Owned(_) => from.clone(),
+        Identifier::Referenced(_) => {
+            let signing_key = storage.keypair_get(from)?;
+            Identifier::Owned(signing_key.as_ref().clone())
+        }
+    };
+
+    let expires = match expires {
+        Some(expires) => expires,
+        None => i64::MAX,
+    };
 
     // create a token that never expires
     // TODO make configurable
     let token = Token::Authorization(crate::token::Authorization::new(
         &signing_identifier,
-        Some(to),
-        i64::MAX,
+        to,
+        expires,
     ));
 
     // add the token to our own storage so we can track who has been given access
     // this allows us to know which tokens will need to be rotated/revoked, etc
-    storage.token_create(&signing_identifier, to, &token)?;
+    storage.token_create(&signing_identifier, to, expires, &token)?;
 
     Ok(token)
 }

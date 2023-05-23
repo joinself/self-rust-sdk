@@ -184,8 +184,9 @@ impl Storage {
                 "CREATE TABLE tokens (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     from_identifier INTEGER NOT NULL,
-                    for_identifier INTEGER NOT NULL,
+                    for_identifier INTEGER,
                     purpose INTEGER NOT NULL,
+                    expires INTEGER NOT NULL,
                     token BLOB NOT NULL
                 );
                 CREATE UNIQUE INDEX idx_tokens_from
@@ -538,7 +539,8 @@ impl Storage {
     pub fn token_create(
         &mut self,
         from_identifier: &Identifier,
-        for_identifier: &Identifier,
+        for_identifier: Option<&Identifier>,
+        expires: i64,
         token: &Token,
     ) -> Result<(), SelfError> {
         // create the token
@@ -551,22 +553,40 @@ impl Storage {
         ciborium::ser::into_writer(&token, &mut encoded_token)
             .map_err(|_| SelfError::TokenEncodingInvalid)?;
 
-        txn.execute(
-            "INSERT INTO tokens (from_identifier, for_identifier, purpose, token) 
-            VALUES (
-                (SELECT id FROM identifiers WHERE identifier=?1),
-                (SELECT id FROM identifiers WHERE identifier=?2),
-                ?3,
-                ?4
-            );",
-            (
-                &from_identifier.id(),
-                &for_identifier.id(),
-                token.kind(),
-                &encoded_token,
-            ),
-        )
-        .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        if let Some(for_identifier) = for_identifier {
+            txn.execute(
+                "INSERT INTO tokens (from_identifier, for_identifier, purpose, expires, token) 
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    (SELECT id FROM identifiers WHERE identifier=?2),
+                    ?3,
+                    ?4,
+                    ?5
+                );",
+                (
+                    &from_identifier.id(),
+                    &for_identifier.id(),
+                    token.kind(),
+                    expires,
+                    &encoded_token,
+                ),
+            )
+            .expect("f");
+            //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        } else {
+            txn.execute(
+                "INSERT INTO tokens (from_identifier, purpose, expires, token) 
+                VALUES (
+                    (SELECT id FROM identifiers WHERE identifier=?1),
+                    ?2,
+                    ?3,
+                    ?4
+                );",
+                (&from_identifier.id(), token.kind(), expires, &encoded_token),
+            )
+            .expect("f");
+            //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        }
 
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
