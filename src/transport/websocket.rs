@@ -18,10 +18,22 @@ use crate::keypair::signing::PublicKey;
 use crate::protocol::messaging;
 use crate::token::Token;
 
+pub struct Response {
+    pub from: Identifier,
+    pub to: Identifier,
+    pub sequence: u64,
+    pub content: Vec<u8>,
+    pub tokens: Option<Vec<Token>>,
+    pub callback: SendCallback,
+}
+
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB =
-    Arc<dyn Fn(&Identifier, &Identifier, Option<Identifier>, u64, &[u8]) + Sync + Send>;
+pub type OnMessageCB = Arc<
+    dyn Fn(&Identifier, &Identifier, Option<Identifier>, u64, &[u8]) -> Option<Response>
+        + Sync
+        + Send,
+>;
 
 #[derive(Clone)]
 pub struct Callbacks {
@@ -31,10 +43,10 @@ pub struct Callbacks {
 }
 
 pub type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type Response = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+pub type ResponseCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 
 enum Event {
-    Message(Vec<u8>, Message, Option<Response>),
+    Message(Vec<u8>, Message, Option<ResponseCallback>),
     Done,
 }
 
@@ -97,7 +109,8 @@ impl Websocket {
 
         // TODO cleanup old sockets!
         let (tx, rx) = channel::bounded(1);
-        let requests: Arc<Mutex<HashMap<Vec<u8>, Response>>> = Arc::new(Mutex::new(HashMap::new()));
+        let requests: Arc<Mutex<HashMap<Vec<u8>, ResponseCallback>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
 

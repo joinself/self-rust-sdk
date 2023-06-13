@@ -87,13 +87,19 @@ impl Account {
                       recipient: &Identifier,
                       subscriber: Option<Identifier>,
                       sequence: u64,
-                      ciphertext: &[u8]| {
+                      ciphertext: &[u8]|
+                      -> Option<crate::transport::websocket::Response> {
                     let on_message_ud = user_data.clone();
                     let on_message_st = storage.clone();
                     let mut storage = on_message_st.lock().unwrap();
-                    match storage
-                        .decrypt_and_queue(sender, recipient, subscriber, sequence, ciphertext)
-                    {
+
+                    let plaintext = storage
+                        .decrypt_and_queue(sender, recipient, subscriber, sequence, ciphertext);
+                    drop(storage);
+
+                    let mut response: Option<crate::transport::websocket::Response> = None;
+
+                    match plaintext {
                         Ok(plaintext) => {
                             match Content::decode(&plaintext) {
                                 Ok(content) => {
@@ -124,7 +130,7 @@ impl Account {
                                         } else {
                                             if msg_type == MESSAGE_TYPE_CHAT_MSG {
                                                 if let Some(message_id) = content.cti_get() {
-                                                    drop(storage);
+                                                    // drop(storage);
 
                                                     // send a response accepting the request to the sender
                                                     let mut msg = Content::new();
@@ -143,11 +149,45 @@ impl Account {
                                                         .unwrap(),
                                                     );
 
-                                                    self.encrypt_and_send(
-                                                        &sender,
-                                                        &msg.encode().unwrap(),
-                                                    )
-                                                    .unwrap();
+                                                    let mut storage_lock =
+                                                        on_message_st.lock().unwrap();
+
+                                                    let (from, sequence, content) = storage_lock
+                                                        .encrypt_and_queue(
+                                                            sender,
+                                                            &msg.encode().unwrap(),
+                                                        )
+                                                        .expect(
+                                                            "failed to encrypt and queue response",
+                                                        );
+
+                                                    drop(storage_lock);
+
+                                                    let on_response_st = on_message_st.clone();
+
+                                                    let from_clone = from.clone();
+                                                    let sender_clone = sender.clone();
+
+                                                    response = Some(
+                                                        crate::transport::websocket::Response {
+                                                            from,
+                                                            to: sender.clone(),
+                                                            sequence,
+                                                            content,
+                                                            tokens: None,
+                                                            callback: Arc::new(move |resp| {
+                                                                if resp.is_err() {
+                                                                    // TODO log this
+                                                                    return;
+                                                                }
+
+                                                                let mut storage_lock =
+                                                                    on_response_st.lock().unwrap();
+                                                                storage_lock.outbox_dequeue(&from_clone, &sender_clone.clone(), sequence).expect("failed to dequeue response");
+                                                                drop(storage_lock);
+                                                            }),
+                                                        },
+                                                    );
                                                 }
                                             }
 
@@ -168,10 +208,20 @@ impl Account {
                         }
                         Err(err) => println!("failed to decrypt and queue message: {}", err),
                     }
+
+                    response
                 },
             )
                 as Arc<
-                    dyn Fn(&Identifier, &Identifier, Option<Identifier>, u64, &[u8]) + Send + Sync,
+                    dyn Fn(
+                            &Identifier,
+                            &Identifier,
+                            Option<Identifier>,
+                            u64,
+                            &[u8],
+                        ) -> Option<crate::transport::websocket::Response>
+                        + Send
+                        + Sync,
                 >),
         };
 

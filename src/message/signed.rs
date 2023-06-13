@@ -19,10 +19,10 @@ const CNT: i64 = -100001;
 
 #[derive(Clone)]
 pub struct SignedContent {
+    typ: Option<String>,
     sub: Option<Vec<u8>>,
     aud: Option<Vec<u8>>,
     cti: Option<Vec<u8>>,
-    typ: Option<String>,
     iat: Option<i64>,
     exp: Option<i64>,
     content: Option<Vec<u8>>,
