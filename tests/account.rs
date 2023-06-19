@@ -469,6 +469,7 @@ fn account_send_chat_message() {
 
     let (alices_on_message_tx, alices_on_message_rx) = crossbeam::channel::bounded::<Envelope>(64);
     let (alices_on_request_tx, alices_on_request_rx) = crossbeam::channel::bounded::<Envelope>(64);
+    let (bobs_on_message_tx, bobs_on_message_rx) = crossbeam::channel::bounded::<Envelope>(64);
     let (bobs_on_response_tx, bobs_on_response_rx) = crossbeam::channel::bounded::<Envelope>(64);
 
     let mut alices_account = register_test_account(
@@ -485,7 +486,7 @@ fn account_send_chat_message() {
         Some(MessagingChannels {
             on_request: None,
             on_response: Some(bobs_on_response_tx),
-            on_message: None,
+            on_message: Some(bobs_on_message_tx),
         }),
     );
 
@@ -555,8 +556,8 @@ fn account_send_chat_message() {
     let chat_message = ChatMessage::decode(&content).expect("failed to decode message");
     assert_eq!(chat_message.msg, "hello alice");
 
-    // wait to receive delivered receipt from bob
-    let delivery_response = bobs_on_response_rx
+    // wait to receive delivered receipt from alice
+    let delivery_response = bobs_on_message_rx
         .recv_deadline(default_timeout())
         .expect("timeout waiting for delivery receipt");
     assert_eq!(delivery_response.to, bobs_identifier);
@@ -579,8 +580,8 @@ fn account_send_chat_message() {
         .accept(&message)
         .expect("failed to send read receipt to bob");
 
-    // wait to receive delivered receipt from bob
-    let read_response = bobs_on_response_rx
+    // wait to receive read receipt from alice
+    let read_response = bobs_on_message_rx
         .recv_deadline(default_timeout())
         .expect("timeout waiting for delivery receipt");
     assert_eq!(read_response.to, bobs_identifier);
@@ -591,6 +592,7 @@ fn account_send_chat_message() {
         .content
         .content_get()
         .expect("message content missing");
+
     let read = ChatRead::decode(&content).expect("failed to decode encoded receipt");
     assert_eq!(&message_id, read.rdm.first().expect("no message id"));
 }

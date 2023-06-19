@@ -4,8 +4,8 @@ use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
 use crate::keypair::Usage;
 use crate::message::{
-    self, ChatDelivered, ConnectionRequest, ConnectionResponse, Content, Envelope, ResponseStatus,
-    MESSAGE_TYPE_CHAT_MSG,
+    self, ChatDelivered, ChatRead, ConnectionRequest, ConnectionResponse, Content, Envelope,
+    ResponseStatus, MESSAGE_TYPE_CHAT_MSG,
 };
 use crate::protocol::api::PrekeyResponse;
 use crate::siggraph::SignatureGraph;
@@ -508,8 +508,8 @@ impl Account {
                     if let Some(message_id) = message.content.cti_get() {
                         drop(storage);
                         // respond to sender
-                        let content = ChatDelivered {
-                            dlm: vec![message_id],
+                        let content = ChatRead {
+                            rdm: vec![message_id],
                         }
                         .encode()?;
 
@@ -519,7 +519,7 @@ impl Account {
                         if let Some(cti) = message.content.cti_get() {
                             msg.cti_set(&cti);
                         }
-                        msg.type_set(message::MESSAGE_TYPE_CHAT_DELIVERED);
+                        msg.type_set(message::MESSAGE_TYPE_CHAT_READ);
                         msg.issued_at_set(crate::time::now().timestamp());
                         msg.content_set(&content);
 
