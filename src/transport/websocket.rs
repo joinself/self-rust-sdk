@@ -1,5 +1,6 @@
 use crossbeam::channel;
 use crossbeam::channel::{Receiver, Sender};
+use flatbuffers::{Vector, WIPOffset};
 use futures_util::{SinkExt, StreamExt};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -13,75 +14,114 @@ use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
 use crate::identifier::Identifier;
+use crate::keypair::signing::PublicKey;
 use crate::protocol::messaging;
 use crate::token::Token;
 
-pub type Response = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+pub struct Response {
+    pub from: Identifier,
+    pub to: Identifier,
+    pub sequence: u64,
+    pub content: Vec<u8>,
+    pub tokens: Option<Vec<Token>>,
+    pub callback: SendCallback,
+}
+
+pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
+pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+pub type OnMessageCB = Arc<
+    dyn Fn(&Identifier, &Identifier, Option<Identifier>, u64, &[u8]) -> Option<Response>
+        + Sync
+        + Send,
+>;
+
+#[derive(Clone)]
+pub struct Callbacks {
+    pub on_connect: Option<OnConnectCB>,
+    pub on_disconnect: Option<OnDisconnectCB>,
+    pub on_message: Option<OnMessageCB>,
+}
+
+pub type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+pub type ResponseCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 
 enum Event {
-    Message(Vec<u8>, Message, Option<Response>),
+    Message(Vec<u8>, Message, Option<ResponseCallback>),
     Done,
 }
 
+#[derive(Clone)]
 pub struct Subscription {
-    pub identifier: Identifier,
+    pub to_identifier: Identifier,
+    pub as_identifier: Option<Identifier>,
     pub from: i64,
     pub token: Option<Token>,
 }
 
 pub struct Websocket {
     endpoint: Url,
-    read_tx: Sender<(Vec<u8>, Vec<u8>)>,
-    read_rx: Receiver<(Vec<u8>, Vec<u8>)>,
+    callbacks: Callbacks,
     write_tx: Sender<Event>,
     write_rx: Receiver<Event>,
     runtime: Runtime,
-    subscriptions: Vec<Subscription>,
+    subscriptions: Arc<Mutex<HashMap<Vec<u8>, Subscription>>>,
 }
 
-impl Websocket {
-    pub fn new(
-        url: &str,
-        subscriptions: Vec<Subscription>,
-    ) -> std::result::Result<Websocket, SelfError> {
-        let endpoint = match Url::parse(url) {
-            Ok(endpoint) => endpoint,
-            Err(_) => return Err(SelfError::RestRequestURLInvalid),
-        };
+// TODO fix subscriptions...
+unsafe impl Send for Websocket {}
+unsafe impl Sync for Websocket {}
 
-        let (read_tx, read_rx) = channel::bounded(256);
+impl Websocket {
+    pub fn new(endpoint: &str, callbacks: Callbacks) -> Result<Websocket, SelfError> {
         let (write_tx, write_rx) = channel::bounded(256);
 
         let runtime = Runtime::new().unwrap();
 
-        let ws = Websocket {
+        let endpoint = match Url::parse(endpoint) {
+            Ok(endpoint) => endpoint,
+            Err(_) => return Err(SelfError::RestRequestURLInvalid),
+        };
+
+        Ok(Websocket {
             endpoint,
-            read_tx,
-            read_rx,
+            callbacks,
             write_tx,
             write_rx,
             runtime,
-            subscriptions,
-        };
-
-        Ok(ws)
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
-    pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
+    pub fn connect(
+        &mut self,
+        subscriptions: &[Subscription],
+    ) -> std::result::Result<(), SelfError> {
         let handle = self.runtime.handle();
         let endpoint = self.endpoint.clone();
-        let read_tx = self.read_tx.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
+        let subs_connect = self.subscriptions.clone();
+        let subs = self.subscriptions.clone();
+        let new_subscriptions = subscriptions.to_owned();
+
+        let on_connect_cb = self.callbacks.on_connect.clone();
+        let on_message_cb = self.callbacks.on_message.clone();
 
         // TODO cleanup old sockets!
-
         let (tx, rx) = channel::bounded(1);
-        let requests: Arc<Mutex<HashMap<Vec<u8>, Response>>> = Arc::new(Mutex::new(HashMap::new()));
+        let requests: Arc<Mutex<HashMap<Vec<u8>, ResponseCallback>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
 
         handle.spawn(async move {
+            for sub in new_subscriptions {
+                subs_connect
+                    .lock()
+                    .await
+                    .insert(sub.to_identifier.id(), sub.clone());
+            }
+
             let result = match connect_async(&endpoint).await {
                 Ok((socket, _)) => Ok(socket),
                 Err(err) => {
@@ -172,12 +212,93 @@ impl Websocket {
                                     None => continue,
                                 };
 
-                                read_tx
-                                    .send((
-                                        payload.sender().unwrap().to_vec(),
-                                        payload.content().unwrap().to_vec(),
-                                    ))
-                                    .unwrap_or(());
+                                // TODO authenticate message signatures!!!!
+
+                                if let Some(on_message) = &on_message_cb {
+                                    let sender = payload.sender().unwrap();
+                                    let recipient = payload.recipient().unwrap();
+
+                                    let active_subs = subs.lock().await;
+
+                                    let subscriber = match active_subs.get(recipient) {
+                                        Some(sub) => sub.as_identifier.clone(),
+                                        None => {
+                                            println!(
+                                                "message received for an unknown recipient: {}",
+                                                hex::encode(recipient)
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    drop(active_subs);
+
+                                    let sender = Identifier::Referenced(
+                                        PublicKey::from_bytes(
+                                            sender,
+                                            crate::keypair::Algorithm::Ed25519,
+                                        )
+                                        .expect("server has forwarded a message with a bad sender"),
+                                    );
+
+                                    let recipient = Identifier::Referenced(
+                                        PublicKey::from_bytes(
+                                            recipient,
+                                            crate::keypair::Algorithm::Ed25519,
+                                        )
+                                        .expect(
+                                            "server has forwarded a message with a bad recipient",
+                                        ),
+                                    );
+
+                                    let content = payload.content().unwrap();
+
+                                    if let Some(response) = on_message(
+                                        &sender,
+                                        &recipient,
+                                        subscriber,
+                                        payload.sequence(),
+                                        content,
+                                    ) {
+                                        let payload = match assemble_payload(
+                                            &response.from,
+                                            &response.to,
+                                            response.sequence,
+                                            &response.content,
+                                        ) {
+                                            Ok(payload) => payload,
+                                            Err(err) => {
+                                                (response.callback)(Err(err));
+                                                continue;
+                                            }
+                                        };
+
+                                        let (event_id, event_message) = match assemble_message(
+                                            &response.from,
+                                            &payload,
+                                            response.tokens,
+                                        ) {
+                                            Ok(event) => event,
+                                            Err(err) => {
+                                                (response.callback)(Err(err));
+                                                return;
+                                            }
+                                        };
+
+                                        let event = Event::Message(
+                                            event_id,
+                                            Message::Binary(event_message),
+                                            Some(Arc::clone(&response.callback)),
+                                        );
+
+                                        if write_tx.send(event).is_err() {
+                                            // TODO handle this error properly
+                                            (response.callback)(Err(
+                                                SelfError::RestRequestConnectionTimeout,
+                                            ));
+                                        }
+                                    };
+                                }
                             }
                         }
                         _ => {
@@ -198,6 +319,7 @@ impl Websocket {
                             lock.insert(id, cb);
                             drop(lock);
                         }
+                        // println!("sending message of size: {}", msg.len());
                         socket_tx.send(msg).await
                     } {
                         Ok(_) => continue,
@@ -212,14 +334,12 @@ impl Websocket {
         });
 
         let (tx, rx) = channel::bounded(1);
-
-        let (event_id, event_subscribe) = self.assemble_subscription(&self.subscriptions)?;
-
+        let (event_id, event_subscribe) = assemble_subscription(subscriptions)?;
         let deadline = Instant::now() + Duration::from_secs(5);
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {
             tx.send(result)
-                .expect("Failed to send authentication response");
+                .expect("Failed to send subscription response");
         });
 
         self.write_tx
@@ -231,13 +351,29 @@ impl Websocket {
             .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
 
         rx.recv_deadline(deadline)
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+        handle.spawn(async move {
+            if let Some(on_connect) = on_connect_cb {
+                on_connect();
+            }
+        });
+
+        Ok(())
     }
 
     pub fn disconnect(&mut self) -> Result<(), SelfError> {
+        if let Some(on_disconnect) = &self.callbacks.on_disconnect {
+            on_disconnect(Ok(()));
+        }
+
         self.write_tx
             .send(Event::Done)
             .map_err(|_| SelfError::RestRequestConnectionFailed)
+    }
+
+    pub fn subscribe(&mut self, _subscriptions: Vec<Subscription>) -> Result<(), SelfError> {
+        Ok(())
     }
 
     pub fn send(
@@ -247,9 +383,9 @@ impl Websocket {
         sequence: u64,
         content: &[u8],
         tokens: Option<Vec<Token>>,
-        callback: Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>,
+        callback: SendCallback,
     ) {
-        let payload = match self.assemble_payload(from, to, sequence, content) {
+        let payload = match assemble_payload(from, to, sequence, content) {
             Ok(payload) => payload,
             Err(err) => {
                 callback(Err(err));
@@ -257,7 +393,7 @@ impl Websocket {
             }
         };
 
-        let (event_id, event_message) = match self.assemble_message(from, &payload, tokens) {
+        let (event_id, event_message) = match assemble_message(from, &payload, tokens) {
             Ok(event) => event,
             Err(err) => {
                 callback(Err(err));
@@ -276,266 +412,260 @@ impl Websocket {
             callback(Err(SelfError::RestRequestConnectionTimeout));
         }
     }
+}
 
-    pub fn receive(&mut self) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
-        self.read_rx
-            .recv()
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)
+pub fn assemble_payload(
+    from: &Identifier,
+    to: &Identifier,
+    sequence: u64,
+    content: &[u8],
+) -> Result<Vec<u8>, SelfError> {
+    match from {
+        Identifier::Owned(_) => {}
+        _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
     }
 
-    pub fn subscribe(&mut self, _to: &Identifier) -> Result<(), SelfError> {
-        Ok(())
-    }
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
-    pub fn assemble_payload(
-        &self,
-        from: &Identifier,
-        to: &Identifier,
-        sequence: u64,
-        content: &[u8],
-    ) -> Result<Vec<u8>, SelfError> {
-        match from {
-            Identifier::Owned(_) => {}
-            _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
+    let sender = builder.create_vector(&from.id());
+    let recipient = builder.create_vector(&to.id());
+    let content = builder.create_vector(content);
+
+    let payload = messaging::Payload::create(
+        &mut builder,
+        &messaging::PayloadArgs {
+            sender: Some(sender),
+            recipient: Some(recipient),
+            content: Some(content),
+            sequence,
+            timestamp: crate::time::unix(),
+        },
+    );
+
+    builder.finish(payload, None);
+
+    return Ok(builder.finished_data().to_vec());
+}
+
+pub fn assemble_message(
+    from: &Identifier,
+    payload: &[u8],
+    tokens: Option<Vec<Token>>,
+) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+    let owned_identifier = match from {
+        Identifier::Owned(owned) => owned,
+        _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
+    };
+
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let mut payload_sig_buf = vec![0; payload.len() + 1];
+    payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
+    payload_sig_buf[1..payload.len() + 1].copy_from_slice(payload);
+    let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
+
+    let mut signatures = Vec::new();
+
+    signatures.push(messaging::Signature::create(
+        &mut builder,
+        &messaging::SignatureArgs {
+            type_: messaging::SignatureType::PAYLOAD,
+            signer: None,
+            signature: Some(sig),
+        },
+    ));
+
+    if let Some(tokens) = tokens {
+        for token in &tokens {
+            match token {
+                Token::Authorization(auth) => {
+                    let sig = builder.create_vector(&auth.token);
+
+                    signatures.push(messaging::Signature::create(
+                        &mut builder,
+                        &messaging::SignatureArgs {
+                            type_: messaging::SignatureType::TOKEN,
+                            signer: None,
+                            signature: Some(sig),
+                        },
+                    ));
+                }
+                Token::Delegation(delegation) => {
+                    let sig = builder.create_vector(&delegation.token);
+
+                    signatures.push(messaging::Signature::create(
+                        &mut builder,
+                        &messaging::SignatureArgs {
+                            type_: messaging::SignatureType::TOKEN,
+                            signer: None,
+                            signature: Some(sig),
+                        },
+                    ));
+                }
+                _ => {
+                    return Err(SelfError::WebsocketTokenUnsupported);
+                }
+            }
         }
-
-        // TODO pool/reuse these builders
-        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-
-        let sender = builder.create_vector(&from.id());
-        let recipient = builder.create_vector(&to.id());
-        let content = builder.create_vector(content);
-
-        let payload = messaging::Payload::create(
-            &mut builder,
-            &messaging::PayloadArgs {
-                sender: Some(sender),
-                recipient: Some(recipient),
-                content: Some(content),
-                sequence,
-                timestamp: crate::time::unix(),
-            },
-        );
-
-        builder.finish(payload, None);
-
-        return Ok(builder.finished_data().to_vec());
+    } else {
+        // TODO generate proof of work ...
     }
 
-    pub fn assemble_message(
-        &self,
-        from: &Identifier,
-        payload: &[u8],
-        tokens: Option<Vec<Token>>,
-    ) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
-        let owned_identifier = match from {
+    let pld = builder.create_vector(payload);
+    let sigs = builder.create_vector(&signatures);
+
+    let msg = messaging::Message::create(
+        &mut builder,
+        &messaging::MessageArgs {
+            payload: Some(pld),
+            signatures: Some(sigs),
+            pow: None,
+        },
+    );
+
+    builder.finish(msg, None);
+
+    let content = builder.finished_data().to_vec();
+
+    builder.reset();
+
+    let event_id = crate::crypto::random_id();
+
+    let eid = builder.create_vector(&event_id);
+    let cnt = builder.create_vector(&content);
+
+    let event = messaging::Event::create(
+        &mut builder,
+        &messaging::EventArgs {
+            id: Some(eid),
+            type_: messaging::ContentType::MESSAGE,
+            content: Some(cnt),
+        },
+    );
+
+    builder.finish(event, None);
+
+    return Ok((event_id, builder.finished_data().to_vec()));
+}
+
+fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+    let mut subs = Vec::new();
+    let now = crate::time::unix();
+
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    for subscription in subscriptions {
+        let owned_identifier = subscription
+            .as_identifier
+            .clone()
+            .unwrap_or(subscription.to_identifier.clone());
+
+        let owned_identifier = match &owned_identifier {
             Identifier::Owned(owned) => owned,
             _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
         };
 
-        // TODO pool/reuse these builders
-        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+        let inbox = builder.create_vector(&subscription.to_identifier.id());
 
-        let mut payload_sig_buf = vec![0; payload.len() + 1];
-        payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-        payload_sig_buf[1..payload.len() + 1].copy_from_slice(payload);
-        let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
+        let details = messaging::SubscriptionDetails::create(
+            &mut builder,
+            &messaging::SubscriptionDetailsArgs {
+                inbox: Some(inbox),
+                issued: now,
+                from: subscription.from,
+            },
+        );
 
-        let mut signatures = Vec::new();
+        builder.finish(details, None);
 
-        signatures.push(messaging::Signature::create(
+        let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
+        details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
+        details_sig_buf[1..builder.finished_data().len() + 1]
+            .copy_from_slice(builder.finished_data());
+
+        builder.reset();
+
+        let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf));
+
+        let mut sigs = Vec::new();
+        let mut signer: Option<WIPOffset<Vector<u8>>> = None;
+
+        if subscription.token.is_some() {
+            signer = Some(builder.create_vector(&owned_identifier.id()));
+        }
+
+        sigs.push(messaging::Signature::create(
             &mut builder,
             &messaging::SignatureArgs {
                 type_: messaging::SignatureType::PAYLOAD,
-                signer: None,
+                signer,
                 signature: Some(sig),
             },
         ));
 
-        if let Some(tokens) = tokens {
-            for token in &tokens {
-                match token {
-                    Token::Authorization(auth) => {
-                        let sig = builder.create_vector(&auth.token);
-
-                        signatures.push(messaging::Signature::create(
-                            &mut builder,
-                            &messaging::SignatureArgs {
-                                type_: messaging::SignatureType::AUTH,
-                                signer: None,
-                                signature: Some(sig),
-                            },
-                        ));
-                    }
-                    Token::Delegation(delegation) => {
-                        let sig = builder.create_vector(&delegation.token);
-                        let iss = builder.create_vector(&delegation.issuer.id());
-
-                        signatures.push(messaging::Signature::create(
-                            &mut builder,
-                            &messaging::SignatureArgs {
-                                type_: messaging::SignatureType::AUTH,
-                                signer: Some(iss),
-                                signature: Some(sig),
-                            },
-                        ));
-                    }
-                    _ => {
-                        return Err(SelfError::WebsocketTokenUnsupported);
-                    }
-                }
-            }
-        } else {
-            // TODO generate proof of work ...
-        }
-
-        let pld = builder.create_vector(payload);
-        let sigs = builder.create_vector(&signatures);
-
-        let msg = messaging::Message::create(
-            &mut builder,
-            &messaging::MessageArgs {
-                payload: Some(pld),
-                signatures: Some(sigs),
-                pow: None,
-            },
-        );
-
-        builder.finish(msg, None);
-
-        let content = builder.finished_data().to_vec();
-
-        builder.reset();
-
-        let event_id = crate::crypto::random_id();
-
-        let eid = builder.create_vector(&event_id);
-        let cnt = builder.create_vector(&content);
-
-        let event = messaging::Event::create(
-            &mut builder,
-            &messaging::EventArgs {
-                id: Some(eid),
-                type_: messaging::ContentType::MESSAGE,
-                content: Some(cnt),
-            },
-        );
-
-        builder.finish(event, None);
-
-        return Ok((event_id, builder.finished_data().to_vec()));
-    }
-
-    fn assemble_subscription(
-        &self,
-        subscriptions: &[Subscription],
-    ) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
-        let mut subs = Vec::new();
-        let now = crate::time::unix();
-
-        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
-
-        for subscription in subscriptions {
-            let owned_identifier = match &subscription.identifier {
-                Identifier::Owned(owned) => owned,
-                _ => return Err(SelfError::WebsocketSenderIdentifierNotOwned),
+        if let Some(token) = &subscription.token {
+            let subscription_token = match token {
+                Token::Subscription(subscription_token) => subscription_token,
+                _ => return Err(SelfError::WebsocketTokenUnsupported),
             };
 
-            let inbox = builder.create_vector(&subscription.identifier.id());
-
-            let details = messaging::SubscriptionDetails::create(
-                &mut builder,
-                &messaging::SubscriptionDetailsArgs {
-                    inbox: Some(inbox),
-                    issued: now,
-                    from: subscription.from,
-                },
-            );
-
-            builder.finish(details, None);
-
-            let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
-            details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-            details_sig_buf[1..builder.finished_data().len() + 1]
-                .copy_from_slice(builder.finished_data());
-
-            builder.reset();
-
-            let sig = builder.create_vector(&owned_identifier.sign(&details_sig_buf));
-
-            let mut sigs = Vec::new();
+            let sig = builder.create_vector(&subscription_token.token);
 
             sigs.push(messaging::Signature::create(
                 &mut builder,
                 &messaging::SignatureArgs {
-                    type_: messaging::SignatureType::PAYLOAD,
+                    type_: messaging::SignatureType::TOKEN,
                     signer: None,
                     signature: Some(sig),
                 },
             ));
-
-            if let Some(token) = &subscription.token {
-                let subscription_token = match token {
-                    Token::Subscription(subscription_token) => subscription_token,
-                    _ => return Err(SelfError::WebsocketTokenUnsupported),
-                };
-
-                let sig = builder.create_vector(&subscription_token.token);
-
-                sigs.push(messaging::Signature::create(
-                    &mut builder,
-                    &messaging::SignatureArgs {
-                        type_: messaging::SignatureType::SUBSCRIPTION,
-                        signer: None,
-                        signature: Some(sig),
-                    },
-                ));
-            }
-
-            let signatures = builder.create_vector(&sigs);
-            let details = builder.create_vector(&details_sig_buf[1..]);
-
-            subs.push(messaging::Subscription::create(
-                &mut builder,
-                &messaging::SubscriptionArgs {
-                    details: Some(details),
-                    signatures: Some(signatures),
-                },
-            ))
         }
 
-        let subs = builder.create_vector(&subs);
+        let signatures = builder.create_vector(&sigs);
+        let details = builder.create_vector(&details_sig_buf[1..]);
 
-        let subscribe = messaging::Subscribe::create(
+        subs.push(messaging::Subscription::create(
             &mut builder,
-            &messaging::SubscribeArgs {
-                subscriptions: Some(subs),
+            &messaging::SubscriptionArgs {
+                details: Some(details),
+                signatures: Some(signatures),
             },
-        );
-
-        builder.finish(subscribe, None);
-
-        let content = builder.finished_data().to_vec();
-        let event_id = crate::crypto::random_id();
-
-        builder.reset();
-
-        let eid = builder.create_vector(&event_id);
-        let cnt = builder.create_vector(&content);
-
-        let event = messaging::Event::create(
-            &mut builder,
-            &messaging::EventArgs {
-                id: Some(eid),
-                type_: messaging::ContentType::MESSAGE,
-                content: Some(cnt),
-            },
-        );
-
-        builder.finish(event, None);
-
-        return Ok((event_id, builder.finished_data().to_vec()));
+        ))
     }
+
+    let subs = builder.create_vector(&subs);
+
+    let subscribe = messaging::Subscribe::create(
+        &mut builder,
+        &messaging::SubscribeArgs {
+            subscriptions: Some(subs),
+        },
+    );
+
+    builder.finish(subscribe, None);
+
+    let content = builder.finished_data().to_vec();
+    let event_id = crate::crypto::random_id();
+
+    builder.reset();
+
+    let eid = builder.create_vector(&event_id);
+    let cnt = builder.create_vector(&content);
+
+    let event = messaging::Event::create(
+        &mut builder,
+        &messaging::EventArgs {
+            id: Some(eid),
+            type_: messaging::ContentType::SUBSCRIBE,
+            content: Some(cnt),
+        },
+    );
+
+    builder.finish(event, None);
+
+    return Ok((event_id, builder.finished_data().to_vec()));
 }
 
 #[cfg(test)]
@@ -754,8 +884,7 @@ mod tests {
                 .expect("Subscription details invalid");
             let inbox = details.inbox().expect("Subscription inbox missing");
 
-            let (mut authenticated, mut authorized) = (false, false);
-            let mut subscriber: Option<&[u8]> = None;
+            let (mut authenticated_as, mut authorized_by, mut authorized_for) = (None, None, None);
 
             // validate the subscriptions signatures
             for signature in signatures {
@@ -778,39 +907,107 @@ mod tests {
                             return;
                         };
 
-                        subscriptions.push(inbox.to_vec());
-
+                        // if the signer is the inbox that a subscription is being requested for, then we can exit
                         if inbox == signer {
-                            (authenticated, authorized) = (true, true);
+                            (authenticated_as, authorized_by) =
+                                (Some(signer.to_vec()), Some(signer.to_vec()));
                             break;
                         }
 
-                        subscriber = Some(signer);
-
-                        authenticated = true;
+                        authenticated_as = Some(signer.to_vec());
                     }
-                    messaging::SignatureType::SUBSCRIPTION => {
-                        let mut subscription_sig_buf = vec![0; 65];
-                        subscription_sig_buf[0] = messaging::SignatureType::SUBSCRIPTION.0 as u8;
-                        subscription_sig_buf[1..33].copy_from_slice(inbox);
-                        subscription_sig_buf[33..65]
-                            .copy_from_slice(subscriber.expect("Subscriber empty"));
-
-                        let pk = PublicKey::from_bytes(inbox, crate::keypair::Algorithm::Ed25519)
-                            .expect("Subscription signer invalid");
-
-                        if !pk.verify(&subscription_sig_buf, sig) {
-                            err(&mut socket_tx, event.id().unwrap(), b"bad auth").await;
-                            return;
+                    messaging::SignatureType::TOKEN => {
+                        let token = match Token::decode(sig) {
+                            Ok(token) => token,
+                            Err(_) => {
+                                err(&mut socket_tx, event.id().unwrap(), b"bad token encoding")
+                                    .await;
+                                return;
+                            }
                         };
 
-                        authorized = true;
+                        match token {
+                            Token::Subscription(token) => {
+                                // TODO validate token if not handled by decoding step...
+                                // token.validate();
+
+                                (authorized_by, authorized_for) =
+                                    (Some(token.signer().id()), Some(token.bearer().id()));
+                            }
+                            _ => {
+                                err(&mut socket_tx, event.id().unwrap(), b"invalid token").await;
+                                return;
+                            }
+                        }
                     }
                     _ => continue, // skip other signature types for now
                 }
             }
 
-            assert!(authenticated && authorized);
+            let authenticated_as = match authenticated_as {
+                Some(authenticated_as) => authenticated_as,
+                None => {
+                    err(
+                        &mut socket_tx,
+                        event.id().unwrap(),
+                        b"unauthenticated subscription",
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            let authorized_by = match authorized_by {
+                Some(authorized_by) => authorized_by,
+                None => {
+                    err(
+                        &mut socket_tx,
+                        event.id().unwrap(),
+                        b"unauthorized subscription",
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            if inbox != authorized_by {
+                err(
+                    &mut socket_tx,
+                    event.id().unwrap(),
+                    b"unauthorized subscription",
+                )
+                .await;
+                return;
+            }
+
+            if authenticated_as != authorized_by {
+                // if the authenticated user does not match the authorized user
+                // check the authorizing user has authorized the authenticated user
+                let authorized_for = match authorized_for {
+                    Some(authorized_for) => authorized_for,
+                    None => {
+                        err(
+                            &mut socket_tx,
+                            event.id().unwrap(),
+                            b"unauthorized subscription",
+                        )
+                        .await;
+                        return;
+                    }
+                };
+
+                if authenticated_as != authorized_for {
+                    err(
+                        &mut socket_tx,
+                        event.id().unwrap(),
+                        b"unauthorized subscription",
+                    )
+                    .await;
+                    return;
+                }
+            }
+
+            subscriptions.push(authorized_by);
         }
 
         ack(&mut socket_tx, event.id().unwrap()).await;
@@ -886,8 +1083,10 @@ mod tests {
 
         let alice_kp = crate::keypair::signing::KeyPair::new();
         let alice_id = Identifier::Owned(alice_kp);
+
         let subs = vec![Subscription {
-            identifier: alice_id.clone(),
+            to_identifier: alice_id.clone(),
+            as_identifier: None,
             from: crate::time::unix(),
             token: None,
         }];
@@ -895,9 +1094,16 @@ mod tests {
         let bob_kp = crate::keypair::signing::KeyPair::new();
         let bob_id = Identifier::Referenced(bob_kp.public());
 
-        let mut ws = Websocket::new("ws://localhost:12345", subs).unwrap();
+        let callbacks = Callbacks {
+            on_connect: None,
+            on_disconnect: None,
+            on_message: None,
+        };
 
-        ws.connect().expect("failed to connect");
+        let mut ws =
+            Websocket::new("ws://localhost:12345", callbacks).expect("failed to create websocket");
+
+        ws.connect(&subs).expect("failed to connect");
 
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
 
@@ -928,9 +1134,11 @@ mod tests {
         let msg = msgs.get(0).unwrap().clone();
         assert_eq!(msg, Vec::from("test message"));
 
+        /*
         let (_, ciphertext) = ws.receive().expect("Failed to receive message");
 
         assert_eq!(ciphertext, Vec::from("test message"));
+         */
 
         rt.shutdown_background();
     }

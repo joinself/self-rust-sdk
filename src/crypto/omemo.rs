@@ -1,19 +1,17 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
+use crate::identifier::Identifier;
 
 use serde::{Deserialize, Serialize};
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 pub struct Group {
-    id: Vec<u8>,
-    participants: Vec<Participant>,
-}
-
-struct Participant {
-    id: Vec<u8>,
-    session: Arc<Mutex<Session>>,
+    as_identifier: Identifier,
+    participants: Vec<Rc<RefCell<Session>>>,
+    sequence_tx: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -24,7 +22,7 @@ pub struct GroupMessage {
 
 #[derive(Serialize, Deserialize)]
 struct Message {
-    mtype: u64,
+    mtype: usize,
     ciphertext: Vec<u8>,
 }
 
@@ -49,8 +47,8 @@ impl GroupMessage {
         encoded
     }
 
-    pub fn one_time_key_message(&self, recipient: &[u8]) -> Option<Vec<u8>> {
-        match self.recipients.get(recipient) {
+    pub fn one_time_key_message(&self, recipient: &Identifier) -> Option<Vec<u8>> {
+        match self.recipients.get(&recipient.id()) {
             Some(message) => {
                 if message.mtype != 0 {
                     return None;
@@ -65,7 +63,7 @@ impl GroupMessage {
         self.recipients.keys().cloned().collect()
     }
 
-    fn set_recipient_ciphertext(&mut self, id: &[u8], mtype: u64, ciphertext: &[u8]) {
+    fn set_recipient_ciphertext(&mut self, id: &[u8], mtype: usize, ciphertext: &[u8]) {
         self.recipients.insert(
             id.to_vec(),
             Message {
@@ -77,26 +75,33 @@ impl GroupMessage {
 }
 
 impl Group {
-    pub fn new(id: &[u8]) -> Group {
+    pub fn new(as_identifier: Identifier, sequence_tx: u64) -> Group {
         Group {
-            id: id.to_vec(),
+            as_identifier,
             participants: Vec::new(),
+            sequence_tx,
         }
     }
 
-    pub fn id(&self) -> Vec<u8> {
-        self.id.clone()
+    pub fn as_identifier(&self) -> Identifier {
+        self.as_identifier.clone()
     }
 
-    pub fn add_participant(&mut self, id: &[u8], session: Arc<Mutex<Session>>) {
-        self.participants.push(Participant {
-            id: id.to_vec(),
-            session,
-        });
+    pub fn sequence(&self) -> u64 {
+        self.sequence_tx
     }
 
-    pub fn remove_participant(&mut self, id: &[u8]) {
-        self.participants.retain(|member| member.id != id);
+    pub fn participants(&self) -> &Vec<Rc<RefCell<Session>>> {
+        &self.participants
+    }
+
+    pub fn add_participant(&mut self, session: Rc<RefCell<Session>>) {
+        self.participants.push(session);
+    }
+
+    pub fn remove_participant(&mut self, id: &Identifier) {
+        self.participants
+            .retain(|session| !session.borrow().with_identifier().eq(id));
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, SelfError> {
@@ -122,7 +127,7 @@ impl Group {
 
             sodium_sys::randombytes_buf(
                 nonce_buf.as_mut_ptr() as *mut libc::c_void,
-                nonce_buf.len() as u64,
+                nonce_buf.len(),
             );
 
             sodium_sys::crypto_aead_xchacha20poly1305_ietf_encrypt(
@@ -144,46 +149,54 @@ impl Group {
 
         let key_and_nonce = [key_buf, nonce_buf].concat();
 
-        for p in &mut self.participants {
-            let mut session = p.session.lock().map_err(|_| SelfError::CryptoUnknown)?;
-            let (mtype, ciphertext) = session.encrypt(&key_and_nonce)?;
-            drop(session);
-            group_message.set_recipient_ciphertext(&p.id, mtype, &ciphertext);
+        for s in &mut self.participants {
+            let mut s = s.as_ref().borrow_mut();
+
+            let (mtype, ciphertext) = s.encrypt(&key_and_nonce)?;
+
+            group_message.set_recipient_ciphertext(&s.with_identifier().id(), mtype, &ciphertext);
         }
+
+        self.sequence_tx += 1;
 
         Ok(group_message)
     }
 
-    pub fn decrypt(&mut self, from: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {
+    pub fn decrypt(&mut self, from: &Identifier, ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {
         let mut group_message = GroupMessage::decode(ciphertext)?;
         self.decrypt_group_message(from, &mut group_message)
     }
 
     pub fn decrypt_group_message(
         &mut self,
-        from: &[u8],
+        from: &Identifier,
         group_message: &mut GroupMessage,
     ) -> Result<Vec<u8>, SelfError> {
         // TODO error handling
-        let sender = match self.participants.iter().position(|p| p.id.eq(from)) {
+        let sender = match self
+            .participants
+            .iter()
+            .position(|s| s.borrow().with_identifier().eq(from))
+        {
             Some(p) => &mut self.participants[p],
             None => return Err(SelfError::CryptoUnknownGroupParticipant),
         };
 
         // TODO error handling
-        let message = group_message.recipients.get_mut(&self.id).unwrap();
+        let message = group_message
+            .recipients
+            .get_mut(&self.as_identifier.id())
+            .unwrap();
         let mut plaintext_len = (group_message.ciphertext.len() as u32
             - sodium_sys::crypto_aead_xchacha20poly1305_ietf_ABYTES)
             as u64;
         let mut plaintext_buf = vec![0u8; plaintext_len as usize].into_boxed_slice();
 
         unsafe {
-            let mut session = sender
-                .session
-                .lock()
-                .map_err(|_| SelfError::CryptoUnknown)?;
-            let key_and_nonce = session.decrypt(message.mtype, &mut message.ciphertext)?;
-            drop(session);
+            let key_and_nonce = sender
+                .as_ref()
+                .borrow_mut()
+                .decrypt(message.mtype, &mut message.ciphertext)?;
 
             let status = sodium_sys::crypto_aead_xchacha20poly1305_ietf_decrypt(
                 plaintext_buf.as_mut_ptr(),
@@ -213,25 +226,29 @@ impl Group {
 mod tests {
 
     use super::*;
-    use crate::crypto::account::Account;
-    use serde_json::Value;
-    use std::collections::HashMap;
+    use crate::{crypto::account::Account, identifier::Identifier};
 
     #[test]
     fn encrypt_and_decrypt() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let alice_curve25519_pk = alice_ekp.public();
+        let alice_ekp = alice_skp
+            .to_exchange_key()
+            .expect("can't convert to exchange key");
+        let alice_id = Identifier::Referenced(alice_skp.public());
         let mut alice_acc = Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let bob_curve25519_pk = bob_ekp.public();
+        let bob_ekp = bob_skp
+            .to_exchange_key()
+            .expect("can't convert to exchange key");
+        let bob_id = Identifier::Owned(bob_skp.clone());
         let mut bob_acc = Account::new(bob_skp, bob_ekp);
 
         let carol_skp = crate::keypair::signing::KeyPair::new();
-        let carol_ekp = crate::keypair::exchange::KeyPair::new();
-        let carol_curve25519_pk = carol_ekp.public();
+        let carol_ekp = carol_skp
+            .to_exchange_key()
+            .expect("can't convert to exchange key");
+        let carol_id = Identifier::Referenced(carol_skp.public());
         let mut carol_acc = Account::new(carol_skp, carol_ekp);
 
         // generate one time keys or alice and get one for bob to use
@@ -239,46 +256,28 @@ mod tests {
             .generate_one_time_keys(10)
             .expect("failed to generate one time keys");
 
-        let alices_one_time_keys: HashMap<String, Value> =
-            serde_json::from_slice(&alice_acc.one_time_keys())
-                .expect("failed to load alices one time keys");
-
-        let alices_one_time_key = alices_one_time_keys
-            .get("curve25519")
-            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
-            .unwrap()
-            .as_str()
-            .unwrap();
+        let alices_one_time_keys = alice_acc.one_time_keys();
 
         // generate one time keys or carol and get one for bob to use
         carol_acc
             .generate_one_time_keys(10)
             .expect("failed to generate one time keys");
 
-        let carols_one_time_keys: HashMap<String, Value> =
-            serde_json::from_slice(&carol_acc.one_time_keys())
-                .expect("failed to load alices one time keys");
-
-        let carols_one_time_key = carols_one_time_keys
-            .get("curve25519")
-            .and_then(|keys| keys.as_object()?.get("AAAAAQ"))
-            .unwrap()
-            .as_str()
-            .unwrap();
+        let carols_one_time_keys = carol_acc.one_time_keys();
 
         // create bob a new session with alice and carol
         let bobs_session_with_alice = bob_acc
-            .create_outbound_session(&alice_curve25519_pk, alices_one_time_key.as_bytes())
+            .create_outbound_session(alice_id.clone(), &alices_one_time_keys[0])
             .expect("failed to create outbound session");
 
         let bobs_session_with_carol = bob_acc
-            .create_outbound_session(&carol_curve25519_pk, carols_one_time_key.as_bytes())
+            .create_outbound_session(carol_id.clone(), &carols_one_time_keys[0])
             .expect("failed to create outbound session");
 
         // create a group with alice and carol
-        let mut group = Group::new(b"bob");
-        group.add_participant(b"alice", Arc::new(Mutex::new(bobs_session_with_alice)));
-        group.add_participant(b"carol", Arc::new(Mutex::new(bobs_session_with_carol)));
+        let mut group = Group::new(bob_id.clone(), 0);
+        group.add_participant(Rc::new(RefCell::new(bobs_session_with_alice)));
+        group.add_participant(Rc::new(RefCell::new(bobs_session_with_carol)));
 
         let group_message = group
             .encrypt(b"hello alice and carol")
@@ -288,34 +287,34 @@ mod tests {
 
         // create alices session with bob
         let alices_one_time_message = alices_message_from_bob
-            .one_time_key_message(b"alice")
+            .one_time_key_message(&alice_id)
             .expect("failed to find alice in the recipients");
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(&bob_curve25519_pk, &alices_one_time_message)
+            .create_inbound_session(bob_id.clone(), &alices_one_time_message)
             .expect("failed to create alices session with bob");
 
         // create carols session with bob
         let carols_one_time_message = carols_message_from_bob
-            .one_time_key_message(b"carol")
+            .one_time_key_message(&carol_id)
             .expect("failed to find carol in the recipients");
         let carols_session_with_bob = carol_acc
-            .create_inbound_session(&bob_curve25519_pk, &carols_one_time_message)
+            .create_inbound_session(bob_id.clone(), &carols_one_time_message)
             .expect("failed to create carols session with bob");
 
         // attempt to decrypt the group message intended for alice
-        let mut alices_group = Group::new(b"alice");
-        alices_group.add_participant(b"bob", Arc::new(Mutex::new(alices_session_with_bob)));
+        let mut alices_group = Group::new(alice_id, 0);
+        alices_group.add_participant(Rc::new(RefCell::new(alices_session_with_bob)));
         let plaintext = alices_group
-            .decrypt_group_message(b"bob", &mut alices_message_from_bob)
+            .decrypt_group_message(&bob_id, &mut alices_message_from_bob)
             .expect("failed to decrypt message from bob");
 
         assert_eq!(plaintext, b"hello alice and carol");
 
         // attempt to decrypt the group message intended for alice
-        let mut carols_group = Group::new(b"carol");
-        carols_group.add_participant(b"bob", Arc::new(Mutex::new(carols_session_with_bob)));
+        let mut carols_group = Group::new(carol_id, 0);
+        carols_group.add_participant(Rc::new(RefCell::new(carols_session_with_bob)));
         let plaintext = carols_group
-            .decrypt_group_message(b"bob", &mut carols_message_from_bob)
+            .decrypt_group_message(&bob_id, &mut carols_message_from_bob)
             .expect("failed to decrypt message from bob");
 
         assert_eq!(plaintext, b"hello alice and carol");

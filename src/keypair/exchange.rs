@@ -12,17 +12,12 @@ pub struct KeyPair {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PublicKey {
-    id: Option<String>,
     algorithm: Algorithm,
     bytes: Vec<u8>,
 }
 
 impl PublicKey {
-    pub fn import(
-        id: &str,
-        algorithm: Algorithm,
-        public_key: &str,
-    ) -> Result<PublicKey, SelfError> {
+    pub fn import(algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
         let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_public_key) => decoded_public_key,
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
@@ -33,12 +28,21 @@ impl PublicKey {
         }
 
         Ok(PublicKey {
-            id: Some(String::from(id)),
             algorithm,
             bytes: decoded_public_key,
         })
     }
 
+    pub fn from_bytes(bytes: &[u8], algorithm: Algorithm) -> Result<PublicKey, SelfError> {
+        if bytes.len() < 32 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
+        }
+
+        Ok(PublicKey {
+            algorithm,
+            bytes: bytes.to_vec(),
+        })
+    }
     pub fn id(&self) -> Vec<u8> {
         self.bytes.clone()
     }
@@ -66,7 +70,6 @@ impl KeyPair {
 
         KeyPair {
             public_key: PublicKey {
-                id: None,
                 algorithm: Algorithm::Curve25519,
                 bytes: curve25519_pk.to_vec(),
             },
@@ -74,6 +77,23 @@ impl KeyPair {
                 bytes: curve25519_sk.to_vec(),
             },
         }
+    }
+
+    pub fn from_bytes(public_key: Vec<u8>, secret_key: Vec<u8>) -> Result<KeyPair, SelfError> {
+        if public_key.len() != sodium_sys::crypto_box_PUBLICKEYBYTES as usize {
+            return Err(SelfError::KeyPairDataIncorrectLength);
+        }
+        if secret_key.len() != sodium_sys::crypto_box_SECRETKEYBYTES as usize {
+            return Err(SelfError::KeyPairDataIncorrectLength);
+        }
+
+        Ok(KeyPair {
+            public_key: PublicKey {
+                algorithm: Algorithm::Curve25519,
+                bytes: public_key,
+            },
+            secret_key: SecretKey { bytes: secret_key },
+        })
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
@@ -90,7 +110,7 @@ impl KeyPair {
     }
 
     pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {
-        let (key_id, encoded_seed) = match legacy_keypair.split_once(':') {
+        let (_, encoded_seed) = match legacy_keypair.split_once(':') {
             Some((first, last)) => (first, last),
             None => return Err(SelfError::KeyPairDecodeInvalidData),
         };
@@ -115,7 +135,6 @@ impl KeyPair {
 
         Ok(KeyPair {
             public_key: PublicKey {
-                id: Some(String::from(key_id)),
                 algorithm: Algorithm::Curve25519,
                 bytes: curve25519_pk.to_vec(),
             },
@@ -125,12 +144,8 @@ impl KeyPair {
         })
     }
 
-    pub fn id(&self) -> String {
-        if self.public_key.id.is_some() {
-            return self.public_key.id.as_ref().unwrap().clone();
-        }
-
-        base64::encode_config(&self.public_key.bytes, base64::URL_SAFE_NO_PAD)
+    pub fn id(&self) -> Vec<u8> {
+        self.public_key.bytes.clone()
     }
 
     pub fn algorithm(&self) -> Algorithm {
