@@ -15,7 +15,7 @@ unsafe impl Send for Session {}
 impl Session {
     pub fn new(as_identifier: Identifier, with_identifier: Identifier) -> Session {
         unsafe {
-            let session_len = olm_session_size() as usize;
+            let session_len = olm_session_size();
             let session_buf = vec![0_u8; session_len].into_boxed_slice();
             let session = olm_session(Box::into_raw(session_buf) as *mut libc::c_void);
 
@@ -38,7 +38,7 @@ impl Session {
         password: Option<&[u8]>,
     ) -> Result<Session, SelfError> {
         unsafe {
-            let session_len = olm_session_size() as usize;
+            let session_len = olm_session_size();
             let session_buf = vec![0_u8; session_len].into_boxed_slice();
             let session = olm_session(Box::into_raw(session_buf) as *mut libc::c_void);
 
@@ -51,9 +51,9 @@ impl Session {
             olm_unpickle_session(
                 session,
                 password_buf,
-                password_len as u64,
+                password_len,
                 pickle as *mut [u8] as *mut libc::c_void,
-                pickle.len() as u64,
+                pickle.len(),
             );
 
             let session = Session {
@@ -77,21 +77,21 @@ impl Session {
         self.session
     }
 
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<(u64, Vec<u8>), SelfError> {
+    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<(usize, Vec<u8>), SelfError> {
         unsafe {
             let mtype = olm_encrypt_message_type(self.session);
 
             let random_len = olm_encrypt_random_length(self.session);
-            let mut random_buf = vec![0_u8; random_len as usize].into_boxed_slice();
+            let mut random_buf = vec![0_u8; random_len].into_boxed_slice();
             sodium_sys::randombytes_buf(random_buf.as_mut_ptr() as *mut libc::c_void, random_len);
 
-            let mut message_len = olm_encrypt_message_length(self.session, plaintext.len() as u64);
-            let mut message_buf = vec![0_u8; message_len as usize].into_boxed_slice();
+            let mut message_len = olm_encrypt_message_length(self.session, plaintext.len());
+            let mut message_buf = vec![0_u8; message_len].into_boxed_slice();
 
             message_len = olm_encrypt(
                 self.session,
                 plaintext.as_ptr() as *const libc::c_void,
-                plaintext.len() as u64,
+                plaintext.len(),
                 random_buf.as_mut_ptr() as *mut libc::c_void,
                 random_len,
                 message_buf.as_mut_ptr() as *mut libc::c_void,
@@ -101,28 +101,28 @@ impl Session {
             self.last_error()?;
             self.sequence_tx += 1;
 
-            Ok((mtype, message_buf[0..message_len as usize].to_vec()))
+            Ok((mtype, message_buf[0..message_len].to_vec()))
         }
     }
 
-    pub fn decrypt(&mut self, mtype: u64, ciphertext: &mut [u8]) -> Result<Vec<u8>, SelfError> {
+    pub fn decrypt(&mut self, mtype: usize, ciphertext: &mut [u8]) -> Result<Vec<u8>, SelfError> {
         unsafe {
             let mut plaintext_len = olm_decrypt_max_plaintext_length(
                 self.session,
                 mtype,
                 ciphertext.to_owned().as_mut_ptr() as *mut libc::c_void, // clone the ciphertext, as the input is destroyed
-                ciphertext.len() as u64,
+                ciphertext.len(),
             );
 
             self.last_error()?;
 
-            let mut plaintext_buf = vec![0_u8; plaintext_len as usize].into_boxed_slice();
+            let mut plaintext_buf = vec![0_u8; plaintext_len].into_boxed_slice();
 
             plaintext_len = olm_decrypt(
                 self.session,
                 mtype,
                 ciphertext.as_mut_ptr() as *mut libc::c_void,
-                ciphertext.len() as u64,
+                ciphertext.len(),
                 plaintext_buf.as_mut_ptr() as *mut libc::c_void,
                 plaintext_len,
             );
@@ -130,7 +130,7 @@ impl Session {
             self.last_error()?;
             self.sequence_rx += 1;
 
-            Ok(plaintext_buf[0..plaintext_len as usize].to_vec())
+            Ok(plaintext_buf[0..plaintext_len].to_vec())
         }
     }
 
@@ -146,9 +146,9 @@ impl Session {
             let result = olm_matches_inbound_session_from(
                 self.session,
                 identity_key_buf.as_ptr() as *const libc::c_void,
-                identity_key_buf.len() as u64,
+                identity_key_buf.len(),
                 one_time_message.to_owned().as_mut_ptr() as *mut libc::c_void,
-                one_time_message.len() as u64,
+                one_time_message.len(),
             );
 
             self.last_error()?;
@@ -160,7 +160,7 @@ impl Session {
     pub fn pickle(&self, password: Option<&[u8]>) -> Result<Vec<u8>, SelfError> {
         unsafe {
             let mut session_pickle_len = olm_pickle_session_length(self.session);
-            let mut session_pickle_buf = vec![0_u8; session_pickle_len as usize].into_boxed_slice();
+            let mut session_pickle_buf = vec![0_u8; session_pickle_len].into_boxed_slice();
 
             let password_len = password.map(|pwd| pwd.len()).unwrap_or(0);
 
@@ -171,14 +171,14 @@ impl Session {
             session_pickle_len = olm_pickle_session(
                 self.session,
                 password_buf,
-                password_len as u64,
+                password_len,
                 session_pickle_buf.as_mut_ptr() as *mut libc::c_void,
                 session_pickle_len,
             );
 
             self.last_error()?;
 
-            Ok(session_pickle_buf[0..session_pickle_len as usize].to_vec())
+            Ok(session_pickle_buf[0..session_pickle_len].to_vec())
         }
     }
 

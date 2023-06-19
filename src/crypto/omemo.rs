@@ -22,7 +22,7 @@ pub struct GroupMessage {
 
 #[derive(Serialize, Deserialize)]
 struct Message {
-    mtype: u64,
+    mtype: usize,
     ciphertext: Vec<u8>,
 }
 
@@ -63,7 +63,7 @@ impl GroupMessage {
         self.recipients.keys().cloned().collect()
     }
 
-    fn set_recipient_ciphertext(&mut self, id: &[u8], mtype: u64, ciphertext: &[u8]) {
+    fn set_recipient_ciphertext(&mut self, id: &[u8], mtype: usize, ciphertext: &[u8]) {
         self.recipients.insert(
             id.to_vec(),
             Message {
@@ -127,7 +127,7 @@ impl Group {
 
             sodium_sys::randombytes_buf(
                 nonce_buf.as_mut_ptr() as *mut libc::c_void,
-                nonce_buf.len() as u64,
+                nonce_buf.len(),
             );
 
             sodium_sys::crypto_aead_xchacha20poly1305_ietf_encrypt(
