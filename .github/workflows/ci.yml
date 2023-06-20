@@ -16,4 +16,4 @@ jobs:
         with:
           toolchain: stable
       - run: cargo clippy --all-targets --all-features
-      - run: cargo test -- --nocapture
+      - run: RUST_BACKTRACE=1 cargo test -- --nocapture --test-threads=1
