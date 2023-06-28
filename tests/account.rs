@@ -101,7 +101,7 @@ fn account_connect_without_token_accept() {
     let (bobs_on_request_tx, bobs_on_request_rx) = crossbeam::channel::bounded::<Envelope>(64);
 
     let mut alices_account = register_test_account(
-        "test_account_connect_alice",
+        "test_account_connect_without_token_accept_alice",
         Some(MessagingChannels {
             on_request: None,
             on_response: Some(alices_on_response_tx),
@@ -110,7 +110,7 @@ fn account_connect_without_token_accept() {
     );
 
     let mut bobs_account = register_test_account(
-        "test_account_connect_bob",
+        "test_account_connect_without_token_accept_bob",
         Some(MessagingChannels {
             on_request: Some(bobs_on_request_tx),
             on_response: None,
@@ -192,7 +192,7 @@ fn account_connect_without_token_reject() {
     let (bobs_on_request_tx, bobs_on_request_rx) = crossbeam::channel::bounded::<Envelope>(64);
 
     let mut alices_account = register_test_account(
-        "test_account_connect_alice",
+        "test_account_connect_without_token_reject_alice",
         Some(MessagingChannels {
             on_request: None,
             on_response: Some(alices_on_response_tx),
@@ -201,7 +201,7 @@ fn account_connect_without_token_reject() {
     );
 
     let mut bobs_account = register_test_account(
-        "test_account_connect_bob",
+        "test_account_connect_without_token_reject_bob",
         Some(MessagingChannels {
             on_request: Some(bobs_on_request_tx),
             on_response: None,
@@ -283,7 +283,7 @@ fn account_connect_with_auth_token_accept() {
     let (bobs_on_request_tx, bobs_on_request_rx) = crossbeam::channel::bounded::<Envelope>(64);
 
     let mut alices_account = register_test_account(
-        "test_account_connect_alice",
+        "test_account_connect_with_auth_token_accept_alice",
         Some(MessagingChannels {
             on_request: None,
             on_response: Some(alices_on_response_tx),
@@ -292,7 +292,7 @@ fn account_connect_with_auth_token_accept() {
     );
 
     let mut bobs_account = register_test_account(
-        "test_account_connect_bob",
+        "test_account_connect_with_auth_token_accept_bob",
         Some(MessagingChannels {
             on_request: Some(bobs_on_request_tx),
             on_response: None,
@@ -378,7 +378,7 @@ fn account_connect_with_auth_token_reject() {
     let (bobs_on_request_tx, bobs_on_request_rx) = crossbeam::channel::bounded::<Envelope>(64);
 
     let mut alices_account = register_test_account(
-        "test_account_connect_alice",
+        "test_account_connect_with_auth_token_reject_alice",
         Some(MessagingChannels {
             on_request: None,
             on_response: Some(alices_on_response_tx),
@@ -387,7 +387,7 @@ fn account_connect_with_auth_token_reject() {
     );
 
     let mut bobs_account = register_test_account(
-        "test_account_connect_bob",
+        "test_account_connect_with_auth_token_reject_bob",
         Some(MessagingChannels {
             on_request: Some(bobs_on_request_tx),
             on_response: None,
@@ -473,7 +473,7 @@ fn account_send_chat_message() {
     let (bobs_on_response_tx, bobs_on_response_rx) = crossbeam::channel::bounded::<Envelope>(64);
 
     let mut alices_account = register_test_account(
-        "test_account_connect_alice",
+        "test_account_send_chat_message_alice",
         Some(MessagingChannels {
             on_request: Some(alices_on_request_tx),
             on_response: None,
@@ -482,7 +482,7 @@ fn account_send_chat_message() {
     );
 
     let mut bobs_account = register_test_account(
-        "test_account_connect_bob",
+        "test_account_send_chat_message_bob",
         Some(MessagingChannels {
             on_request: None,
             on_response: Some(bobs_on_response_tx),
@@ -595,6 +595,27 @@ fn account_send_chat_message() {
 
     let read = ChatRead::decode(&content).expect("failed to decode encoded receipt");
     assert_eq!(&message_id, read.rdm.first().expect("no message id"));
+}
+
+#[test]
+fn account_create_group() {
+    test_server();
+
+    let mut alices_account = register_test_account(
+        "test_account_connect_alice",
+        Some(MessagingChannels {
+            on_request: None,
+            on_response: None,
+            on_message: None,
+        }),
+    );
+
+    let using_identifier = alices_account
+        .messaging_identifer()
+        .expect("messaging identifier should be set");
+    alices_account
+        .group_create(&using_identifier)
+        .expect("group creation failed");
 }
 
 fn register_test_account(test_name: &str, channels: Option<MessagingChannels>) -> Account {

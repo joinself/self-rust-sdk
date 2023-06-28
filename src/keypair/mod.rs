@@ -11,6 +11,7 @@ pub enum Algorithm {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum Usage {
+    Group,
     Identifier,
     Link,
     Messaging,
@@ -20,10 +21,11 @@ pub enum Usage {
 impl Usage {
     pub fn kind(&self) -> u8 {
         match *self {
-            Usage::Identifier => 1,
-            Usage::Link => 2,
-            Usage::Messaging => 3,
-            Usage::Recovery => 4,
+            Usage::Group => 1,
+            Usage::Identifier => 2,
+            Usage::Link => 3,
+            Usage::Messaging => 4,
+            Usage::Recovery => 5,
         }
     }
 }

@@ -7,12 +7,13 @@ use crate::message::{
     self, ChatDelivered, ChatRead, ConnectionRequest, ConnectionResponse, Content, Envelope,
     ResponseStatus, MESSAGE_TYPE_CHAT_MSG,
 };
-use crate::protocol::api::PrekeyResponse;
+use crate::protocol::api::{KeyCreateRequest, PrekeyResponse};
 use crate::siggraph::SignatureGraph;
 use crate::storage::Storage;
+use crate::time;
 use crate::token::Token;
 use crate::transport::rest::Rest;
-use crate::transport::websocket::{Callbacks, Websocket};
+use crate::transport::websocket::{Callbacks, Subscription, Websocket};
 
 use std::{
     any::Any,
@@ -82,6 +83,7 @@ impl Account {
                     on_disconnect(on_disconnect_ud.clone(), result);
                 }) as Arc<dyn Fn(Result<(), SelfError>) + Send + Sync>
             }),
+            // TODO refactor out this handler
             on_message: Some(Arc::new(
                 move |sender: &Identifier,
                       recipient: &Identifier,
@@ -323,7 +325,7 @@ impl Account {
         storage.keypair_create(Usage::Messaging, &device_kp, Some(olm_account), true)?;
 
         // TODO determine whether it makes sense from a security perspective to store the recover key
-        // storage.keypair_create(KeyRole::Identifier ,&recovery_kp, None)?;
+        // storage.keypair_create(KeyRole::Recovery ,&recovery_kp, None)?;
 
         let subscriptions = storage.subscription_list()?;
         drop(storage);
@@ -601,6 +603,73 @@ impl Account {
     pub fn link(&mut self, _link_token: &Token) -> Result<(), SelfError> {
         Ok(())
     }
+
+    pub fn group_list(&mut self) -> Result<Vec<Identifier>, SelfError> {
+        Ok(Vec::new())
+    }
+
+    pub fn group_create(&mut self, using: &Identifier) -> Result<Identifier, SelfError> {
+        let rest = match &self.rest {
+            Some(rest) => rest,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let storage = match &self.storage {
+            Some(storage) => storage,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let websocket = match &mut self.websocket {
+            Some(websocket) => websocket,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        // generate keypair for the group identifier
+        let group_kp = KeyPair::new();
+        let group_identifier = Identifier::Owned(group_kp.clone());
+
+        let request = KeyCreateRequest::encode(&group_identifier)?;
+
+        // submit public key to the to api
+        rest.post("/v2/keys", &request, None, None, true)?;
+
+        // persist account keys to keychain
+        let mut storage = storage.lock().unwrap();
+
+        storage.keypair_create(Usage::Group, &group_kp, None, false)?;
+
+        // create tokens for the identifier that will join the group
+        websocket.subscribe(vec![Subscription {
+            to_identifier: group_identifier.clone(),
+            as_identifier: Some(using.clone()),
+            from: time::unix(),
+            token: None, // TODO add token
+        }])?;
+
+        Ok(group_identifier)
+    }
+
+    /*
+    pub fn group_invite(&mut self, group: &Identifier, members: &[&Identifier]) -> Result<(), SelfError> {
+
+    }
+
+    pub fn group_kick(&mut self, group: &Identifier, members: &[&Identifier]) -> Result<(), SelfError> {
+
+    }
+
+    pub fn group_members(&mut self, group: &Identifier) -> Result<Vec<Identifier>, SelfError> {
+
+    }
+
+    pub fn group_leave(&mut self, group: &Identifier) -> Result<(), SelfError> {
+
+    }
+
+    pub fn group_close(&mut self, group: &Identifier) -> Result<(), SelfError> {
+
+    }
+    */
 
     fn connect_and_create_session(
         &mut self,
