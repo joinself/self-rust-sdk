@@ -5,3 +5,6 @@ pub const MESSAGE_TYPE_CREDENTIALS_RES: &str = "credentials.res";
 pub const MESSAGE_TYPE_CHAT_MSG: &str = "chat.msg";
 pub const MESSAGE_TYPE_CHAT_READ: &str = "chat.msg.read";
 pub const MESSAGE_TYPE_CHAT_DELIVERED: &str = "chat.msg.delivered";
+pub const MESSAGE_TYPE_GROUP_INVITE_REQ: &str = "group.invite.req";
+pub const MESSAGE_TYPE_GROUP_INVITE_RES: &str = "group.invite.res";
+pub const MESSAGE_TYPE_GROUP_AUTHORIZATION: &str = "group.authorization";

@@ -1,11 +1,13 @@
+use crate::account::responder::*;
+use crate::account::token::token_create_authorization;
 use crate::crypto::random_id;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
 use crate::keypair::Usage;
 use crate::message::{
-    self, ChatDelivered, ChatRead, ConnectionRequest, ConnectionResponse, Content, Envelope,
-    ResponseStatus, MESSAGE_TYPE_CHAT_MSG,
+    self, ChatDelivered, ConnectionRequest, ConnectionResponse, Content, Envelope,
+    GroupInviteRequest, ResponseStatus, MESSAGE_TYPE_CHAT_MSG,
 };
 use crate::protocol::api::{KeyCreateRequest, PrekeyResponse};
 use crate::siggraph::SignatureGraph;
@@ -15,9 +17,10 @@ use crate::token::Token;
 use crate::transport::rest::Rest;
 use crate::transport::websocket::{Callbacks, Subscription, Websocket};
 
+use std::sync::MutexGuard;
 use std::{
     any::Any,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 
 pub type OnConnectCB = Arc<dyn Fn(Arc<dyn Any + Send>) + Sync + Send>;
@@ -130,78 +133,64 @@ impl Account {
                                                 },
                                             );
                                         } else {
-                                            if msg_type == MESSAGE_TYPE_CHAT_MSG {
-                                                if let Some(message_id) = content.cti_get() {
-                                                    // drop(storage);
+                                            let message = Envelope {
+                                                to: recipient.clone(),
+                                                from: sender.clone(),
+                                                sequence,
+                                                content,
+                                            };
 
-                                                    // send a response accepting the request to the sender
-                                                    let mut msg = Content::new();
-                                                    msg.cti_set(&random_id());
-                                                    msg.type_set(
-                                                        message::MESSAGE_TYPE_CHAT_DELIVERED,
-                                                    );
-                                                    msg.issued_at_set(
-                                                        crate::time::now().timestamp(),
-                                                    );
-                                                    msg.content_set(
-                                                        &ChatDelivered {
-                                                            dlm: vec![message_id],
-                                                        }
-                                                        .encode()
-                                                        .unwrap(),
-                                                    );
+                                            // TODO log error rather than panic
+                                            let resp = match msg_type.as_str() {
+                                                MESSAGE_TYPE_CHAT_MSG => Some(chat_message_delivered(&message).expect("failed to build chat message delivered response")),
+                                                _ => None,
+                                            };
 
-                                                    let mut storage_lock =
-                                                        on_message_st.lock().unwrap();
+                                            // send message and setup callback
+                                            if let Some((recipient, plaintext)) = resp {
+                                                let mut storage = on_message_st.lock().unwrap();
 
-                                                    let (from, sequence, content) = storage_lock
-                                                        .encrypt_and_queue(
-                                                            sender,
-                                                            &msg.encode().unwrap(),
-                                                        )
-                                                        .expect(
-                                                            "failed to encrypt and queue response",
-                                                        );
+                                                let (from, sequence, content) = storage
+                                                    .encrypt_and_queue(&recipient, &plaintext)
+                                                    .expect("failed to encrypt and queue response");
 
-                                                    drop(storage_lock);
+                                                drop(storage);
 
-                                                    let on_response_st = on_message_st.clone();
+                                                let on_response_st = on_message_st.clone();
 
-                                                    let from_clone = from.clone();
-                                                    let sender_clone = sender.clone();
+                                                let from_clone = from.clone();
+                                                let sender_clone = sender.clone();
 
-                                                    response = Some(
-                                                        crate::transport::websocket::Response {
-                                                            from,
-                                                            to: sender.clone(),
-                                                            sequence,
-                                                            content,
-                                                            tokens: None,
-                                                            callback: Arc::new(move |resp| {
-                                                                if resp.is_err() {
-                                                                    // TODO log this
-                                                                    return;
-                                                                }
+                                                response =
+                                                    Some(crate::transport::websocket::Response {
+                                                        from,
+                                                        to: sender.clone(),
+                                                        sequence,
+                                                        content,
+                                                        tokens: None,
+                                                        callback: Arc::new(move |resp| {
+                                                            if resp.is_err() {
+                                                                // TODO log this
+                                                                return;
+                                                            }
 
-                                                                let mut storage_lock =
-                                                                    on_response_st.lock().unwrap();
-                                                                storage_lock.outbox_dequeue(&from_clone, &sender_clone.clone(), sequence).expect("failed to dequeue response");
-                                                                drop(storage_lock);
-                                                            }),
-                                                        },
-                                                    );
-                                                }
+                                                            let mut storage =
+                                                                on_response_st.lock().unwrap();
+                                                            storage
+                                                                .outbox_dequeue(
+                                                                    &from_clone,
+                                                                    &sender_clone.clone(),
+                                                                    sequence,
+                                                                )
+                                                                .expect(
+                                                                    "failed to dequeue response",
+                                                                );
+                                                            drop(storage);
+                                                        }),
+                                                    });
                                             }
 
-                                            on_message_cb(
-                                                on_message_ud.clone(),
-                                                &Envelope {
-                                                    to: recipient.clone(),
-                                                    from: sender.clone(),
-                                                    sequence,
-                                                    content,
-                                                },
-                                            );
+                                            on_message_cb(on_message_ud.clone(), &message);
                                         }
                                     }
                                 }
@@ -444,97 +433,40 @@ impl Account {
         self.encrypt_and_send(to, &message.encode()?)
     }
 
+    /// accepts and actions an incoming request or message
     pub fn accept(&mut self, message: &Envelope) -> Result<(), SelfError> {
         let mut storage = match &mut self.storage {
             Some(storage) => storage.lock().unwrap(),
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        if let Some(msg_type) = message.content.type_get() {
-            match msg_type.as_str() {
-                message::MESSAGE_TYPE_CONNECTION_REQ => {
-                    if let Some(payload) = message.content.content_get() {
-                        let connection_req = message::ConnectionRequest::decode(&payload)?;
-
-                        // save the tokens from the sender
-                        if let Some(authorization_token) = connection_req.ath {
-                            storage.token_create(
-                                &message.from,
-                                Some(&message.to),
-                                i64::MAX,
-                                &Token::decode(&authorization_token)?,
-                            )?;
-                        }
-
-                        if let Some(notification_token) = connection_req.ntf {
-                            storage.token_create(
-                                &message.from,
-                                Some(&message.to),
-                                i64::MAX,
-                                &Token::decode(&notification_token)?,
-                            )?;
-                        }
-
-                        // generate tokens for the sender of the request
-                        let token = token_create_authorization(
-                            &mut storage,
-                            Some(&message.from),
-                            &message.to,
-                            None,
-                        )?;
-                        // drop the storage lock
-                        drop(storage);
-
-                        // respond to sender
-                        let content = ConnectionResponse {
-                            ath: Some(token),
-                            ntf: None, // TODO handle notification tokens,
-                            sts: ResponseStatus::Accepted,
-                        }
-                        .encode()?;
-
-                        // send a response accepting the request to the sender
-                        let mut msg = Content::new();
-
-                        if let Some(cti) = message.content.cti_get() {
-                            msg.cti_set(&cti);
-                        }
-                        msg.type_set(message::MESSAGE_TYPE_CONNECTION_RES);
-                        msg.issued_at_set(crate::time::now().timestamp());
-                        msg.content_set(&content);
-
-                        self.encrypt_and_send(&message.from, &msg.encode()?)?;
-                    }
-                }
-                message::MESSAGE_TYPE_CHAT_MSG => {
-                    if let Some(message_id) = message.content.cti_get() {
-                        drop(storage);
-                        // respond to sender
-                        let content = ChatRead {
-                            rdm: vec![message_id],
-                        }
-                        .encode()?;
-
-                        // send a response accepting the request to the sender
-                        let mut msg = Content::new();
-
-                        if let Some(cti) = message.content.cti_get() {
-                            msg.cti_set(&cti);
-                        }
-                        msg.type_set(message::MESSAGE_TYPE_CHAT_READ);
-                        msg.issued_at_set(crate::time::now().timestamp());
-                        msg.content_set(&content);
-
-                        self.encrypt_and_send(&message.from, &msg.encode()?)?;
-                    }
-                }
-                _ => {}
-            }
+        let websocket = match &mut self.websocket {
+            Some(websocket) => websocket,
+            None => return Err(SelfError::AccountNotConfigured),
         };
 
-        Ok(())
+        if let Some(msg_type) = message.content.type_get() {
+            let response = match msg_type.as_str() {
+                message::MESSAGE_TYPE_CONNECTION_REQ => {
+                    Some(connection_request_accept(message, &mut storage)?)
+                }
+                message::MESSAGE_TYPE_CHAT_MSG => Some(chat_message_read(message)?),
+                // message::MESSAGE_TYPE_GROUP_INVITE_REQ => {}
+                _ => None,
+            };
+
+            if let Some((recipient, plaintext)) = response {
+                encrypt_and_send(websocket, &mut storage, &recipient, &plaintext)?;
+            }
+
+            return Ok(());
+        };
+
+        
+        Err(SelfError::MessageContentMissing)
     }
 
+    /// rejects an incoming request
     pub fn reject(&mut self, message: &Envelope) -> Result<(), SelfError> {
         let mut storage = match &mut self.storage {
             Some(storage) => storage.lock().unwrap(),
@@ -600,10 +532,12 @@ impl Account {
         Ok(())
     }
 
+    /// links an ephemeral identtiy with an existing persistent one
     pub fn link(&mut self, _link_token: &Token) -> Result<(), SelfError> {
         Ok(())
     }
 
+    /// lists all groups
     pub fn group_list(&mut self) -> Result<Vec<Identifier>, SelfError> {
         Ok(Vec::new())
     }
@@ -649,10 +583,37 @@ impl Account {
         Ok(group_identifier)
     }
 
-    /*
-    pub fn group_invite(&mut self, group: &Identifier, members: &[&Identifier]) -> Result<(), SelfError> {
+    pub fn group_invite(
+        &mut self,
+        group: &Identifier,
+        members: &[&Identifier],
+    ) -> Result<(), SelfError> {
+        // TODO track group invites?
 
+        // send a group invite request to each of the members
+
+        for member in members {
+            let request_id = crate::crypto::random_id();
+            let now = crate::time::now();
+
+            let mut msg = Content::new();
+            msg.cti_set(&request_id);
+            msg.type_set(message::MESSAGE_TYPE_CONNECTION_REQ);
+            msg.issued_at_set(now.timestamp());
+            msg.expires_at_set((now + chrono::Duration::days(7)).timestamp());
+
+            let content = GroupInviteRequest { gid: group.id() }.encode()?;
+
+            msg.content_set(&content);
+            let plaintext = msg.encode()?;
+
+            self.encrypt_and_send(member, &plaintext)?
+        }
+
+        Ok(())
     }
+
+    /*
 
     pub fn group_kick(&mut self, group: &Identifier, members: &[&Identifier]) -> Result<(), SelfError> {
 
@@ -710,35 +671,7 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        let (from, sequence, ciphertext) = storage.encrypt_and_queue(to, plaintext)?;
-        drop(storage);
-
-        // TODO get tokens
-        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
-
-        websocket.send(
-            &from,
-            to,
-            sequence,
-            &ciphertext,
-            None,
-            Arc::new(move |resp| {
-                resp_tx.send(resp).unwrap();
-            }),
-        );
-
-        resp_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
-
-        let mut storage = self
-            .storage
-            .as_ref()
-            .expect("storage is set")
-            .lock()
-            .unwrap();
-
-        storage.outbox_dequeue(&from, to, sequence)
+        encrypt_and_send(websocket, &mut storage, to, plaintext)
     }
 }
 
@@ -748,37 +681,31 @@ impl Default for Account {
     }
 }
 
-fn token_create_authorization(
+fn encrypt_and_send(
+    websocket: &mut Websocket,
     storage: &mut MutexGuard<Storage>,
-    to: Option<&Identifier>,
-    from: &Identifier,
-    expires: Option<i64>,
-) -> Result<Token, SelfError> {
-    // get keypair for signing...
-    let signing_identifier = match from {
-        Identifier::Owned(_) => from.clone(),
-        Identifier::Referenced(_) => {
-            let signing_key = storage.keypair_get(from)?;
-            Identifier::Owned(signing_key.as_ref().clone())
-        }
-    };
+    to: &Identifier,
+    plaintext: &[u8],
+) -> Result<(), SelfError> {
+    let (from, sequence, ciphertext) = storage.encrypt_and_queue(to, plaintext)?;
 
-    let expires = match expires {
-        Some(expires) => expires,
-        None => i64::MAX,
-    };
+    // TODO get tokens
+    let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
 
-    // create a token that never expires
-    // TODO make configurable
-    let token = Token::Authorization(crate::token::Authorization::new(
-        &signing_identifier,
+    websocket.send(
+        &from,
         to,
-        expires,
-    ));
+        sequence,
+        &ciphertext,
+        None,
+        Arc::new(move |resp| {
+            resp_tx.send(resp).unwrap();
+        }),
+    );
 
-    // add the token to our own storage so we can track who has been given access
-    // this allows us to know which tokens will need to be rotated/revoked, etc
-    storage.token_create(&signing_identifier, to, expires, &token)?;
+    resp_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
 
-    Ok(token)
+    storage.outbox_dequeue(&from, to, sequence)
 }
