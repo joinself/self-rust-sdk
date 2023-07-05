@@ -462,7 +462,6 @@ impl Account {
             return Ok(());
         };
 
-        
         Err(SelfError::MessageContentMissing)
     }
 
@@ -473,60 +472,25 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
+        let websocket = match &mut self.websocket {
+            Some(websocket) => websocket,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
         if let Some(msg_type) = message.content.type_get() {
-            match msg_type.as_str() {
+            let response = match msg_type.as_str() {
                 message::MESSAGE_TYPE_CONNECTION_REQ => {
-                    if let Some(payload) = message.content.content_get() {
-                        let connection_req = message::ConnectionRequest::decode(&payload)?;
-
-                        // save the tokens from the sender, even though we are rejecting the request
-                        // so we can avoid doing POW over the message to send the response
-                        if let Some(authorization_token) = connection_req.ath {
-                            storage.token_create(
-                                &message.from,
-                                Some(&message.to),
-                                i64::MAX,
-                                &Token::decode(&authorization_token)?,
-                            )?;
-                        }
-
-                        if let Some(notification_token) = connection_req.ntf {
-                            storage.token_create(
-                                &message.from,
-                                Some(&message.to),
-                                i64::MAX,
-                                &Token::decode(&notification_token)?,
-                            )?;
-                        }
-
-                        // drop the storage lock
-                        drop(storage);
-
-                        // respond to sender
-                        let content = ConnectionResponse {
-                            ath: None,
-                            ntf: None,
-                            sts: ResponseStatus::Rejected,
-                        }
-                        .encode()?;
-
-                        // send a response accepting the request to the sender
-                        let mut msg = Content::new();
-
-                        if let Some(cti) = message.content.cti_get() {
-                            msg.cti_set(&cti);
-                        }
-                        msg.type_set(message::MESSAGE_TYPE_CONNECTION_RES);
-                        msg.issued_at_set(crate::time::now().timestamp());
-                        msg.content_set(&content);
-
-                        self.encrypt_and_send(&message.from, &msg.encode()?)?;
-                    }
+                    Some(connection_request_reject(message, &mut storage)?)
                 }
-                message::MESSAGE_TYPE_CREDENTIALS_REQ => {}
+                //message::MESSAGE_TYPE_CREDENTIALS_REQ => {}
+                _ => None,
+            };
 
-                _ => {}
+            if let Some((recipient, plaintext)) = response {
+                encrypt_and_send(websocket, &mut storage, &recipient, &plaintext)?;
             }
+
+            return Ok(());
         };
 
         Ok(())

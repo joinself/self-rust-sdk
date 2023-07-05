@@ -65,6 +65,57 @@ pub fn connection_request_accept(
     Err(SelfError::MessageContentMissing)
 }
 
+pub fn connection_request_reject(
+    message: &Envelope,
+    storage: &mut MutexGuard<Storage>,
+) -> Result<(Identifier, Vec<u8>), SelfError> {
+    if let Some(payload) = message.content.content_get() {
+        let connection_req = message::ConnectionRequest::decode(&payload)?;
+
+        // save the tokens from the sender, even though we are rejecting the request
+        // so we can avoid doing POW over the message to send the response
+        if let Some(authorization_token) = connection_req.ath {
+            storage.token_create(
+                &message.from,
+                Some(&message.to),
+                i64::MAX,
+                &Token::decode(&authorization_token)?,
+            )?;
+        }
+
+        if let Some(notification_token) = connection_req.ntf {
+            storage.token_create(
+                &message.from,
+                Some(&message.to),
+                i64::MAX,
+                &Token::decode(&notification_token)?,
+            )?;
+        }
+
+        // respond to sender
+        let content = ConnectionResponse {
+            ath: None,
+            ntf: None,
+            sts: ResponseStatus::Rejected,
+        }
+        .encode()?;
+
+        // send a response accepting the request to the sender
+        let mut msg = Content::new();
+
+        if let Some(cti) = message.content.cti_get() {
+            msg.cti_set(&cti);
+        }
+        msg.type_set(message::MESSAGE_TYPE_CONNECTION_RES);
+        msg.issued_at_set(crate::time::now().timestamp());
+        msg.content_set(&content);
+
+        return Ok((message.from.clone(), msg.encode()?));
+    }
+
+    Err(SelfError::MessageContentMissing)
+}
+
 /// build a response to indicate a message has been del;ivered
 pub fn chat_message_delivered(message: &Envelope) -> Result<(Identifier, Vec<u8>), SelfError> {
     if let Some(message_id) = message.content.cti_get() {
