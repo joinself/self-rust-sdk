@@ -1,13 +1,13 @@
 use crate::account::responder::*;
 use crate::account::token::token_create_authorization;
-use crate::crypto::random_id;
+
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
 use crate::keypair::Usage;
 use crate::message::{
-    self, ChatDelivered, ConnectionRequest, ConnectionResponse, Content, Envelope,
-    GroupInviteRequest, ResponseStatus, MESSAGE_TYPE_CHAT_MSG,
+    self, ConnectionRequest, Content, Envelope, GroupInviteRequest, ResponseStatus,
+    MESSAGE_TYPE_CHAT_MSG,
 };
 use crate::protocol::api::{KeyCreateRequest, PrekeyResponse};
 use crate::siggraph::SignatureGraph;

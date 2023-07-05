@@ -3,13 +3,12 @@ use crate::crypto::random_id;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::message::{
-    self, ChatDelivered, ChatRead, ConnectionRequest, ConnectionResponse, Content, Envelope,
-    GroupInviteRequest, ResponseStatus, MESSAGE_TYPE_CHAT_MSG,
+    self, ChatDelivered, ChatRead, ConnectionResponse, Content, Envelope, ResponseStatus,
 };
 use crate::storage::Storage;
 use crate::token::Token;
 
-use std::sync::{Arc, MutexGuard};
+use std::sync::MutexGuard;
 
 /// build a response to accept the connection request
 pub fn connection_request_accept(
