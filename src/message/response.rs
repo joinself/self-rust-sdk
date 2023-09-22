@@ -30,8 +30,10 @@ impl ConnectionResponse {
 
 #[derive(Serialize, Deserialize)]
 pub struct GroupInviteResponse {
-    pub gid: Vec<u8>,         // group identifier
+    pub gid: Vec<u8>, // group identifier
     pub aid: Option<Vec<u8>>, // as identifier, the identifier the invitee would like to use to join the group
+    pub ath: Option<Vec<u8>>, // authentication token (optional for when the group inviter is not a connection)
+    pub ntf: Option<Vec<u8>>, // notification token (optional, for when the group innviter is not a connection)
     pub sts: ResponseStatus,
 }
 

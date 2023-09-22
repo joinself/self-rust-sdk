@@ -539,6 +539,7 @@ pub fn assemble_message(
     let event = messaging::Event::create(
         &mut builder,
         &messaging::EventArgs {
+            version: messaging::Version(())
             id: Some(eid),
             type_: messaging::ContentType::MESSAGE,
             content: Some(cnt),

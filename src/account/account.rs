@@ -445,13 +445,18 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
+        let rest = match & self.rest {
+            Some(rest) => rest,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
         if let Some(msg_type) = message.content.type_get() {
             let response = match msg_type.as_str() {
                 message::MESSAGE_TYPE_CONNECTION_REQ => {
                     Some(connection_request_accept(message, &mut storage)?)
                 }
                 message::MESSAGE_TYPE_CHAT_MSG => Some(chat_message_read(message)?),
-                // message::MESSAGE_TYPE_GROUP_INVITE_REQ => {}
+                message::MESSAGE_TYPE_GROUP_INVITE_REQ => Some(group_invite_accept(message, &mut storage, rest)?),
                 _ => None,
             };
 
