@@ -456,7 +456,7 @@ impl Account {
                     Some(connection_request_accept(message, &mut storage)?)
                 }
                 message::MESSAGE_TYPE_CHAT_MSG => Some(chat_message_read(message)?),
-                message::MESSAGE_TYPE_GROUP_INVITE_REQ => Some(group_invite_accept(message, &mut storage, rest)?),
+                // message::MESSAGE_TYPE_GROUP_INVITE_REQ => Some(group_invite_accept(message, &mut storage, rest)?),
                 _ => None,
             };
 

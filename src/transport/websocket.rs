@@ -539,7 +539,7 @@ pub fn assemble_message(
     let event = messaging::Event::create(
         &mut builder,
         &messaging::EventArgs {
-            version: messaging::Version(())
+            version: messaging::Version::V1,
             id: Some(eid),
             type_: messaging::ContentType::MESSAGE,
             content: Some(cnt),
@@ -658,6 +658,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
     let event = messaging::Event::create(
         &mut builder,
         &messaging::EventArgs {
+            version: messaging::Version::V1,
             id: Some(eid),
             type_: messaging::ContentType::SUBSCRIBE,
             content: Some(cnt),
@@ -696,6 +697,7 @@ mod tests {
         let event = messaging::Event::create(
             &mut builder,
             &messaging::EventArgs {
+                version: messaging::Version::V1,
                 id: Some(id),
                 type_: messaging::ContentType::ACKNOWLEDGEMENT,
                 content: None,
@@ -739,6 +741,7 @@ mod tests {
         let event = messaging::Event::create(
             &mut builder,
             &messaging::EventArgs {
+                version: messaging::Version::V1,
                 id: Some(id),
                 type_: messaging::ContentType::ACKNOWLEDGEMENT,
                 content: Some(content),
@@ -829,6 +832,7 @@ mod tests {
         let event = messaging::Event::create(
             &mut builder,
             &messaging::EventArgs {
+                version: messaging::Version::V1,
                 id: Some(eid),
                 type_: messaging::ContentType::MESSAGE,
                 content: Some(cnt),

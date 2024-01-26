@@ -160,7 +160,7 @@ pub fn chat_message_read(message: &Envelope) -> Result<(Identifier, Vec<u8>), Se
     Err(SelfError::MessageCTIMissing)
 }
 
-
+/* 
 /// build response to accept a group invitation
 pub fn group_invite_accept(message: &Envelope, storage: &mut MutexGuard<Storage>, rest: &Rest) -> Result<(Identifier, Vec<u8>), SelfError> {
     if let Some(payload) = message.content.content_get() {
@@ -172,8 +172,6 @@ pub fn group_invite_accept(message: &Envelope, storage: &mut MutexGuard<Storage>
         // generate some tokens for the sender to use if not connected
 
         // generate an identifier to use as a 
-        
-
 
         // generate authorization tokens for the requester
         let content = GroupInviteResponse{
@@ -213,3 +211,4 @@ pub fn group_invite_accept(message: &Envelope, storage: &mut MutexGuard<Storage>
 
     Err(SelfError::MessageContentMissing)
 }
+*/
