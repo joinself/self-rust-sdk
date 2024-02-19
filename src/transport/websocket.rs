@@ -313,20 +313,23 @@ impl Websocket {
         handle.spawn(async move {
             for m in write_rx.iter() {
                 match m {
-                    Event::Message(id, msg, callback) => match {
-                        if let Some(cb) = callback {
-                            let mut lock = requests_tx.lock().await;
-                            lock.insert(id, cb);
-                            drop(lock);
+                    Event::Message(id, msg, callback) => {
+                        let res = {
+                            if let Some(cb) = callback {
+                                let mut lock = requests_tx.lock().await;
+                                lock.insert(id, cb);
+                                drop(lock);
+                            }
+                            // println!("sending message of size: {}", msg.len());
+                            socket_tx.send(msg).await
+                        };
+                        match res {
+                            Ok(_) => continue,
+                            Err(_) => {
+                                break;
+                            }
                         }
-                        // println!("sending message of size: {}", msg.len());
-                        socket_tx.send(msg).await
-                    } {
-                        Ok(_) => continue,
-                        Err(_) => {
-                            break;
-                        }
-                    },
+                    }
                     Event::Done => break,
                 }
             }

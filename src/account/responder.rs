@@ -3,7 +3,8 @@ use crate::crypto::random_id;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::message::{
-    self, ChatDelivered, ChatRead, ConnectionResponse, Content, Envelope, ResponseStatus, GroupInviteResponse,
+    self, ChatDelivered, ChatRead, ConnectionResponse, Content, Envelope, GroupInviteResponse,
+    ResponseStatus,
 };
 use crate::storage::Storage;
 use crate::token::Token;
@@ -160,18 +161,18 @@ pub fn chat_message_read(message: &Envelope) -> Result<(Identifier, Vec<u8>), Se
     Err(SelfError::MessageCTIMissing)
 }
 
-/* 
+/*
 /// build response to accept a group invitation
 pub fn group_invite_accept(message: &Envelope, storage: &mut MutexGuard<Storage>, rest: &Rest) -> Result<(Identifier, Vec<u8>), SelfError> {
     if let Some(payload) = message.content.content_get() {
         let group_invite_req = message::GroupInviteRequest::decode(&payload)?;
 
-        
+
         // check if connected with sender
 
         // generate some tokens for the sender to use if not connected
 
-        // generate an identifier to use as a 
+        // generate an identifier to use as a
 
         // generate authorization tokens for the requester
         let content = GroupInviteResponse{
