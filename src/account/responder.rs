@@ -3,12 +3,10 @@ use crate::crypto::random_id;
 use crate::error::SelfError;
 use crate::identifier::Identifier;
 use crate::message::{
-    self, ChatDelivered, ChatRead, ConnectionResponse, Content, Envelope, GroupInviteResponse,
-    ResponseStatus,
+    self, ChatDelivered, ChatRead, ConnectionResponse, Content, Envelope, ResponseStatus,
 };
 use crate::storage::Storage;
 use crate::token::Token;
-use crate::transport::rest::Rest;
 
 use std::sync::MutexGuard;
 

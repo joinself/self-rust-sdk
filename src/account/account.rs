@@ -445,7 +445,7 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        let rest = match &self.rest {
+        let _rest = match &self.rest {
             Some(rest) => rest,
             None => return Err(SelfError::AccountNotConfigured),
         };

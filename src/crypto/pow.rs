@@ -11,7 +11,7 @@ impl ProofOfWork {
     pub fn new(leading_zero_bits: usize) -> ProofOfWork {
         // allocate a target buffer to compare against
         // garbage, but it works ¯\_(ツ)_/¯
-        let mut target = vec![0; 32];
+        let mut target = [0; 32];
 
         for offset in leading_zero_bits..256 {
             target[offset >> 3] |= (1 << (offset & 0x7)) as u8
