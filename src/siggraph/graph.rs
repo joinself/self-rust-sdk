@@ -824,7 +824,7 @@ mod tests {
         let mut sg = SignatureGraph::new();
         let mut previous_hash: Option<Vec<u8>> = None;
 
-        for mut test_op in test_history {
+        for test_op in test_history {
             if test_op.previous.is_empty() {
                 if let Some(previous) = previous_hash {
                     test_op.previous = previous;

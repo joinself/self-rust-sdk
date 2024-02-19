@@ -1139,7 +1139,7 @@ mod tests {
         let msgs = msg_rx.recv().unwrap();
         assert_eq!(msgs.len(), 1);
 
-        let msg = msgs.get(0).unwrap().clone();
+        let msg = msgs.first().unwrap().clone();
         assert_eq!(msg, Vec::from("test message"));
 
         /*
