@@ -313,20 +313,23 @@ impl Websocket {
         handle.spawn(async move {
             for m in write_rx.iter() {
                 match m {
-                    Event::Message(id, msg, callback) => match {
-                        if let Some(cb) = callback {
-                            let mut lock = requests_tx.lock().await;
-                            lock.insert(id, cb);
-                            drop(lock);
+                    Event::Message(id, msg, callback) => {
+                        let res = {
+                            if let Some(cb) = callback {
+                                let mut lock = requests_tx.lock().await;
+                                lock.insert(id, cb);
+                                drop(lock);
+                            }
+                            // println!("sending message of size: {}", msg.len());
+                            socket_tx.send(msg).await
+                        };
+                        match res {
+                            Ok(_) => continue,
+                            Err(_) => {
+                                break;
+                            }
                         }
-                        // println!("sending message of size: {}", msg.len());
-                        socket_tx.send(msg).await
-                    } {
-                        Ok(_) => continue,
-                        Err(_) => {
-                            break;
-                        }
-                    },
+                    }
                     Event::Done => break,
                 }
             }
@@ -539,6 +542,7 @@ pub fn assemble_message(
     let event = messaging::Event::create(
         &mut builder,
         &messaging::EventArgs {
+            version: messaging::Version::V1,
             id: Some(eid),
             type_: messaging::ContentType::MESSAGE,
             content: Some(cnt),
@@ -657,6 +661,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
     let event = messaging::Event::create(
         &mut builder,
         &messaging::EventArgs {
+            version: messaging::Version::V1,
             id: Some(eid),
             type_: messaging::ContentType::SUBSCRIBE,
             content: Some(cnt),
@@ -695,6 +700,7 @@ mod tests {
         let event = messaging::Event::create(
             &mut builder,
             &messaging::EventArgs {
+                version: messaging::Version::V1,
                 id: Some(id),
                 type_: messaging::ContentType::ACKNOWLEDGEMENT,
                 content: None,
@@ -738,6 +744,7 @@ mod tests {
         let event = messaging::Event::create(
             &mut builder,
             &messaging::EventArgs {
+                version: messaging::Version::V1,
                 id: Some(id),
                 type_: messaging::ContentType::ACKNOWLEDGEMENT,
                 content: Some(content),
@@ -828,6 +835,7 @@ mod tests {
         let event = messaging::Event::create(
             &mut builder,
             &messaging::EventArgs {
+                version: messaging::Version::V1,
                 id: Some(eid),
                 type_: messaging::ContentType::MESSAGE,
                 content: Some(cnt),
@@ -1131,7 +1139,7 @@ mod tests {
         let msgs = msg_rx.recv().unwrap();
         assert_eq!(msgs.len(), 1);
 
-        let msg = msgs.get(0).unwrap().clone();
+        let msg = msgs.first().unwrap().clone();
         assert_eq!(msg, Vec::from("test message"));
 
         /*
