@@ -6,7 +6,7 @@ use crate::protocol::hashgraph::Role;
 
 #[derive(Debug)]
 pub struct RoleEntry {
-    pub role: Role,
+    pub role: u64,
     pub from: i64,
 }
 
@@ -34,16 +34,16 @@ impl Node {
         nodes
     }
 
-    pub fn has_roles(&self, roles: Role) -> bool {
+    pub fn has_roles(&self, roles: u64) -> bool {
         match self.roles.last() {
-            Some(role) => role & roles != 0,
+            Some(role) => role.role & (roles) != 0,
             None => false,
         }
     }
 
-    pub fn has_roles_at(&self, roles: Role, timeframe: i64) -> bool {
+    pub fn has_roles_at(&self, roles: u64, timeframe: i64) -> bool {
         match self.roles_at(timeframe) {
-            Some(role) => role & roles != 0,
+            Some(role) => role.role & roles != 0,
             None => false,
         }
     }

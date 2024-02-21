@@ -119,23 +119,23 @@ pub mod hashgraph {
         note = "Use associated constants instead. This will no longer be generated in 2021."
     )]
     #[allow(non_camel_case_types)]
-    pub const ENUM_VALUES_METHOD: [Method; 2] = [Method::Self_, Method::Key];
+    pub const ENUM_VALUES_METHOD: [Method; 2] = [Method::Aure, Method::Key];
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
     #[repr(transparent)]
     pub struct Method(pub u16);
     #[allow(non_upper_case_globals)]
     impl Method {
-        pub const Self_: Self = Self(0);
+        pub const Aure: Self = Self(0);
         pub const Key: Self = Self(1);
 
         pub const ENUM_MIN: u16 = 0;
         pub const ENUM_MAX: u16 = 1;
-        pub const ENUM_VALUES: &'static [Self] = &[Self::Self_, Self::Key];
+        pub const ENUM_VALUES: &'static [Self] = &[Self::Aure, Self::Key];
         /// Returns the variant's name or "" if unknown.
         pub fn variant_name(self) -> Option<&'static str> {
             match self {
-                Self::Self_ => Some("Self_"),
+                Self::Aure => Some("Aure"),
                 Self::Key => Some("Key"),
                 _ => None,
             }
@@ -645,7 +645,7 @@ pub mod hashgraph {
         #[inline]
         pub fn method(&self) -> Method {
             self._tab
-                .get::<Method>(Reference::VT_METHOD, Some(Method::Self_))
+                .get::<Method>(Reference::VT_METHOD, Some(Method::Aure))
                 .unwrap()
         }
         #[inline]
@@ -700,7 +700,7 @@ pub mod hashgraph {
         #[inline]
         fn default() -> Self {
             ReferenceArgs {
-                method: Method::Self_,
+                method: Method::Aure,
                 id: None,
                 controller: None,
             }
@@ -714,7 +714,7 @@ pub mod hashgraph {
         #[inline]
         pub fn add_method(&mut self, method: Method) {
             self.fbb_
-                .push_slot::<Method>(Reference::VT_METHOD, method, Method::Self_);
+                .push_slot::<Method>(Reference::VT_METHOD, method, Method::Aure);
         }
         #[inline]
         pub fn add_id(&mut self, id: flatbuffers::WIPOffset<flatbuffers::Vector<'b, u8>>) {

@@ -5,7 +5,7 @@ enum Version : ubyte {
 }
 
 enum Method : ushort {
-    Self = 0,
+    Aure = 0,
     Key,
 }
 

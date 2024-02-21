@@ -8,9 +8,10 @@ pub struct OperationBuilder<'a> {
     previous: Option<Vec<u8>>,
     sequence: Option<u32>,
     timestamp: Option<i64>,
-    create: Vec<(siggraph::KeyRole, PublicKey)>,
     revoke: Vec<(PublicKey, Option<i64>)>,
     recover: Vec<Option<i64>>,
+    grant_embedded: Vec<(hashgraph::Role, PublicKey)>,
+    grant_referenced: Vec<(hashgraph::Method, hashgraph::Role, Vec<u8>, PublicKey)>,
     operation: Option<Vec<u8>>,
     signatures: Vec<(Vec<u8>, Vec<u8>)>,
     sig_buf: Vec<u8>,
@@ -23,9 +24,10 @@ impl<'a> OperationBuilder<'a> {
             previous: None,
             sequence: None,
             timestamp: None,
-            create: Vec::new(),
             revoke: Vec::new(),
             recover: Vec::new(),
+            grant_embedded: Vec::new(),
+            grant_referenced: Vec::new(),
             operation: None,
             signatures: Vec::new(),
             sig_buf: vec![0; 96],
@@ -53,15 +55,24 @@ impl<'a> OperationBuilder<'a> {
         self
     }
 
-    pub fn key_create_signing(&mut self, pk: &PublicKey) -> &mut OperationBuilder<'a> {
-        self.create
-            .push((siggraph::KeyRole::Signing, pk.to_owned()));
+    pub fn key_grant_embedded(
+        &mut self,
+        pk: &PublicKey,
+        roles: hashgraph::Role,
+    ) -> &mut OperationBuilder<'a> {
+        self.grant_embedded.push((roles, pk.to_owned()));
         self
     }
 
-    pub fn key_create_recovery(&mut self, pk: &PublicKey) -> &mut OperationBuilder<'a> {
-        self.create
-            .push((siggraph::KeyRole::Recovery, pk.to_owned()));
+    pub fn key_grant_referenced(
+        &mut self,
+        method: hashgraph::Method,
+        controller: &[u8],
+        pk: &PublicKey,
+        roles: hashgraph::Role,
+    ) -> &mut OperationBuilder<'a> {
+        self.grant_referenced
+            .push((method, roles, controller.to_owned(), pk.to_owned()));
         self
     }
 
@@ -74,7 +85,7 @@ impl<'a> OperationBuilder<'a> {
         self
     }
 
-    pub fn recovery(&mut self, effective_from: Option<i64>) -> &mut OperationBuilder<'a> {
+    pub fn recover(&mut self, effective_from: Option<i64>) -> &mut OperationBuilder<'a> {
         self.recover.push(effective_from);
         self
     }
@@ -88,9 +99,9 @@ impl<'a> OperationBuilder<'a> {
 
         let sb = self.builder.create_vector(&kp.id());
 
-        let header = siggraph::SignatureHeader::create(
+        let header = hashgraph::SignatureHeader::create(
             &mut self.builder,
-            &siggraph::SignatureHeaderArgs { signer: Some(sb) },
+            &hashgraph::SignatureHeaderArgs { signer: Some(sb) },
         );
 
         self.builder.finish(header, None);
@@ -109,11 +120,11 @@ impl<'a> OperationBuilder<'a> {
 
     pub fn build(&mut self) -> Result<Vec<u8>, SelfError> {
         if self.operation.is_none() {
-            return Err(SelfError::SiggraphOperationDecodingInvalid);
+            return Err(SelfError::HashgraphOperationMissing);
         }
 
         if self.signatures.is_empty() {
-            return Err(SelfError::SiggraphOperationNotEnoughSigners);
+            return Err(SelfError::HashgraphNotEnoughSigners);
         }
 
         let mut signatures = Vec::new();
@@ -122,9 +133,9 @@ impl<'a> OperationBuilder<'a> {
             let hb = self.builder.create_vector(&signature.0);
             let sb = self.builder.create_vector(&signature.1);
 
-            signatures.push(siggraph::Signature::create(
+            signatures.push(hashgraph::Signature::create(
                 &mut self.builder,
-                &siggraph::SignatureArgs {
+                &hashgraph::SignatureArgs {
                     header: Some(hb),
                     signature: Some(sb),
                 },
@@ -134,9 +145,9 @@ impl<'a> OperationBuilder<'a> {
         let op_signatures = self.builder.create_vector(&signatures);
         let op_data = self.builder.create_vector(self.operation.as_ref().unwrap());
 
-        let signed_op = siggraph::SignedOperation::create(
+        let signed_op = hashgraph::SignedOperation::create(
             &mut self.builder,
-            &siggraph::SignedOperationArgs {
+            &hashgraph::SignedOperationArgs {
                 operation: Some(op_data),
                 signatures: Some(op_signatures),
             },
@@ -154,70 +165,96 @@ impl<'a> OperationBuilder<'a> {
         let mut actions = Vec::new();
 
         for recover in &self.recover {
-            let effective_from = recover.unwrap_or(self.timestamp.unwrap());
-
-            let rk = siggraph::Recover::create(
+            let action = hashgraph::Action::create(
                 &mut self.builder,
-                &siggraph::RecoverArgs { effective_from },
-            );
-
-            let ac = siggraph::Action::create(
-                &mut self.builder,
-                &siggraph::ActionArgs {
-                    actionable_type: siggraph::Actionable::Recover,
-                    actionable: Some(rk.as_union_value()),
+                &hashgraph::ActionArgs {
+                    actionable: hashgraph::Actionable::Recover,
+                    description: None,
+                    description_type: hashgraph::Description::Reference,
+                    roles: 0,
+                    from: recover.unwrap_or(self.timestamp.unwrap()),
                 },
             );
 
-            actions.push(ac);
+            actions.push(action);
         }
 
         for revoke in &self.revoke {
-            let effective_from = revoke.1.unwrap_or_else(|| self.timestamp.unwrap());
+            let revoked_key = self.builder.create_vector(&revoke.0.id());
 
-            let kb = self.builder.create_vector(&revoke.0.id());
-
-            let rk = siggraph::RevokeKey::create(
+            let description = hashgraph::Reference::create(
                 &mut self.builder,
-                &siggraph::RevokeKeyArgs {
-                    key: Some(kb),
-                    effective_from,
+                &hashgraph::ReferenceArgs {
+                    method: hashgraph::Method::Aure,
+                    id: Some(revoked_key),
+                    controller: None,
                 },
             );
 
-            let ac = siggraph::Action::create(
+            let action = hashgraph::Action::create(
                 &mut self.builder,
-                &siggraph::ActionArgs {
-                    actionable_type: siggraph::Actionable::RevokeKey,
-                    actionable: Some(rk.as_union_value()),
+                &hashgraph::ActionArgs {
+                    actionable: hashgraph::Actionable::Revoke,
+                    description: Some(description.as_union_value()),
+                    description_type: hashgraph::Description::Reference,
+                    roles: 0,
+                    from: revoke.1.unwrap_or(self.timestamp.unwrap()),
                 },
             );
 
-            actions.push(ac);
+            actions.push(action);
         }
 
-        for create in &self.create {
-            let kb = self.builder.create_vector(&create.1.id());
+        for grant in &self.grant_referenced {
+            let granted_key = self.builder.create_vector(&grant.3.id());
+            let controller = self.builder.create_vector(&grant.2);
 
-            let ck = siggraph::CreateKey::create(
+            let description = hashgraph::Reference::create(
                 &mut self.builder,
-                &siggraph::CreateKeyArgs {
-                    key: Some(kb),
-                    alg: siggraph::KeyAlgorithm::Ed25519,
-                    role: create.0,
-                    effective_from: self.timestamp.unwrap(),
+                &&&hashgraph::ReferenceArgs {
+                    method: grant.0,
+                    id: Some(granted_key),
+                    controller: Some(controller),
                 },
             );
 
-            let ac = siggraph::Action::create(
+            let action = hashgraph::Action::create(
                 &mut self.builder,
-                &siggraph::ActionArgs {
-                    actionable_type: siggraph::Actionable::CreateKey,
-                    actionable: Some(ck.as_union_value()),
+                &hashgraph::ActionArgs {
+                    actionable: hashgraph::Actionable::Revoke,
+                    description: Some(description.as_union_value()),
+                    description_type: hashgraph::Description::Reference,
+                    roles: grant.1.bits(),
+                    from: self.timestamp.unwrap(),
                 },
             );
 
-            actions.push(ac);
+            actions.push(action);
+        }
+
+        for grant in &self.grant_embedded {
+            let granted_key = self.builder.create_vector(&grant.1.id());
+
+            let description = hashgraph::Embedded::create(
+                &mut self.builder,
+                &&hashgraph::EmbeddedArgs {
+                    id: Some(granted_key),
+                    controller: None,
+                },
+            );
+
+            let action = hashgraph::Action::create(
+                &mut self.builder,
+                &hashgraph::ActionArgs {
+                    actionable: hashgraph::Actionable::Revoke,
+                    description: Some(description.as_union_value()),
+                    description_type: hashgraph::Description::Reference,
+                    roles: grant.0.bits(),
+                    from: self.timestamp.unwrap(),
+                },
+            );
+
+            actions.push(action);
         }
 
         let actions_vec = self.builder.create_vector(&actions);
@@ -226,10 +263,10 @@ impl<'a> OperationBuilder<'a> {
             .as_ref()
             .map(|hash| self.builder.create_vector(hash));
 
-        let op = siggraph::Operation::create(
+        let op = hashgraph::Operation::create(
             &mut self.builder,
-            &siggraph::OperationArgs {
-                version: 2,
+            &hashgraph::OperationArgs {
+                version: hashgraph::Version::V0,
                 sequence: self.sequence.unwrap(),
                 timestamp: self.timestamp.unwrap(),
                 previous,

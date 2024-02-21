@@ -2,6 +2,7 @@ use crate::account::responder::*;
 use crate::account::token::token_create_authorization;
 
 use crate::error::SelfError;
+use crate::hashgraph::Hashgraph;
 use crate::identifier::Identifier;
 use crate::keypair::signing::KeyPair;
 use crate::keypair::Usage;
@@ -10,7 +11,7 @@ use crate::message::{
     MESSAGE_TYPE_CHAT_MSG,
 };
 use crate::protocol::api::{KeyCreateRequest, PrekeyResponse};
-use crate::siggraph::SignatureGraph;
+use crate::protocol::hashgraph;
 use crate::storage::Storage;
 use crate::time;
 use crate::token::Token;
@@ -248,7 +249,7 @@ impl Account {
     /// register a persistent identifier
     /// returns the persistent identifier created to group all other
     /// public key identifiers
-    pub fn register(&mut self, recovery_kp: &KeyPair) -> Result<Identifier, SelfError> {
+    pub fn register(&mut self) -> Result<Identifier, SelfError> {
         let rest = match &self.rest {
             Some(rest) => rest,
             None => return Err(SelfError::AccountNotConfigured),
@@ -265,28 +266,35 @@ impl Account {
         };
 
         // generate keypairs for account identifier and device
-        let (identifier_kp, device_kp) = (KeyPair::new(), KeyPair::new());
+        let (identifier_kp, invocation_kp, authentication_kp, assertion_kp) = (
+            KeyPair::new(),
+            KeyPair::new(),
+            KeyPair::new(),
+            KeyPair::new(),
+        );
+        let exchange_kp = KeyPair::new().to_exchange_key()?;
         let identifier = Identifier::Owned(identifier_kp.clone());
-
-        // convert device key to a curve25519 key
-        let exchange_kp = device_kp.to_exchange_key()?;
 
         // construct a public key operation to serve as
         // the initial public state for the account
-        let graph = SignatureGraph::new();
+        let graph = Hashgraph::new();
 
         let operation = graph
             .create()
             .id(&identifier_kp.id())
-            .key_create_signing(&device_kp.public())
-            .key_create_recovery(&recovery_kp.public())
+            .key_grant_embedded(&assertion_kp.public(), hashgraph::Role::Assertion)
+            .key_grant_embedded(&authentication_kp.public(), hashgraph::Role::Authentication)
+            .key_grant_embedded(&invocation_kp.public(), hashgraph::Role::Invocation)
+            .key_grant_embedded(&exchange_kp.public(), hashgraph::Role::KeyAgreement)
             .sign(&identifier_kp)
-            .sign(&device_kp)
-            .sign(recovery_kp)
+            .sign(&assertion_kp)
+            .sign(&authentication_kp)
+            .sign(&invocation_kp)
             .build()?;
 
         // create an olm account for the device identifier
-        let mut olm_account = crate::crypto::account::Account::new(device_kp.clone(), exchange_kp);
+        let mut olm_account =
+            crate::crypto::account::Account::new(authentication_kp.clone(), exchange_kp.clone());
         olm_account.generate_one_time_keys(100)?;
 
         let mut one_time_keys = Vec::new();
