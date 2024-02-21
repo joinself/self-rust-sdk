@@ -1,7 +1,7 @@
 use crate::{
     error::SelfError,
     keypair::signing::{KeyPair, PublicKey},
-    protocol::siggraph,
+    protocol::hashgraph,
 };
 
 pub struct OperationBuilder<'a> {

@@ -1,51 +1,54 @@
 use flatbuffers::{ForwardsUOffset, Vector};
+use http::header;
 
 use crate::error::SelfError;
+use crate::hashgraph::{node::Node, node::RoleEntry, operation::OperationBuilder};
 use crate::keypair::signing::PublicKey;
 use crate::keypair::Algorithm;
-use crate::protocol::siggraph::{
-    root_as_signed_operation, Action, Actionable, CreateKey, KeyAlgorithm, KeyRole, Operation,
-    Recover, RevokeKey, Signature, SignatureHeader, SignedOperation,
+use crate::protocol::hashgraph::{
+    root_as_signed_operation, Action, Actionable, Description, Operation, Role, Signature,
+    SignatureHeader, SignedOperation,
 };
-use crate::siggraph::{node::Node, operation::OperationBuilder};
 
-use std::borrow::Borrow;
+use std::borrow::{Borrow, BorrowMut};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-pub struct SignatureGraph {
-    id: Option<Vec<u8>>,
+pub struct Hashgraph {
+    identifier: Option<Vec<u8>>,
+    controller: Option<Vec<u8>>,
     root: Option<Rc<RefCell<Node>>>,
+    operations: Vec<Vec<u8>>,
     keys: HashMap<Vec<u8>, Rc<RefCell<Node>>>,
     hashes: HashMap<Vec<u8>, usize>,
-    operations: Vec<Vec<u8>>,
-    recovery_key: Option<Rc<RefCell<Node>>>,
     sig_buf: Vec<u8>,
 }
 
-impl SignatureGraph {
-    pub fn new() -> SignatureGraph {
-        SignatureGraph {
-            id: None,
+impl Hashgraph {
+    /// creates a new empty hashgraph
+    pub fn new() -> Hashgraph {
+        Hashgraph {
+            identifier: None,
+            controller: None,
             root: None,
             keys: HashMap::new(),
             hashes: HashMap::new(),
             operations: Vec::new(),
-            recovery_key: None,
-            sig_buf: vec![0; 96],
+            sig_buf: vec![0; 97],
         }
     }
 
-    pub fn load(history: &[Vec<u8>], verify: bool) -> Result<SignatureGraph, SelfError> {
-        let mut sg = SignatureGraph {
-            id: None,
+    /// loads a hashgraph from a collection of operations. validation of signatures can optionally be skipped
+    pub fn load(history: &[Vec<u8>], verify: bool) -> Result<Hashgraph, SelfError> {
+        let mut sg = Hashgraph {
+            identifier: None,
+            controller: None,
             root: None,
             keys: HashMap::new(),
             hashes: HashMap::new(),
             operations: Vec::new(),
-            recovery_key: None,
-            sig_buf: vec![0; 96],
+            sig_buf: vec![0; 97],
         };
 
         for operation in history {
@@ -53,6 +56,14 @@ impl SignatureGraph {
         }
 
         Ok(sg)
+    }
+
+    pub fn identifier(&self) -> &[u8] {
+        return self.identifier;
+    }
+
+    pub fn controller(&self) -> &[u8] {
+        return self.controller;
     }
 
     pub fn create(&self) -> OperationBuilder {
@@ -67,7 +78,7 @@ impl SignatureGraph {
 
         if let Some(last_op) = self.operations.last() {
             // compute the hash of the last operation
-            ob.previous(&crate::crypto::hash::blake2b(last_op));
+            ob.previous(&crate::crypto::hash::sha3(last_op));
         }
 
         ob
@@ -77,44 +88,64 @@ impl SignatureGraph {
         self.execute_operation(operation, true)
     }
 
-    fn execute_operation(&mut self, operation: Vec<u8>, verify: bool) -> Result<(), SelfError> {
-        let signed_op = root_as_signed_operation(&operation)
-            .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
+    fn collect_signers(
+        &self,
+        signed_op: &SignedOperation,
+        op: &Operation,
+        signers: &mut HashSet<Vec<u8>>,
+        verify: bool,
+    ) -> Result<(), SelfError> {
+        let signatures = signed_op.signatures().unwrap();
 
-        let signed_op_hash = crate::crypto::hash::blake2b(&operation);
+        for (i, signature) in signatures.iter().enumerate() {
+            let header_data = match signature.header() {
+                Some(header_data) => header_data,
+                None => return Err(SelfError::HashgraphInvalidSignatureHeader),
+            };
 
-        let op_bytes = signed_op
-            .operation()
-            .ok_or(SelfError::SiggraphOperationDecodingInvalid)?;
+            if verify {
+                let header_hash = crate::crypto::hash::sha3(header_data);
+                self.sig_buf[65..97].copy_from_slice(&header_hash);
+            }
 
-        let op = flatbuffers::root::<Operation>(op_bytes)
-            .map_err(|_| SelfError::SiggraphOperationDecodingInvalid)?;
+            let header = flatbuffers::root::<SignatureHeader>(header_data)
+                .map_err(|_| Err(SelfError::HashgraphInvalidSignatureHeader))?;
 
-        let mut signers = HashSet::new();
+            let signer = match header.signer() {
+                Some(signer) => signer,
+                None => return Err(SelfError::HashgraphInvalidSigner),
+            };
 
-        if verify {
-            let op_hash = crate::crypto::hash::blake2b(op_bytes);
-            // copy the operation hash to our temporary buffer we
-            // will use to calculate signatures for each signer
-            self.sig_buf[32..64].copy_from_slice(&op_hash);
+            if signer.len() < 33 {
+                return Err(SelfError::HashgraphInvalidSignerLength);
+            }
 
-            self.validate_operation(&signed_op, &op, &mut signers)?;
-            self.authorize_operation(&op, &signers)?;
+            if verify {
+                if op.sequence() == 0 && i == 0 {
+                    // if this is the first signature on the first operation
+                    // this is the key used as an identifier for the account.
+                    // copy it to the sig buffer for verifying signatures
+                    self.id = Some(signer.to_vec());
+                    self.sig_buf[0..33].copy_from_slice(signer);
+                }
+
+                let signature_data = match signature.signature() {
+                    Some(signature) => signature,
+                    None => return Err(SelfError::HashgraphInvalidSignatureLength),
+                };
+
+                let signers_pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)?;
+                if !signers_pk.verify(&self.sig_buf, signature_data) {
+                    return Err(SelfError::HashgraphInvalidSignature);
+                }
+
+                if signers.contains(signer) {
+                    return Err(SelfError::HashgraphDuplicateSigner);
+                }
+            }
+
+            signers.insert(signer.to_vec());
         }
-
-        let actions = match op.actions() {
-            Some(actions) => actions,
-            None => return Err(SelfError::SiggraphOperationNOOP),
-        };
-
-        if verify {
-            self.validate_actions(&op, &actions, &signers)?;
-        }
-
-        self.execute_actions(&op, &actions, &signers)?;
-
-        self.hashes.insert(signed_op_hash, self.operations.len());
-        self.operations.push(operation);
 
         Ok(())
     }
@@ -125,138 +156,136 @@ impl SignatureGraph {
         op: &Operation,
         signers: &mut HashSet<Vec<u8>>,
     ) -> Result<(), SelfError> {
+        if self.deactivated {
+            return Err(SelfError::HashgraphDeactivated);
+        }
+
         // check the sequence is in order and version of the operation are correct
         if op.sequence() != self.operations.len() as u32 {
             return Err(SelfError::SiggraphOperationSequenceOutOfOrder);
         }
 
-        if op.version() != 2 {
+        if op.version() != 1 {
             return Err(SelfError::SiggraphOperationVersionInvalid);
         }
 
         if op.actions().is_none() {
             return Err(SelfError::SiggraphOperationNOOP);
         }
-        // TODO replace with is_some_and once stable
-        if let Some(actions) = op.actions() {
-            if actions.is_empty() {
-                return Err(SelfError::SiggraphOperationNOOP);
-            }
-        }
 
         let signatures = match signed_op.signatures() {
             Some(signatures) => signatures,
-            None => return Err(SelfError::SiggraphOperationNotSigned),
+            None => return Err(SelfError::HashgraphOperationsUnsigned),
         };
 
         if op.sequence() == 0 {
-            // check the root operation contains a signature using the secret key
-            // used to generate the identifier for the account, as well as a signature
-            // by the device and recovery key
-            if signatures.len() < 3 {
-                return Err(SelfError::SiggraphOperationNotEnoughSigners);
+            if signatures.len() < 2 {
+                return Err(SelfError::HashgraphNotEnoughSigners);
             }
         } else {
-            let previous = match op.previous() {
-                Some(previous) => previous,
-                None => return Err(SelfError::SiggraphOperationPreviousHashMissing),
+            let previous_hash = match op.previous() {
+                Some(previous_hash) => previous_hash,
+                None => return Err(SelfError::HashgraphInvalidPreviousHash),
             };
 
-            let hash_index = match self.hashes.get(previous) {
-                Some(hash_index) => *hash_index,
-                None => return Err(SelfError::SiggraphOperationPreviousHashInvalid),
+            let hash_index = match self.hashes.get(previous_hash) {
+                Some(hash_index) => hash_index,
+                None => return Err(SelfError::HashgraphInvalidPreviousHash),
             };
 
-            // check the provided previous hash matches the hash of the last operation
             if hash_index != self.operations.len() - 1 {
-                return Err(SelfError::SiggraphOperationPreviousHashInvalid);
+                return Err(SelfError::HashgraphInvalidPreviousHash);
             }
 
-            // check the timestamp is greater than the previous operations
-            if self.operation(self.operations.len() - 1).timestamp() == op.timestamp()
-                || self.operation(self.operations.len() - 1).timestamp() > op.timestamp()
-            {
-                return Err(SelfError::SiggraphOperationTimestampInvalid);
+            let previous_op = self.operation(self.operations.len() - 1);
+
+            if previous_op.timestamp() >= op.timestamp() {
+                return Err(SelfError::HashgraphInvalidTimestamp);
             }
         }
 
-        for (i, sig) in signatures.iter().enumerate() {
-            let hdr_bytes = match sig.header() {
-                Some(hdr_bytes) => hdr_bytes,
-                None => return Err(SelfError::SiggraphOperationSignatureHeaderMissing),
-            };
-
-            let signature = match sig.signature() {
-                Some(signature) => signature,
-                None => return Err(SelfError::SiggraphOperationSignatureInvalid),
-            };
-
-            let hdr_hash = crate::crypto::hash::blake2b(hdr_bytes);
-            self.sig_buf[64..].copy_from_slice(&hdr_hash);
-
-            let hdr = flatbuffers::root::<SignatureHeader<'_>>(hdr_bytes)
-                .map_err(|_| SelfError::SiggraphOperationSignatureHeaderInvalid)?;
-
-            let signer = match hdr.signer() {
-                Some(signer) => signer,
-                None => return Err(SelfError::SiggraphOperationSignatureSignerMissing),
-            };
-
-            if op.sequence() == 0 && i == 0 {
-                // if this is the first signature on the first operation
-                // this is the key used as an identifier for the account.
-                // copy it to the sig buffer for verifying signatures
-                self.id = Some(signer.to_vec());
-                self.sig_buf[..32].copy_from_slice(signer);
-            }
-
-            // TODO store signature alg in header
-            let signers_pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)?;
-            if !signers_pk.verify(&self.sig_buf, signature) {
-                return Err(SelfError::SiggraphOperationSignatureInvalid);
-            };
-
-            signers.insert(signer.to_vec());
-        }
-
-        Ok(())
+        self.collect_signers(signed_op, op, signers, true)
     }
 
     fn authorize_operation(
         &self,
         op: &Operation,
-        signers: &HashSet<Vec<u8>>,
+        signers: &mut HashSet<Vec<u8>>,
     ) -> Result<(), SelfError> {
-        if op.sequence() < 1 {
+        if op.sequence() == 0 {
             return Ok(());
         }
 
         let mut authorized = false;
 
-        for signer in signers {
+        for (_, signer) in signers.iter().enumerate() {
             let signing_key = match self.keys.get(signer) {
-                Some(signing_key) => signing_key,
+                Some(signing_key) => signing_key.as_ref(),
                 None => continue,
             };
 
-            let created_at = (*signing_key).as_ref().borrow().ca;
-            let revoked_at = (*signing_key).as_ref().borrow().ra;
-
-            if op.timestamp() < created_at {
-                return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
+            // signing key must have capabilityInvocation role to update the document
+            if !signing_key.has_roles(Role::CapabilityInvocation) {
+                return Err(SelfError::HashgraphSignerRoleInvalid);
             }
 
-            // check the signign key hasn't been revoked before the operation
-            if revoked_at > 0 && op.timestamp() > revoked_at {
-                return Err(SelfError::SiggraphOperationSignatureKeyRevoked);
+            if op.timestamp() < signing_key.created_at {
+                return Err(SelfError::HashgraphSigningKeyRevoked);
             }
 
-            authorized = true;
+            // check the signing key hasn't been revoked before the operation
+            if !signing_key.revoked_at == 0 && op.timestamp() > signing_key.revoked_at {
+                return Err(SelfError::HashgraphSigningKeyRevoked);
+            }
+
+            authorized = true
         }
 
         if !authorized {
-            return Err(SelfError::SiggraphOperationSigningKeyInvalid);
+            return Err(SelfError::HashgraphOperationUnauthorized);
         }
+
+        Ok(())
+    }
+
+    fn execute_operation(&mut self, op: &[u8], verify: bool) -> Result<(), SelfError> {
+        let mut signers = HashSet::new();
+
+        let signed_operation = flatbuffers::root::<SignedOperation>(op)
+            .map_err(|_| Err(SelfError::HashgraphOperationInvalid))?;
+        let signed_operation_hash = crate::crypto::hash::sha3(op);
+
+        let operation_data = match signed_operation.operation() {
+            Some(operation_data) => operation_data,
+            None => return Err(SelfError::HashgraphOperationInvalid),
+        };
+
+        let operation = flatbuffers::root::<Operation>(operation_data)
+            .map_err(|_| Err(SelfError::HashgraphOperationInvalid))?;
+
+        if operation.actions().is_none() {
+            return Err(SelfError::HashgraphOperationNOOP);
+        }
+
+        if verify {
+            let operation_hash = crate::crypto::hash::sha3(operation_data);
+
+            // copy the operation hash to ourr temporary buffer we
+            // will use to calcuate signatures for each signer
+            self.sig_buf[33..65].copy_from_slice(&operation_hash);
+
+            self.validate_operation(&signed_operation, &operation, &mut signers)?;
+            self.authorize_operation(&operation, &mut signers)?;
+            self.validate_actions(&operation, &mut signers)?;
+        } else {
+            self.collect_signers(&signed_operation, &operation, &mut signers, false)?;
+        }
+
+        self.execute_actions(&operation, &mut signers)?;
+
+        self.hashes
+            .insert(signed_operation_hash, self.operations.len());
+        self.operations.push(op);
 
         Ok(())
     }
@@ -264,357 +293,524 @@ impl SignatureGraph {
     fn validate_actions(
         &self,
         op: &Operation,
-        actions: &Vector<ForwardsUOffset<Action>>,
-        signers: &HashSet<Vec<u8>>,
+        signers: &mut HashSet<Vec<u8>>,
     ) -> Result<(), SelfError> {
-        let mut active_keys = HashMap::new();
+        // references contains a list of any referenced or embedded key
+        // and the action that was performed on it
+        let mut references = HashMap::new();
 
-        self.keys.iter().for_each(|(key, value)| {
-            if value.as_ref().borrow().ra == 0 {
-                let typ = value.as_ref().borrow().typ;
-                active_keys.insert(key.clone(), typ);
-            }
-        });
+        let actions = match op.actions() {
+            Some(actions) => actions,
+            None => return Err(SelfError::HashgraphOperationNOOP),
+        };
 
-        for action in actions {
-            match action.actionable_type() {
-                Actionable::CreateKey => {
-                    let create_key = action.actionable_as_create_key().unwrap();
-                    self.validate_create_key(op, &create_key, signers, &mut active_keys)?;
+        for (i, action) in actions.iter().enumerate() {
+            match action.actionable() {
+                Actionable::Grant => {
+                    self.validate_action_grant(op, signers, &mut references, &action)?
                 }
-                Actionable::RevokeKey => {
-                    let revoke_key = action.actionable_as_revoke_key().unwrap();
-                    self.validate_revoke_key(op, &revoke_key, &mut active_keys)?;
+                Actionable::Modify => {
+                    self.validate_action_modify(op, signers, &mut references, &action)?
+                }
+                Actionable::Revoke => {
+                    self.validate_action_revoke(op, signers, &mut references, &action)?
                 }
                 Actionable::Recover => {
-                    let recover = action.actionable_as_recover().unwrap();
-                    self.validate_recover(op, &recover, signers, &mut active_keys)?;
+                    self.validate_action_recover(op, signers, &mut references, &action)?
                 }
-                _ => return Err(SelfError::SiggraphActionUnknown),
+                Actionable::Deactivate => {
+                    self.validate_action_deactivate(op, signers, &mut references, &action)?
+                }
             }
         }
 
-        if active_keys.is_empty() {
-            return Err(SelfError::SiggraphOperationNoValidKeys);
+        // check this operation has been signed by keys that actually
+        // exist or are created by this operation
+        for (i, id) in signers.iter().enumerate() {
+            // if this is the identity key, skip it
+            if op.sequence() == 0 && self.sig_buf[0..33] == id {
+                continue;
+            }
+
+            if let Some(action) = references.get(id) {
+                if action == Actionable::Grant {
+                    continue;
+                }
+            }
+
+            if self.keys.contains_key(id) {
+                continue;
+            }
+
+            return Err(SelfError::HashgraphSignerUnknown);
         }
 
-        let mut signing_keys = 0;
-        let mut recovery_keys = 0;
+        let mut active_keys = false;
 
-        for role in active_keys.values() {
-            if *role == KeyRole::Signing {
-                signing_keys += 1;
-            } else if *role == KeyRole::Recovery {
-                recovery_keys += 1;
+        // check that there is still at least one active key with
+        // the capability to update the document
+        for (id, key) in self.keys.iter() {
+            // check if the key is still active
+            if key.as_ref().revoked_at == 0 {
+                continue;
+            }
+
+            // is this key referenced by any action?
+            // is this reference just modifying and not revoking?
+            if let Some(reference) = references.get(id) {
+                if reference == Actionable::Modify {
+                    active_keys = true;
+                }
+            } else {
+                active_keys = true;
             }
         }
 
-        if signing_keys < 1 {
-            return Err(SelfError::SiggraphOperationNoValidKeys);
+        // if there are no active existing keys, check for
+        // new keys added by the operation
+        if !active_keys {
+            for (_, action) in references.iter() {
+                if action == Actionable::Grant
+                    || action == Actionable::Modify
+                    || action == Actionable::Deactivate
+                {
+                    active_keys = true;
+                    break;
+                }
+            }
         }
 
-        if recovery_keys < 1 {
-            return Err(SelfError::SiggraphOperationNoValidRecoveryKey);
-        }
-
-        if recovery_keys > 1 {
-            return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
+        if !active_keys {
+            return Err(SelfError::HashgraphNoActiveKeys);
         }
 
         Ok(())
     }
 
     fn execute_actions(
-        &mut self,
-        op: &Operation,
-        actions: &Vector<ForwardsUOffset<Action>>,
-        signers: &HashSet<Vec<u8>>,
-    ) -> Result<(), SelfError> {
-        // TODO pre-validate actions before executing any changes to the graphs state
-        for action in actions {
-            match action.actionable_type() {
-                Actionable::CreateKey => {
-                    let create_key = action.actionable_as_create_key().unwrap();
-                    self.execute_create_key(op, &create_key, signers)?;
-                }
-                Actionable::RevokeKey => {
-                    let revoke_key = action.actionable_as_revoke_key().unwrap();
-                    self.execute_revoke_key(&revoke_key)?;
-                }
-                Actionable::Recover => {
-                    let recover = action.actionable_as_recover().unwrap();
-                    self.execute_recover(&recover)?;
-                }
-                _ => return Err(SelfError::SiggraphActionUnknown),
-            }
-        }
-
-        Ok(())
-    }
-
-    fn validate_create_key(
         &self,
         op: &Operation,
-        ck: &CreateKey,
-        signers: &HashSet<Vec<u8>>,
-        active_keys: &mut HashMap<Vec<u8>, KeyRole>,
+        signers: &mut HashSet<Vec<u8>>,
     ) -> Result<(), SelfError> {
-        let key = match ck.key() {
-            Some(key) => key,
-            None => return Err(SelfError::SiggraphActionKeyMissing),
+        let actions = match op.actions() {
+            Some(actions) => actions,
+            None => return Err(SelfError::HashgraphOperationNOOP),
         };
 
-        // check this key is not the key used to as the identities identifier
-        if let Some(id) = self.id.as_ref() {
-            if id.eq(key) {
-                return Err(SelfError::SiggraphActionKeyDuplicate);
+        for (i, action) in actions.iter().enumerate() {
+            match action.actionable() {
+                Actionable::Grant => self.execute_action_grant(op, signers, &action)?,
+                Actionable::Modify => self.execute_action_modify(op, &action)?,
+                Actionable::Revoke => self.execute_action_revoke(&action)?,
+                Actionable::Recover => self.execute_action_recover(&action)?,
+                Actionable::Deactivate => self.execute_action_deactivate(&action)?,
             }
         }
-
-        if !signers.contains(key) {
-            return Err(SelfError::SiggraphOperationNotEnoughSigners);
-        }
-
-        if active_keys.contains_key(key) {
-            return Err(SelfError::SiggraphActionKeyDuplicate);
-        }
-
-        if op.sequence() > 0 && ck.effective_from() < self.operation(0).timestamp() {
-            return Err(SelfError::SiggraphOperationTimestampInvalid);
-        }
-
-        if ck.role() == KeyRole::Recovery {
-            // TODO replace with is_some_and when stable
-            if let Some(recovery_key) = self.recovery_key.as_ref() {
-                if recovery_key.as_ref().borrow().ra == 0 {
-                    return Err(SelfError::SiggraphActionMultipleActiveRecoveryKeys);
-                }
-            }
-        }
-
-        active_keys.insert(key.to_vec(), ck.role());
 
         Ok(())
     }
 
-    fn execute_create_key(
-        &mut self,
+    fn validate_action_grant(
+        &self,
         op: &Operation,
-        ck: &CreateKey,
-        signers: &HashSet<Vec<u8>>,
+        signers: &mut HashSet<Vec<u8>>,
+        references: &mut HashMap<Vec<u8>, Actionable>,
+        action: &Action,
     ) -> Result<(), SelfError> {
-        let key = match ck.key() {
-            Some(key) => key,
-            None => return Err(SelfError::SiggraphActionKeyMissing),
-        };
+        match action.description_type() {
+            Description::Embedded => {
+                if let Some(embedded) = action.description_as_embedded() {
+                    let id = match embedded.id() {
+                        Some(id) => id,
+                        None => return Err(SelfError::HashgraphInvalidKeyLength),
+                    };
 
-        let node = Rc::new(RefCell::new(Node {
-            typ: ck.role(),
-            seq: op.sequence(),
-            ca: op.timestamp(),
-            ra: 0,
-            pk: PublicKey::from_bytes(key, Algorithm::Ed25519)?,
-            incoming: Vec::new(),
-            outgoing: Vec::new(),
-        }));
+                    if id.len() != 33 {
+                        return Err(SelfError::HashgraphInvalidKeyLength);
+                    }
 
-        self.keys.insert(key.to_vec(), node.clone());
+                    // check that the key has self signed the operation
+                    if !signers.contains(id) {
+                        return Err(SelfError::HashgraphSelfSignatureRequired);
+                    }
 
-        for signer in signers {
-            if op.sequence() == 0 && self.root.is_none() {
-                if key.eq(signer) {
-                    // TODO replace with is_some_and once stable
-                    if let Some(id) = self.id.as_ref() {
-                        if !key.eq(id) {
-                            self.root = Some(node.clone());
+                    // check this embedded key does not already exist
+                    if self.keys.contains_key(id) {
+                        return Err(SelfError::HashgraphDuplicateKey);
+                    }
+
+                    if action.roles() == 0 {
+                        return Err(SelfError::HashgraphNoRolesAssigned);
+                    }
+
+                    let mut uses: u64 = 0;
+
+                    for role in 1..6 {
+                        if 1 << role == Role::Verification {
+                            // we're not checking if this is a multi-role key here
+                            continue;
+                        }
+
+                        if action.roles() & 1 << role == 1 {
+                            uses += 1;
                         }
                     }
+
+                    // if an embedded key has more than one role and it isn't a verification key
+                    // that can have multiple uses, then error
+                    if uses > 1 && action.roles() & Role::Verification == 0 {
+                        return Err(SelfError::HashgraphMultiRoleKeyViolation);
+                    }
+
+                    if references.contains_key(id) {
+                        return Err(SelfError::HashgraphDuplicateAction);
+                    }
+
+                    references.insert(id.to_vec(), Actionable::Grant)
                 }
-                continue;
             }
+            Description::Reference => {
+                if let Some(reference) = action.description_as_reference() {
+                    let id = match reference.id() {
+                        Some(id) => id,
+                        None => return Err(SelfError::HashgraphInvalidKeyLength),
+                    };
 
-            if key.eq(signer) {
-                // this is a self signed signature, skip it
-                continue;
+                    if id.len() != 33 {
+                        return Err(SelfError::HashgraphInvalidKeyLength);
+                    }
+
+                    let controller = match reference.controller() {
+                        Some(controller) => controller,
+                        None => return Err(SelfError::HashgraphInvalidControllerLength),
+                    };
+
+                    if controller.len() != 33 {
+                        return Err(SelfError::HashgraphInvalidControllerLength);
+                    }
+
+                    // check that the key has self signed the operation
+                    if !signers.contains(id) {
+                        return Err(SelfError::HashgraphSelfSignatureRequired);
+                    }
+
+                    // check this embedded key does not already exist
+                    if self.keys.contains_key(id) {
+                        return Err(SelfError::HashgraphDuplicateKey);
+                    }
+
+                    if action.roles() == 0 {
+                        return Err(SelfError::HashgraphNoRolesAssigned);
+                    }
+
+                    if references.contains_key(id) {
+                        return Err(SelfError::HashgraphDuplicateAction);
+                    }
+
+                    references.insert(id.to_vec(), Actionable::Grant)
+                }
             }
+        }
 
-            let parent = match self.keys.get(signer) {
-                Some(parent) => parent,
-                None => continue,
+        Ok(())
+    }
+
+    fn execute_action_grant(
+        &mut self,
+        op: &Operation,
+        signers: &mut HashSet<Vec<u8>>,
+        action: &Action,
+    ) -> Result<(), SelfError> {
+        match action.description_type() {
+            Description::Embedded => {
+                if let Some(embedded) = action.description_as_embedded() {
+                    let id = match embedded.id() {
+                        Some(id) => id,
+                        None => return Err(SelfError::HashgraphInvalidKeyLength),
+                    };
+
+                    let controller = match embedded.controller() {
+                        Some(controller) => Some(controller.to_vec()),
+                        None => None,
+                    };
+
+                    let node = Rc::new(RefCell::new(Node {
+                        controller,
+                        sequence: op.sequence(),
+                        roles: vec![RoleEntry {
+                            role: action.roles(),
+                            from: op.timestamp(),
+                        }],
+                        public_key: id.to_vec(),
+                        created_at: op.timestamp(),
+                        revoked_at: 0,
+                        incoming: Vec::new(),
+                        outgoing: Vec::new(),
+                    }));
+
+                    // link it to the signing keys that created it, unless it's
+                    // a self signed signature
+                    for signer in signers.iter() {
+                        if op.sequence() == 0 && self.root.is_none() {
+                            if signer == id
+                                && self.identifier.is_some_and(|identifier| identifier != id)
+                            {
+                                self.root = Some(node.clone())
+                            }
+                            continue;
+                        }
+
+                        if id == signer {
+                            // this is a self signed signature, skip it
+                            continue;
+                        }
+
+                        let parent = match self.keys.get(signer) {
+                            Some(parent) => parent,
+                            None => {
+                                if op.sequence() == 0 {
+                                    // this is the signature by the identifier key, skip it
+                                    continue;
+                                }
+
+                                return Err(SelfError::HashgraphUnknownSigner);
+                            }
+                        };
+
+                        node.as_ref().borrow_mut().incoming.push((*parent).clone());
+                        parent.as_ref().borrow_mut().outgoing.push(node.clone());
+                    }
+
+                    self.keys.insert(id.to_vec(), node);
+                }
+            }
+            Description::Reference => {
+                if let Some(reference) = action.description_as_reference() {
+                    let id = match reference.id() {
+                        Some(id) => id,
+                        None => return Err(SelfError::HashgraphInvalidKeyLength),
+                    };
+
+                    let controller = match reference.controller() {
+                        Some(controller) => controller.to_vec(),
+                        None => return Err(SelfError::HashgraphInvalidControllerLength),
+                    };
+
+                    let node = Rc::new(RefCell::new(Node {
+                        controller: Some(controller),
+                        sequence: op.sequence(),
+                        roles: vec![RoleEntry {
+                            role: action.roles(),
+                            from: op.timestamp(),
+                        }],
+                        public_key: id.to_vec(),
+                        created_at: op.timestamp(),
+                        revoked_at: 0,
+                        incoming: Vec::new(),
+                        outgoing: Vec::new(),
+                    }));
+
+                    // link it to the signing keys that created it, unless it's
+                    // a self signed signature
+                    for signer in signers.iter() {
+                        if op.sequence() == 0 && self.root.is_none() {
+                            if signer == id
+                                && self.identifier.is_some_and(|identifier| identifier != id)
+                            {
+                                self.root = Some(node.clone())
+                            }
+                            continue;
+                        }
+
+                        if id == signer {
+                            // this is a self signed signature, skip it
+                            continue;
+                        }
+
+                        let parent = match self.keys.get(signer) {
+                            Some(parent) => parent,
+                            None => {
+                                if op.sequence() == 0 {
+                                    // this is the signature by the identifier key, skip it
+                                    continue;
+                                }
+
+                                return Err(SelfError::HashgraphUnknownSigner);
+                            }
+                        };
+
+                        node.as_ref().borrow_mut().incoming.push((*parent).clone());
+                        parent.as_ref().borrow_mut().outgoing.push(node.clone());
+                    }
+
+                    self.keys.insert(id.to_vec(), node);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_action_revoke(
+        &self,
+        op: &Operation,
+        signers: &mut HashSet<Vec<u8>>,
+        references: &mut HashMap<Vec<u8>, Actionable>,
+        action: &Action,
+    ) -> Result<(), SelfError> {
+        if op.sequence() == 0 {
+            return Err(SelfError::HashgraphInvalidRevoke);
+        }
+
+        match action.description_type() {
+            Description::Embedded => return Err(SelfError::HashgraphInvalidEmbeddedDescription),
+            Description::Reference => {
+                if let Some(reference) = action.description_as_reference() {
+                    let id = match reference.id() {
+                        Some(id) => id,
+                        None => return Err(SelfError::HashgraphInvalidKeyLength),
+                    };
+
+                    if id.len() != 33 {
+                        return Err(SelfError::HashgraphInvalidKeyLength);
+                    }
+
+                    if let Some(controller) = reference.controller() {
+                        if controller.len() != 33 {
+                            return Err(SelfError::HashgraphInvalidControllerLength);
+                        }
+                    }
+
+                    // check this embedded key does not already exist
+                    let key = match self.keys.get(id) {
+                        Some(key) => key,
+                        None => return Err(SelfError::HashgraphReferencedDescriptionNotFound),
+                    };
+
+                    if key.as_ref().revoked_at != 0 {
+                        return Err(SelfError::HashgraphKeyAlreadyRevoked);
+                    }
+
+                    if key.created_at > action.from() {
+                        return Err(SelfError::HashgraphInvalidRevocationTimestamp);
+                    }
+
+                    if references.contains_key(id) {
+                        return Err(SelfError::HashgraphDuplicateAction);
+                    }
+
+                    references.insert(id.to_vec(), Actionable::Revoke);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn execute_action_revoke(&mut self, action: &Action) -> Result<(), SelfError> {
+        if let Some(reference) = action.description_as_reference() {
+            let id = match reference.id() {
+                Some(id) => id,
+                None => return Err(SelfError::HashgraphInvalidKeyLength),
             };
 
-            node.as_ref().borrow_mut().incoming.push((*parent).clone());
-            parent.as_ref().borrow_mut().outgoing.push(node.clone());
+            let key = match self.keys.get_mut(id) {
+                Some(key) => key,
+                None => return Err(SelfError::HashgraphReferencedDescriptionNotFound),
+            };
+
+            key.as_ref().borrow_mut().revoked_at = action.from();
+
+            // revoke all child keys created after the
+            // time the revocation takes effect
+            for child in key.as_ref().borrow().collect() {
+                let borrowed_child = child.as_ref.borrow_mut();
+                if borrowed_child.created_at >= action.from() {
+                    borrowed_child.revoked_at = action.from();
+                }
+            }
         }
 
         Ok(())
     }
 
-    fn validate_revoke_key(
+    fn validate_action_modify(
         &self,
         op: &Operation,
-        rk: &RevokeKey,
-        active_keys: &mut HashMap<Vec<u8>, KeyRole>,
+        signers: &mut HashSet<Vec<u8>>,
+        references: &mut HashMap<Vec<u8>, Actionable>,
+        action: &Action,
     ) -> Result<(), SelfError> {
-        let key = match rk.key() {
-            Some(key) => key,
-            None => return Err(SelfError::SiggraphActionKeyMissing),
-        };
-
-        let node = match self.keys.get(key) {
-            Some(node) => node,
-            None => return Err(SelfError::SiggraphActionKeyMissing),
-        };
-
-        // if this is the first (root) operation, then key revocation is not permitted
         if op.sequence() == 0 {
-            return Err(SelfError::SiggraphActionInvalidKeyRevocation);
+            return Err(SelfError::HashgraphInvalidModify);
         }
 
-        // check that the revoke action does not take effect before the first
-        // operations timestamp
-        if rk.effective_from() < self.operation(0).timestamp() {
-            return Err(SelfError::SiggraphOperationTimestampInvalid);
-        }
+        match action.description_type() {
+            Description::Embedded => return Err(SelfError::HashgraphInvalidEmbeddedDescription),
+            Description::Reference => {
+                if let Some(reference) = action.description_as_reference() {
+                    let id = match reference.id() {
+                        Some(id) => id,
+                        None => return Err(SelfError::HashgraphInvalidKeyLength),
+                    };
 
-        // if the key has been revoked, then fail
-        if node.as_ref().borrow().ra != 0 {
-            return Err(SelfError::SiggraphActionKeyAlreadyRevoked);
-        }
+                    if id.len() != 33 {
+                        return Err(SelfError::HashgraphInvalidKeyLength);
+                    }
 
-        // check if the effective from timestamp is after the first operation
-        if rk.effective_from() < self.operation(0).timestamp() {
-            return Err(SelfError::SiggraphOperationTimestampInvalid);
-        }
+                    if let Some(controller) = reference.controller() {
+                        if controller.len() != 33 {
+                            return Err(SelfError::HashgraphInvalidControllerLength);
+                        }
+                    }
 
-        active_keys.remove(key);
+                    // check this embedded key does not already exist
+                    let key = match self.keys.get(id) {
+                        Some(key) => key.as_ref().borrow_mut(),
+                        None => return Err(SelfError::HashgraphReferencedDescriptionNotFound),
+                    };
 
-        Ok(())
-    }
+                    if action.roles() == 0 {
+                        return Err(SelfError::HashgraphNoRolesAssigned);
+                    }
 
-    fn execute_revoke_key(&mut self, rk: &RevokeKey) -> Result<(), SelfError> {
-        let key = match rk.key() {
-            Some(key) => key,
-            None => return Err(SelfError::SiggraphActionKeyMissing),
-        };
+                    if let Some(roles) = key.roles.last() {
+                        if roles == action.roles() {
+                            return Err(SelfError::HashgraphModifyNOOP);
+                        }
 
-        let node = match self.keys.get(key) {
-            Some(node) => node,
-            None => return Err(SelfError::SiggraphActionKeyMissing),
-        };
+                        if !key.has_roles(Role::Verification) {
+                            return Err(SelfError::HashgraphInvalidKeyReuse);
+                        }
+                    }
 
-        node.borrow_mut().ra = rk.effective_from();
+                    if key.revoked_at != 0 {
+                        return Err(SelfError::HashgraphKeyAlreadyRevoked);
+                    }
 
-        // get and re-borrow revoked key as immutable ref this time
-        let node = self
-            .keys
-            .get(key)
-            .ok_or(SelfError::SiggraphActionSigningKeyInvalid)?
-            .clone();
+                    if references.contains_key(id) {
+                        return Err(SelfError::HashgraphDuplicateAction);
+                    }
 
-        let revoked_key = node.as_ref().borrow();
-
-        // revoke all child keys created after the revocation takes effect
-        for child_node in revoked_key.collect() {
-            let mut child_key = child_node.as_ref().borrow_mut();
-
-            if child_key.ca >= rk.effective_from() {
-                child_key.ra = rk.effective_from();
+                    references.insert(id.to_vec(), Actionable::Revoke);
+                }
             }
         }
 
         Ok(())
-    }
-
-    fn validate_recover(
-        &self,
-        op: &Operation,
-        rc: &Recover,
-        signers: &HashSet<Vec<u8>>,
-        active_keys: &mut HashMap<Vec<u8>, KeyRole>,
-    ) -> Result<(), SelfError> {
-        // if this is the first (root) operation, then recovery is not permitted
-        if op.sequence() == 0 {
-            return Err(SelfError::SiggraphActionInvalidKeyRevocation);
-        }
-
-        // check that the recovery action does not take effect before the first
-        // operations timestamp
-        if rc.effective_from() < self.operation(0).timestamp() {
-            return Err(SelfError::SiggraphOperationTimestampInvalid);
-        }
-
-        // check this operation has been signed by the existing recovery key
-        if let Some(recovery_key) = self.recovery_key.as_ref() {
-            if !signers.contains(&recovery_key.as_ref().borrow().pk.id()) {
-                return Err(SelfError::SiggraphOperationAccountRecoveryActionInvalid);
-            }
-        }
-
-        let root = self.root.as_ref().unwrap().as_ref().borrow();
-
-        // revoke all of the current active keys
-        for child_node in root.collect() {
-            let key = child_node.as_ref().borrow().pk.id();
-            active_keys.remove(&key);
-        }
-
-        Ok(())
-    }
-
-    fn execute_recover(&mut self, rc: &Recover) -> Result<(), SelfError> {
-        // if the signing key was a recovery key, then nuke all existing keys
-        let mut root = self.root.as_ref().unwrap().as_ref().borrow_mut();
-        root.ra = rc.effective_from();
-
-        for child_node in root.collect() {
-            let mut child_key = child_node.as_ref().borrow_mut();
-            if child_key.ra == 0 {
-                child_key.ra = rc.effective_from();
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn is_key_valid(&self, id: &[u8], at: i64) -> bool {
-        let k = match self.keys.get(id) {
-            Some(k) => k.as_ref(),
-            None => return false,
-        }
-        .borrow();
-
-        if k.ca == 0 {
-            return false;
-        }
-
-        if !(k.ra != 0 || k.ca != at && k.ca >= at) {
-            return true;
-        }
-
-        if k.ra == 0 {
-            return false;
-        }
-
-        if !(k.ra <= at || k.ca != at && k.ca >= at) {
-            return true;
-        }
-
-        false
     }
 
     fn operation(&self, index: usize) -> Operation {
         let signed_op = root_as_signed_operation(&self.operations[index]).unwrap();
-
         let op_bytes = signed_op.operation().unwrap();
 
         return flatbuffers::root::<Operation>(op_bytes).unwrap();
     }
 }
 
-impl Default for SignatureGraph {
+impl Default for Hashgraph {
     fn default() -> Self {
-        SignatureGraph::new()
+        Hashgraph::new()
     }
 }
 
@@ -625,14 +821,14 @@ mod tests {
 
     use crate::{
         error::SelfError,
+        hashgraph::Hashgraph,
         keypair::signing::KeyPair,
-        protocol::siggraph::{
+        protocol::hashgraph::{
             Action, ActionArgs, Actionable, CreateKey, CreateKeyArgs, KeyAlgorithm, KeyRole,
             Operation, OperationArgs, Recover, RecoverArgs, RevokeKey, RevokeKeyArgs, Signature,
             SignatureArgs, SignatureHeader, SignatureHeaderArgs, SignedOperation,
             SignedOperationArgs,
         },
-        siggraph::SignatureGraph,
     };
 
     struct TestSigner {
@@ -765,7 +961,7 @@ mod tests {
 
         op_builder.finish(op, None);
 
-        let op_hash = crate::crypto::hash::blake2b(op_builder.finished_data());
+        let op_hash = crate::crypto::hash::sha3(op_builder.finished_data());
 
         let mut sig_buf: Vec<u8> = vec![0; 96];
         sig_buf[..32].copy_from_slice(&test_op.id.id());
@@ -783,7 +979,7 @@ mod tests {
 
             sg_builder.finish(header, None);
 
-            let header_hash = crate::crypto::hash::blake2b(sg_builder.finished_data());
+            let header_hash = crate::crypto::hash::sha3(sg_builder.finished_data());
 
             sig_buf[64..].copy_from_slice(&header_hash);
             let signature = signer.sk.sign(&sig_buf);
@@ -815,13 +1011,13 @@ mod tests {
 
         fn_builder.finish(signed_op, None);
 
-        let signed_op_hash = crate::crypto::hash::blake2b(fn_builder.finished_data());
+        let signed_op_hash = crate::crypto::hash::sha3(fn_builder.finished_data());
 
         return (fn_builder.finished_data().to_vec(), signed_op_hash);
     }
 
-    fn test_execute(test_history: &mut Vec<TestOperation>) -> SignatureGraph {
-        let mut sg = SignatureGraph::new();
+    fn test_execute(test_history: &mut Vec<TestOperation>) -> Hashgraph {
+        let mut sg = Hashgraph::new();
         let mut previous_hash: Option<Vec<u8>> = None;
 
         for test_op in test_history {

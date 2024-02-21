@@ -39,7 +39,7 @@ impl ChatRead {
     }
 
     pub fn decode(data: &[u8]) -> Result<ChatRead, SelfError> {
-        Ok(ciborium::de::from_reader(data).expect("bad encoding")) //.map_err(|_| SelfError::MessageDecodingInvalid)
+        ciborium::de::from_reader(data).map_err(|_| SelfError::MessageDecodingInvalid)
     }
 }
 
