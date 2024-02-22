@@ -8,10 +8,10 @@ pub struct OperationBuilder<'a> {
     previous: Option<Vec<u8>>,
     sequence: Option<u32>,
     timestamp: Option<i64>,
-    revoke: Vec<(PublicKey, Option<i64>)>,
+    revoke: Vec<(Vec<u8>, Option<i64>)>,
     recover: Vec<Option<i64>>,
-    grant_embedded: Vec<(hashgraph::Role, PublicKey)>,
-    grant_referenced: Vec<(hashgraph::Method, hashgraph::Role, Vec<u8>, PublicKey)>,
+    grant_embedded: Vec<(hashgraph::Role, Vec<u8>)>,
+    grant_referenced: Vec<(hashgraph::Method, hashgraph::Role, Vec<u8>, Vec<u8>)>,
     operation: Option<Vec<u8>>,
     signatures: Vec<(Vec<u8>, Vec<u8>)>,
     sig_buf: Vec<u8>,
@@ -57,7 +57,7 @@ impl<'a> OperationBuilder<'a> {
 
     pub fn key_grant_embedded(
         &mut self,
-        pk: &PublicKey,
+        pk: &[u8],
         roles: hashgraph::Role,
     ) -> &mut OperationBuilder<'a> {
         self.grant_embedded.push((roles, pk.to_owned()));
@@ -68,7 +68,7 @@ impl<'a> OperationBuilder<'a> {
         &mut self,
         method: hashgraph::Method,
         controller: &[u8],
-        pk: &PublicKey,
+        pk: &[u8],
         roles: hashgraph::Role,
     ) -> &mut OperationBuilder<'a> {
         self.grant_referenced
@@ -78,7 +78,7 @@ impl<'a> OperationBuilder<'a> {
 
     pub fn key_revoke(
         &mut self,
-        pk: &PublicKey,
+        pk: &[u8],
         effective_from: Option<i64>,
     ) -> &mut OperationBuilder<'a> {
         self.revoke.push((pk.to_owned(), effective_from));
@@ -180,7 +180,7 @@ impl<'a> OperationBuilder<'a> {
         }
 
         for revoke in &self.revoke {
-            let revoked_key = self.builder.create_vector(&revoke.0.id());
+            let revoked_key = self.builder.create_vector(&revoke.0);
 
             let description = hashgraph::Reference::create(
                 &mut self.builder,
@@ -206,12 +206,12 @@ impl<'a> OperationBuilder<'a> {
         }
 
         for grant in &self.grant_referenced {
-            let granted_key = self.builder.create_vector(&grant.3.id());
+            let granted_key = self.builder.create_vector(&grant.3);
             let controller = self.builder.create_vector(&grant.2);
 
             let description = hashgraph::Reference::create(
                 &mut self.builder,
-                &&&hashgraph::ReferenceArgs {
+                &hashgraph::ReferenceArgs {
                     method: grant.0,
                     id: Some(granted_key),
                     controller: Some(controller),
@@ -233,11 +233,11 @@ impl<'a> OperationBuilder<'a> {
         }
 
         for grant in &self.grant_embedded {
-            let granted_key = self.builder.create_vector(&grant.1.id());
+            let granted_key = self.builder.create_vector(&grant.1);
 
             let description = hashgraph::Embedded::create(
                 &mut self.builder,
-                &&hashgraph::EmbeddedArgs {
+                &hashgraph::EmbeddedArgs {
                     id: Some(granted_key),
                     controller: None,
                 },

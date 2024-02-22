@@ -49,19 +49,13 @@ impl Node {
     }
 
     pub fn valid_at(&self, timeframe: i64) -> bool {
-        match self.roles_at(timeframe) {
-            Some(role) => true,
-            None => false,
-        }
+        self.roles_at(timeframe).is_some()
     }
 
     fn roles_at(&self, timeframe: i64) -> Option<&RoleEntry> {
-        for entry in self.roles.iter().rev() {
-            if entry.from <= timeframe {
-                return Some(entry);
-            }
-        }
-
-        None
+        self.roles
+            .iter()
+            .rev()
+            .find(|&entry| entry.from <= timeframe)
     }
 }

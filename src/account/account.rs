@@ -282,10 +282,10 @@ impl Account {
         let operation = graph
             .create()
             .id(&identifier_kp.id())
-            .key_grant_embedded(&assertion_kp.public(), hashgraph::Role::Assertion)
-            .key_grant_embedded(&authentication_kp.public(), hashgraph::Role::Authentication)
-            .key_grant_embedded(&invocation_kp.public(), hashgraph::Role::Invocation)
-            .key_grant_embedded(&exchange_kp.public(), hashgraph::Role::KeyAgreement)
+            .key_grant_embedded(&assertion_kp.id(), hashgraph::Role::Assertion)
+            .key_grant_embedded(&authentication_kp.id(), hashgraph::Role::Authentication)
+            .key_grant_embedded(&invocation_kp.id(), hashgraph::Role::Invocation)
+            .key_grant_embedded(&exchange_kp.id(), hashgraph::Role::KeyAgreement)
             .sign(&identifier_kp)
             .sign(&assertion_kp)
             .sign(&authentication_kp)
@@ -294,14 +294,14 @@ impl Account {
 
         // create an olm account for the device identifier
         let mut olm_account =
-            crate::crypto::account::Account::new(authentication_kp.clone(), exchange_kp.clone());
+            crate::crypto::account::Account::new(authentication_kp.clone(), exchange_kp);
         olm_account.generate_one_time_keys(100)?;
 
         let mut one_time_keys = Vec::new();
         ciborium::ser::into_writer(&olm_account.one_time_keys(), &mut one_time_keys)
             .expect("failed to encode one time keys");
 
-        let device_identifier = Identifier::Owned(device_kp.clone());
+        let device_identifier = Identifier::Owned(authentication_kp.clone());
 
         // submit public key operation to api
         rest.post("/v2/identities", &operation, None, None, true)?;
@@ -319,7 +319,12 @@ impl Account {
         let mut storage = storage.lock().unwrap();
 
         storage.keypair_create(Usage::Identifier, &identifier_kp, None, true)?;
-        storage.keypair_create(Usage::Messaging, &device_kp, Some(olm_account), true)?;
+        storage.keypair_create(
+            Usage::Messaging,
+            &authentication_kp,
+            Some(olm_account),
+            true,
+        )?;
 
         // TODO determine whether it makes sense from a security perspective to store the recover key
         // storage.keypair_create(KeyRole::Recovery ,&recovery_kp, None)?;

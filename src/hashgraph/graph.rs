@@ -63,12 +63,14 @@ impl Hashgraph {
 
     pub fn identifier(&self) -> Option<&[u8]> {
         self.identifier
-            .and_then(|identifier| Some(identifier.as_ref()))
+            .as_ref()
+            .map(|identifier| identifier.as_ref())
     }
 
     pub fn controller(&self) -> Option<&[u8]> {
         self.controller
-            .and_then(|controller| Some(controller.as_ref()))
+            .as_ref()
+            .map(|controller| controller.as_ref())
     }
 
     pub fn create(&self) -> OperationBuilder {
@@ -93,8 +95,29 @@ impl Hashgraph {
         self.execute_operation(&operation, true)
     }
 
+    pub fn key_valid_at(&self, public_key: &[u8], timeframe: i64) -> bool {
+        match self.keys.get(public_key) {
+            Some(key) => key.as_ref().borrow().valid_at(timeframe),
+            None => false,
+        }
+    }
+
+    pub fn key_has_roles(&self, public_key: &[u8], roles: u64) -> bool {
+        match self.keys.get(public_key) {
+            Some(key) => key.as_ref().borrow().has_roles(roles),
+            None => false,
+        }
+    }
+
+    pub fn key_has_roles_at(&self, public_key: &[u8], roles: u64, timeframe: i64) -> bool {
+        match self.keys.get(public_key) {
+            Some(key) => key.as_ref().borrow().has_roles_at(roles, timeframe),
+            None => false,
+        }
+    }
+
     fn collect_signers(
-        &self,
+        &mut self,
         signed_op: &SignedOperation,
         op: &Operation,
         signers: &mut HashSet<Vec<u8>>,
@@ -227,7 +250,7 @@ impl Hashgraph {
 
         let mut authorized = false;
 
-        for (_, signer) in signers.iter().enumerate() {
+        for signer in signers.iter() {
             let signing_key = match self.keys.get(signer) {
                 Some(signing_key) => signing_key.as_ref().borrow(),
                 None => continue,
@@ -313,29 +336,22 @@ impl Hashgraph {
             None => return Err(SelfError::HashgraphOperationNOOP),
         };
 
-        for (i, action) in actions.iter().enumerate() {
+        for action in actions.iter() {
             match action.actionable() {
                 Actionable::Grant => {
-                    self.validate_action_grant(op, signers, &mut references, &action)?
+                    self.validate_action_grant(signers, &mut references, &action)?
                 }
-                Actionable::Modify => {
-                    self.validate_action_modify(op, signers, &mut references, &action)?
-                }
-                Actionable::Revoke => {
-                    self.validate_action_revoke(op, signers, &mut references, &action)?
-                }
-                Actionable::Recover => {
-                    self.validate_action_recover(op, signers, &mut references, &action)?
-                }
-                Actionable::Deactivate => {
-                    self.validate_action_deactivate(op, signers, &mut references, &action)?
-                }
+                Actionable::Modify => self.validate_action_modify(op, &mut references, &action)?,
+                Actionable::Revoke => self.validate_action_revoke(op, &mut references, &action)?,
+                Actionable::Recover => self.validate_action_recover(op, &mut references)?,
+                Actionable::Deactivate => self.validate_action_deactivate(op, &mut references)?,
+                _ => return Err(SelfError::HashgraphInvalidAction),
             }
         }
 
         // check this operation has been signed by keys that actually
         // exist or are created by this operation
-        for (i, id) in signers.iter().enumerate() {
+        for id in signers.iter() {
             // if this is the identity key, skip it
             if op.sequence() == 0 && self.sig_buf[0..33] == *id {
                 continue;
@@ -397,7 +413,7 @@ impl Hashgraph {
     }
 
     fn execute_actions(
-        &self,
+        &mut self,
         op: &Operation,
         signers: &mut HashSet<Vec<u8>>,
     ) -> Result<(), SelfError> {
@@ -406,13 +422,14 @@ impl Hashgraph {
             None => return Err(SelfError::HashgraphOperationNOOP),
         };
 
-        for (i, action) in actions.iter().enumerate() {
+        for action in actions.iter() {
             match action.actionable() {
                 Actionable::Grant => self.execute_action_grant(op, signers, &action)?,
                 Actionable::Modify => self.execute_action_modify(op, &action)?,
                 Actionable::Revoke => self.execute_action_revoke(&action)?,
                 Actionable::Recover => self.execute_action_recover(&action)?,
                 Actionable::Deactivate => self.execute_action_deactivate(&action)?,
+                _ => return Err(SelfError::HashgraphInvalidAction),
             }
         }
 
@@ -421,7 +438,6 @@ impl Hashgraph {
 
     fn validate_action_grant(
         &self,
-        op: &Operation,
         signers: &mut HashSet<Vec<u8>>,
         references: &mut HashMap<Vec<u8>, Actionable>,
         action: &Action,
@@ -519,6 +535,7 @@ impl Hashgraph {
                     references.insert(id.to_vec(), Actionable::Grant);
                 }
             }
+            _ => return Err(SelfError::HashgraphInvalidDescription),
         }
 
         Ok(())
@@ -538,10 +555,7 @@ impl Hashgraph {
                         None => return Err(SelfError::HashgraphInvalidKeyLength),
                     };
 
-                    let controller = match embedded.controller() {
-                        Some(controller) => Some(controller.to_vec()),
-                        None => None,
-                    };
+                    let controller = embedded.controller().map(|controller| controller.to_vec());
 
                     let node = Rc::new(RefCell::new(Node {
                         controller,
@@ -562,7 +576,10 @@ impl Hashgraph {
                     for signer in signers.iter() {
                         if op.sequence() == 0 && self.root.is_none() {
                             if signer == id
-                                && self.identifier.is_some_and(|identifier| identifier != id)
+                                && self
+                                    .identifier
+                                    .as_ref()
+                                    .is_some_and(|identifier| identifier != id)
                             {
                                 self.root = Some(node.clone())
                             }
@@ -624,7 +641,10 @@ impl Hashgraph {
                     for signer in signers.iter() {
                         if op.sequence() == 0 && self.root.is_none() {
                             if signer == id
-                                && self.identifier.is_some_and(|identifier| identifier != id)
+                                && self
+                                    .identifier
+                                    .as_ref()
+                                    .is_some_and(|identifier| identifier != id)
                             {
                                 self.root = Some(node.clone())
                             }
@@ -655,6 +675,7 @@ impl Hashgraph {
                     self.keys.insert(id.to_vec(), node);
                 }
             }
+            _ => return Err(SelfError::HashgraphInvalidDescription),
         }
 
         Ok(())
@@ -663,7 +684,6 @@ impl Hashgraph {
     fn validate_action_revoke(
         &self,
         op: &Operation,
-        signers: &mut HashSet<Vec<u8>>,
         references: &mut HashMap<Vec<u8>, Actionable>,
         action: &Action,
     ) -> Result<(), SelfError> {
@@ -711,6 +731,7 @@ impl Hashgraph {
                     references.insert(id.to_vec(), Actionable::Revoke);
                 }
             }
+            _ => return Err(SelfError::HashgraphInvalidDescription),
         }
 
         Ok(())
@@ -747,7 +768,6 @@ impl Hashgraph {
     fn validate_action_modify(
         &self,
         op: &Operation,
-        signers: &mut HashSet<Vec<u8>>,
         references: &mut HashMap<Vec<u8>, Actionable>,
         action: &Action,
     ) -> Result<(), SelfError> {
@@ -805,6 +825,7 @@ impl Hashgraph {
                     references.insert(id.to_vec(), Actionable::Revoke);
                 }
             }
+            _ => return Err(SelfError::HashgraphInvalidDescription),
         }
 
         Ok(())
@@ -817,15 +838,15 @@ impl Hashgraph {
                 None => return Err(SelfError::HashgraphInvalidKeyLength),
             };
 
-            let mut key = match self.keys.get_mut(id) {
-                Some(key) => key.as_ref().borrow_mut(),
+            let key = match self.keys.get_mut(id) {
+                Some(key) => key,
                 None => return Err(SelfError::HashgraphReferencedDescriptionNotFound),
             };
 
-            key.roles.push(RoleEntry {
+            key.as_ref().borrow_mut().roles.push(RoleEntry {
                 from: op.timestamp(),
                 role: action.roles(),
-            })
+            });
         }
 
         Ok(())
@@ -834,15 +855,13 @@ impl Hashgraph {
     fn validate_action_recover(
         &self,
         op: &Operation,
-        signers: &mut HashSet<Vec<u8>>,
         references: &mut HashMap<Vec<u8>, Actionable>,
-        action: &Action,
     ) -> Result<(), SelfError> {
         if op.sequence() == 0 {
             return Err(SelfError::HashgraphInvalidRecover);
         }
 
-        let root = match self.root {
+        let root = match &self.root {
             Some(root) => root.as_ref().borrow(),
             None => return Err(SelfError::HashgraphInvalidState),
         };
@@ -871,7 +890,7 @@ impl Hashgraph {
     }
 
     fn execute_action_recover(&mut self, action: &Action) -> Result<(), SelfError> {
-        let mut root = match self.root {
+        let mut root = match &self.root {
             Some(root) => root.as_ref().borrow_mut(),
             None => return Err(SelfError::HashgraphInvalidState),
         };
@@ -894,15 +913,13 @@ impl Hashgraph {
     fn validate_action_deactivate(
         &self,
         op: &Operation,
-        signers: &mut HashSet<Vec<u8>>,
         references: &mut HashMap<Vec<u8>, Actionable>,
-        action: &Action,
     ) -> Result<(), SelfError> {
         if op.sequence() == 0 {
             return Err(SelfError::HashgraphInvalidRecover);
         }
 
-        let root = match self.root {
+        let root = match &self.root {
             Some(root) => root.as_ref().borrow(),
             None => return Err(SelfError::HashgraphInvalidState),
         };
@@ -931,7 +948,7 @@ impl Hashgraph {
     }
 
     fn execute_action_deactivate(&mut self, action: &Action) -> Result<(), SelfError> {
-        let mut root = match self.root {
+        let mut root = match &self.root {
             Some(root) => root.as_ref().borrow_mut(),
             None => return Err(SelfError::HashgraphInvalidState),
         };
