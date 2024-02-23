@@ -44,8 +44,32 @@ impl PublicKey {
         })
     }
 
+    pub fn from_address(address: &[u8]) -> Result<PublicKey, SelfError> {
+        if address.len() < 33 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
+        }
+
+        let algorithm = match address[0] {
+            0 => Algorithm::Ed25519,
+            _ => return Err(SelfError::KeyPairAlgorithmUnknown),
+        };
+
+        Ok(PublicKey {
+            algorithm,
+            bytes: address[1..33].to_vec(),
+        })
+    }
+
     pub fn id(&self) -> Vec<u8> {
         self.bytes.clone()
+    }
+
+    pub fn address(&self) -> Vec<u8> {
+        // TODO properly address this later
+        let mut address = vec![0; 33];
+        address[0] = crate::keypair::Algorithm::Ed25519 as u8;
+        address[1..33].copy_from_slice(&self.bytes);
+        address
     }
 
     pub fn encoded_id(&self) -> String {
@@ -127,6 +151,13 @@ impl KeyPair {
             secret_key: SecretKey {
                 bytes: ed25519_sk.to_vec(),
             },
+        }
+    }
+
+    pub fn from_parts(public_key: PublicKey, secret_key: SecretKey) -> KeyPair {
+        KeyPair {
+            public_key,
+            secret_key,
         }
     }
 
@@ -212,12 +243,20 @@ impl KeyPair {
         self.public_key.id()
     }
 
+    pub fn address(&self) -> Vec<u8> {
+        self.public_key.address()
+    }
+
     pub fn algorithm(&self) -> Algorithm {
         self.public_key.algorithm
     }
 
     pub fn public(&self) -> PublicKey {
         self.public_key.clone()
+    }
+
+    pub fn secret(&self) -> SecretKey {
+        self.secret_key.clone()
     }
 
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {

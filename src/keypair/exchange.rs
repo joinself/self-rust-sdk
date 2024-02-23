@@ -43,8 +43,17 @@ impl PublicKey {
             bytes: bytes.to_vec(),
         })
     }
+
     pub fn id(&self) -> Vec<u8> {
         self.bytes.clone()
+    }
+
+    pub fn address(&self) -> Vec<u8> {
+        // TODO properly address this later
+        let mut address = vec![0; 33];
+        address[0] = crate::keypair::Algorithm::Curve25519 as u8;
+        address[1..33].copy_from_slice(&self.bytes);
+        address
     }
 
     pub fn encoded_id(&self) -> String {
@@ -146,6 +155,10 @@ impl KeyPair {
 
     pub fn id(&self) -> Vec<u8> {
         self.public_key.bytes.clone()
+    }
+
+    pub fn address(&self) -> Vec<u8> {
+        self.public_key.address()
     }
 
     pub fn algorithm(&self) -> Algorithm {

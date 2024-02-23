@@ -166,7 +166,7 @@ impl Hashgraph {
                     return Err(SelfError::HashgraphInvalidSignatureLength);
                 }
 
-                let signers_pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)?;
+                let signers_pk = PublicKey::from_address(signer)?;
                 if !signers_pk.verify(&self.sig_buf, signature_data) {
                     return Err(SelfError::HashgraphInvalidSignature);
                 }
@@ -201,7 +201,11 @@ impl Hashgraph {
             return Err(SelfError::HashgraphOperationVersionInvalid);
         }
 
-        if op.actions().is_none() {
+        if let Some(actions) = op.actions() {
+            if actions.is_empty() {
+                return Err(SelfError::HashgraphOperationNOOP);
+            }
+        } else {
             return Err(SelfError::HashgraphOperationNOOP);
         }
 
@@ -266,7 +270,7 @@ impl Hashgraph {
             }
 
             // check the signing key hasn't been revoked before the operation
-            if !signing_key.revoked_at == 0 && op.timestamp() > signing_key.revoked_at {
+            if signing_key.revoked_at != 0 && op.timestamp() > signing_key.revoked_at {
                 return Err(SelfError::HashgraphSigningKeyRevoked);
             }
 
@@ -357,7 +361,7 @@ impl Hashgraph {
                 continue;
             }
 
-            if let Some(action) = references.get(id) {
+            if let Some((action, _)) = references.get(id) {
                 if *action == Actionable::Grant {
                     continue;
                 }
@@ -376,32 +380,40 @@ impl Hashgraph {
         // the capability to update the document
         for (id, key) in self.keys.iter() {
             // check if the key is still active
-            if key.as_ref().borrow().revoked_at == 0 {
+            if key.as_ref().borrow().revoked_at != 0 {
+                continue;
+            }
+
+            // check the key can update the document
+            if !key.as_ref().borrow().has_roles(Role::Invocation.bits()) {
                 continue;
             }
 
             // is this key referenced by any action?
             // is this reference just modifying and not revoking?
-            if let Some(reference) = references.get(id) {
-                if *reference == Actionable::Modify {
+            if let Some((action, _)) = references.get(id) {
+                if *action == Actionable::Modify || *action == Actionable::Deactivate {
                     active_keys = true;
+                    break;
                 }
             } else {
                 active_keys = true;
+                break;
             }
+        }
+
+        if active_keys {
+            return Ok(());
         }
 
         // if there are no active existing keys, check for
         // new keys added by the operation
-        if !active_keys {
-            for (_, action) in references.iter() {
-                if *action == Actionable::Grant
-                    || *action == Actionable::Modify
-                    || *action == Actionable::Deactivate
-                {
-                    active_keys = true;
-                    break;
-                }
+        for (_, (action, roles)) in references.iter() {
+            if roles & Role::Invocation.bits() != 0
+                && (*action == Actionable::Grant || *action == Actionable::Modify)
+            {
+                active_keys = true;
+                break;
             }
         }
 
@@ -439,7 +451,7 @@ impl Hashgraph {
     fn validate_action_grant(
         &self,
         signers: &mut HashSet<Vec<u8>>,
-        references: &mut HashMap<Vec<u8>, Actionable>,
+        references: &mut HashMap<Vec<u8>, (Actionable, u64)>,
         action: &Action,
     ) -> Result<(), SelfError> {
         match action.description_type() {
@@ -455,7 +467,8 @@ impl Hashgraph {
                     }
 
                     // check that the key has self signed the operation
-                    if !signers.contains(id) {
+                    // if it can sign the operation
+                    if !signers.contains(id) && id[0] == 0 {
                         return Err(SelfError::HashgraphSelfSignatureRequired);
                     }
 
@@ -476,7 +489,7 @@ impl Hashgraph {
                             continue;
                         }
 
-                        if action.roles() & 1 << role == 1 {
+                        if action.roles() & 1 << role != 0 {
                             uses += 1;
                         }
                     }
@@ -491,7 +504,7 @@ impl Hashgraph {
                         return Err(SelfError::HashgraphDuplicateAction);
                     }
 
-                    references.insert(id.to_vec(), Actionable::Grant);
+                    references.insert(id.to_vec(), (Actionable::Grant, action.roles()));
                 }
             }
             Description::Reference => {
@@ -532,7 +545,7 @@ impl Hashgraph {
                         return Err(SelfError::HashgraphDuplicateAction);
                     }
 
-                    references.insert(id.to_vec(), Actionable::Grant);
+                    references.insert(id.to_vec(), (Actionable::Grant, action.roles()));
                 }
             }
             _ => return Err(SelfError::HashgraphInvalidDescription),
@@ -684,7 +697,7 @@ impl Hashgraph {
     fn validate_action_revoke(
         &self,
         op: &Operation,
-        references: &mut HashMap<Vec<u8>, Actionable>,
+        references: &mut HashMap<Vec<u8>, (Actionable, u64)>,
         action: &Action,
     ) -> Result<(), SelfError> {
         if op.sequence() == 0 {
@@ -728,7 +741,7 @@ impl Hashgraph {
                         return Err(SelfError::HashgraphDuplicateAction);
                     }
 
-                    references.insert(id.to_vec(), Actionable::Revoke);
+                    references.insert(id.to_vec(), (Actionable::Revoke, 0));
                 }
             }
             _ => return Err(SelfError::HashgraphInvalidDescription),
@@ -768,7 +781,7 @@ impl Hashgraph {
     fn validate_action_modify(
         &self,
         op: &Operation,
-        references: &mut HashMap<Vec<u8>, Actionable>,
+        references: &mut HashMap<Vec<u8>, (Actionable, u64)>,
         action: &Action,
     ) -> Result<(), SelfError> {
         if op.sequence() == 0 {
@@ -822,7 +835,7 @@ impl Hashgraph {
                         return Err(SelfError::HashgraphDuplicateAction);
                     }
 
-                    references.insert(id.to_vec(), Actionable::Revoke);
+                    references.insert(id.to_vec(), (Actionable::Modify, action.roles()));
                 }
             }
             _ => return Err(SelfError::HashgraphInvalidDescription),
@@ -855,7 +868,7 @@ impl Hashgraph {
     fn validate_action_recover(
         &self,
         op: &Operation,
-        references: &mut HashMap<Vec<u8>, Actionable>,
+        references: &mut HashMap<Vec<u8>, (Actionable, u64)>,
     ) -> Result<(), SelfError> {
         if op.sequence() == 0 {
             return Err(SelfError::HashgraphInvalidRecover);
@@ -871,7 +884,7 @@ impl Hashgraph {
                 return Err(SelfError::HashgraphDuplicateAction);
             }
 
-            references.insert(root.public_key.id(), Actionable::Recover);
+            references.insert(root.public_key.id(), (Actionable::Recover, 0));
         }
 
         for child in root.collect().iter() {
@@ -882,7 +895,7 @@ impl Hashgraph {
                     return Err(SelfError::HashgraphDuplicateAction);
                 }
 
-                references.insert(root.public_key.id(), Actionable::Recover);
+                references.insert(root.public_key.id(), (Actionable::Recover, 0));
             }
         }
 
@@ -913,7 +926,7 @@ impl Hashgraph {
     fn validate_action_deactivate(
         &self,
         op: &Operation,
-        references: &mut HashMap<Vec<u8>, Actionable>,
+        references: &mut HashMap<Vec<u8>, (Actionable, u64)>,
     ) -> Result<(), SelfError> {
         if op.sequence() == 0 {
             return Err(SelfError::HashgraphInvalidRecover);
@@ -929,7 +942,7 @@ impl Hashgraph {
                 return Err(SelfError::HashgraphDuplicateAction);
             }
 
-            references.insert(root.public_key.id(), Actionable::Deactivate);
+            references.insert(root.public_key.id(), (Actionable::Deactivate, 0));
         }
 
         for child in root.collect().iter() {
@@ -940,7 +953,7 @@ impl Hashgraph {
                     return Err(SelfError::HashgraphDuplicateAction);
                 }
 
-                references.insert(root.public_key.id(), Actionable::Deactivate);
+                references.insert(root.public_key.id(), (Actionable::Deactivate, 0));
             }
         }
 
@@ -985,4 +998,1308 @@ impl Default for Hashgraph {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::Hashgraph;
+    use crate::error::SelfError;
+    use crate::keypair::signing::KeyPair;
+    use crate::keypair::{exchange, signing};
+    use crate::protocol::hashgraph;
+
+    #[test]
+    fn operation_single_valid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authentication_key = signing::KeyPair::new();
+        let assertion_key = signing::KeyPair::new();
+        let agreement_key = exchange::KeyPair::new();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(
+                &authentication_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .grant_embedded(&assertion_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(&agreement_key.address(), hashgraph::Role::KeyAgreement)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .sign(&authentication_key)
+            .sign(&assertion_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+    }
+
+    #[test]
+    fn operation_multi_valid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authentication_key = signing::KeyPair::new();
+        let assertion_key = signing::KeyPair::new();
+        let multirole_key = signing::KeyPair::new();
+        let agreement_key = exchange::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(
+                &authentication_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .grant_embedded(&assertion_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(&agreement_key.address(), hashgraph::Role::KeyAgreement)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .sign(&authentication_key)
+            .sign(&assertion_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &multirole_key.address(),
+                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&multirole_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .modify(
+                &multirole_key.address(),
+                hashgraph::Role::Verification
+                    | hashgraph::Role::Authentication
+                    | hashgraph::Role::Assertion
+                    | hashgraph::Role::Invocation,
+            )
+            .revoke(&invocation_key.address(), Some(now + 2))
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+    }
+
+    #[test]
+    fn operation_recovery_valid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let recovery_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .recover(Some(now + 1))
+            .grant_embedded(&recovery_key.address(), hashgraph::Role::Invocation)
+            .sign(&invocation_key)
+            .sign(&recovery_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+    }
+
+    #[test]
+    fn operation_deactivate_valid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .deactivate(Some(now + 1))
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+    }
+
+    #[test]
+    fn operation_grant_valid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authenticaton_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+    }
+
+    #[test]
+    fn operation_modify_valid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let multirole_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(
+                &multirole_key.address(),
+                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+            )
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .sign(&multirole_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .modify(
+                &multirole_key.address(),
+                hashgraph::Role::Verification | hashgraph::Role::Assertion,
+            )
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+    }
+
+    #[test]
+    fn operation_revoke_valid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let assertion_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(&assertion_key.address(), hashgraph::Role::Assertion)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .sign(&assertion_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .revoke(&assertion_key.address(), Some(now + 1))
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+    }
+
+    #[test]
+    fn operation_sequence_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authenticaton_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .sequence(2)
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphOperationSequenceOutOfOrder,
+        );
+    }
+
+    #[test]
+    fn operation_timestamp_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authenticaton_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphInvalidTimestamp,
+        );
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now - 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphInvalidTimestamp,
+        );
+    }
+
+    #[test]
+    fn operation_previous_hash_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authenticaton_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let invalid_previous_hash = vec![0; 32];
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .previous(&invalid_previous_hash)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphInvalidPreviousHash,
+        );
+    }
+
+    #[test]
+    fn operation_signature_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authenticaton_key = signing::KeyPair::new();
+        let other_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let bad_signing_key = KeyPair::from_parts(invocation_key.public(), other_key.secret());
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&bad_signing_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphInvalidSignature,
+        );
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphSelfSignatureRequired,
+        );
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&authenticaton_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDuplicateSigner,
+        );
+    }
+
+    #[test]
+    fn operation_signer_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let authenticaton_key = signing::KeyPair::new();
+        let assertion_key = signing::KeyPair::new();
+        let other_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(&assertion_key.address(), hashgraph::Role::Assertion)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .sign(&assertion_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let bad_signing_key = KeyPair::from_parts(other_key.public(), invocation_key.secret());
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&bad_signing_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphInvalidSignature,
+        );
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&assertion_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphSignerRoleInvalid,
+        );
+    }
+
+    #[test]
+    fn operation_authorization_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let replacement_key = signing::KeyPair::new();
+        let authenticaton_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphOperationUnauthorized,
+        );
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(&replacement_key.address(), hashgraph::Role::Invocation)
+            .revoke(&invocation_key.address(), None)
+            .sign(&invocation_key)
+            .sign(&replacement_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .grant_embedded(
+                &authenticaton_key.address(),
+                hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&authenticaton_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphSigningKeyRevoked,
+        );
+    }
+
+    #[test]
+    fn operation_grant_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let duplicate_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // grant same key twice
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDuplicateKey,
+        );
+
+        // grant same key twice in the same operation
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(&duplicate_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(&duplicate_key.address(), hashgraph::Role::Assertion)
+            .sign(&invocation_key)
+            .sign(&duplicate_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDuplicateAction,
+        );
+
+        // grant a key with multiple roles, but not a verification method
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .grant_embedded(
+                &duplicate_key.address(),
+                hashgraph::Role::Assertion | hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .sign(&duplicate_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphMultiRoleKeyViolation,
+        );
+
+        // deactivate the account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .deactivate(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // grant on a deactivated account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .grant_embedded(&duplicate_key.address(), hashgraph::Role::Assertion)
+            .sign(&invocation_key)
+            .sign(&duplicate_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDeactivated,
+        );
+    }
+
+    #[test]
+    fn operation_revoke_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let assertion_key = signing::KeyPair::new();
+        let revoked_key = signing::KeyPair::new();
+        let unknown_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(&assertion_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(&revoked_key.address(), hashgraph::Role::Authentication)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .sign(&assertion_key)
+            .sign(&revoked_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .revoke(&assertion_key.address(), None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // revoke a non-existant key
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .revoke(&unknown_key.address(), None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphReferencedDescriptionNotFound,
+        );
+
+        // revoke the same key twice
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .revoke(&assertion_key.address(), None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphKeyAlreadyRevoked,
+        );
+
+        // revoke the same key twice in the same operation
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .revoke(&revoked_key.address(), None)
+            .revoke(&revoked_key.address(), None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDuplicateAction,
+        );
+
+        // revoke all keys
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .revoke(&invocation_key.address(), None)
+            .revoke(&revoked_key.address(), None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphNoActiveKeys,
+        );
+
+        // deactivate the account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .deactivate(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // revoke on a deactivated account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 3)
+            .revoke(&revoked_key.address(), None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDeactivated,
+        );
+    }
+
+    #[test]
+    fn operation_modify_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+        let modified_key = signing::KeyPair::new();
+        let verification_key = signing::KeyPair::new();
+        let unknown_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(&modified_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(&verification_key.address(), hashgraph::Role::Verification)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .sign(&modified_key)
+            .sign(&verification_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // modify a non-existent key
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .modify(&unknown_key.address(), hashgraph::Role::Invocation)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphReferencedDescriptionNotFound,
+        );
+
+        // modify the same key twice in an operation
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .modify(
+                &verification_key.address(),
+                hashgraph::Role::Verification | hashgraph::Role::Invocation,
+            )
+            .modify(
+                &verification_key.address(),
+                hashgraph::Role::Verification | hashgraph::Role::Invocation,
+            )
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDuplicateAction,
+        );
+
+        // assign multiple roles to non-verification method
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .modify(
+                &modified_key.address(),
+                hashgraph::Role::Assertion | hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphInvalidKeyReuse,
+        );
+
+        // assign the same roles to an existing key
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .modify(&verification_key.address(), hashgraph::Role::Verification)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphModifyNOOP,
+        );
+
+        // revoke a key
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .revoke(&verification_key.address(), None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // modify the revoked key
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .modify(
+                &verification_key.address(),
+                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphKeyAlreadyRevoked,
+        );
+
+        // deactivate the account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 3)
+            .deactivate(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // modify on a deactivated account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 4)
+            .modify(
+                &modified_key.address(),
+                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+            )
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDeactivated,
+        );
+    }
+
+    #[test]
+    fn operation_recover_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // recover twice in the same operation
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .recover(None)
+            .recover(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDuplicateAction,
+        );
+
+        // recover leaving no active keys
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .recover(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphNoActiveKeys,
+        );
+
+        // deactivate the account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .deactivate(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // recover on a deactivated account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .recover(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDeactivated,
+        );
+    }
+
+    #[test]
+    fn operation_deactivate_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // deactivate twice in the same operation
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .deactivate(None)
+            .deactivate(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDuplicateAction,
+        );
+
+        // deactivate the account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .deactivate(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // deactivate on a deactivated account
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 2)
+            .deactivate(None)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphDeactivated,
+        );
+    }
+
+    #[test]
+    fn operation_actions_invalid() {
+        let mut graph = Hashgraph::new();
+
+        let identifier_key = signing::KeyPair::new();
+        let invocation_key = signing::KeyPair::new();
+
+        let now = crate::time::unix();
+
+        // initial operation noop
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .sign(&identifier_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphOperationNOOP,
+        );
+
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now)
+            .grant_embedded(&invocation_key.address(), hashgraph::Role::Invocation)
+            .sign(&identifier_key)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        graph
+            .execute(operation)
+            .expect("operation execution failed");
+
+        // deactivate twice in the same operation
+        let operation = graph
+            .create()
+            .id(&identifier_key.address())
+            .timestamp(now + 1)
+            .sign(&invocation_key)
+            .build()
+            .expect("operation invalid");
+
+        assert_eq!(
+            graph.execute(operation).unwrap_err(),
+            SelfError::HashgraphOperationNOOP,
+        );
+    }
+}
