@@ -32,17 +32,17 @@ table Reference {
     controller: [ubyte];
 }
 
+union Description {
+    Embedded,
+    Reference,
+}
+
 enum Actionable : ubyte { 
     Grant = 0,
     Revoke,
     Modify,
     Recover,
     Deactivate,
-}
-
-union Description {
-    Embedded,
-    Reference,
 }
 
 table Action {

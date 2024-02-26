@@ -100,9 +100,9 @@ impl Websocket {
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
-        let subs_connect = self.subscriptions.clone();
         let subs = self.subscriptions.clone();
-        let new_subscriptions = subscriptions.to_owned();
+        let subs_new = subscriptions.to_owned();
+        let subs_connect = self.subscriptions.clone();
 
         let on_connect_cb = self.callbacks.on_connect.clone();
         let on_message_cb = self.callbacks.on_message.clone();
@@ -115,7 +115,7 @@ impl Websocket {
         let requests_tx = requests.clone();
 
         handle.spawn(async move {
-            for sub in new_subscriptions {
+            for sub in subs_new {
                 subs_connect
                     .lock()
                     .await

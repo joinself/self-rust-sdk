@@ -26,6 +26,7 @@ libc = "0.2"
 mockall = "0.11.4"
 ntp = "0.5.0"
 olm_sys = { git = "https://github.com/joinself/olm-sys" }
+prost = { version = "0.12" }
 rand = "0.8.5"
 rand_chacha = "0.3.1"
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "json", "rustls-tls"] }
@@ -36,6 +37,7 @@ sha3 = "0.10.8"
 sodium_sys = { git = "https://github.com/joinself/sodium-sys" }
 tokio = { version = "1.23.0", features = ["macros"] }
 tokio-tungstenite = { version = "0.18.0", features = ["rustls-tls-native-roots"] }
+tonic = "0.11"
 tungstenite = "0.18.0"
 url = "2.3.1"
 uuid = "1.2.1"
@@ -43,3 +45,6 @@ uuid = "1.2.1"
 [dev-dependencies]
 httptest = "0.15.4"
 self-test-mock = { git = "https://github.com/joinself/self-test-mock" }
+
+[build-dependencies]
+tonic-build = "0.11"

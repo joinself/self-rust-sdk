@@ -10,12 +10,13 @@ use crate::message::{
     self, ConnectionRequest, Content, Envelope, GroupInviteRequest, ResponseStatus,
     MESSAGE_TYPE_CHAT_MSG,
 };
-use crate::protocol::api::{KeyCreateRequest, PrekeyResponse};
+
 use crate::protocol::hashgraph;
 use crate::storage::Storage;
 use crate::time;
 use crate::token::Token;
 use crate::transport::rest::Rest;
+use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{Callbacks, Subscription, Websocket};
 
 use std::sync::MutexGuard;
@@ -40,6 +41,7 @@ pub struct MessagingCallbacks {
 
 pub struct Account {
     rest: Option<Rest>,
+    rpc: Option<Rpc>,
     storage: Option<Arc<Mutex<Storage>>>,
     websocket: Option<Websocket>,
 }
@@ -48,6 +50,7 @@ impl Account {
     pub fn new() -> Account {
         Account {
             rest: None,
+            rpc: None,
             storage: None,
             websocket: None,
         }
@@ -217,8 +220,10 @@ impl Account {
                 >),
         };
 
+        let rpc = Rpc::new(api_endpoint)?;
         let websocket = Websocket::new(messaging_endpoint, ws_callbacks)?;
 
+        self.rpc = Some(rpc);
         self.rest = Some(rest);
         self.storage = Some(account_storage);
         self.websocket = Some(websocket);
@@ -250,8 +255,8 @@ impl Account {
     /// returns the persistent identifier created to group all other
     /// public key identifiers
     pub fn register(&mut self) -> Result<Identifier, SelfError> {
-        let rest = match &self.rest {
-            Some(rest) => rest,
+        let rpc = match &mut self.rpc {
+            Some(rpc) => rpc,
             None => return Err(SelfError::AccountNotConfigured),
         };
 
@@ -273,7 +278,6 @@ impl Account {
             KeyPair::new(),
         );
         let exchange_kp = KeyPair::new().to_exchange_key()?;
-        let identifier = Identifier::Owned(identifier_kp.clone());
 
         // construct a public key operation to serve as
         // the initial public state for the account
@@ -282,10 +286,13 @@ impl Account {
         let operation = graph
             .create()
             .id(&identifier_kp.id())
-            .grant_embedded(&assertion_kp.id(), hashgraph::Role::Assertion)
-            .grant_embedded(&authentication_kp.id(), hashgraph::Role::Authentication)
-            .grant_embedded(&invocation_kp.id(), hashgraph::Role::Invocation)
-            .grant_embedded(&exchange_kp.id(), hashgraph::Role::KeyAgreement)
+            .grant_embedded(&assertion_kp.address(), hashgraph::Role::Assertion)
+            .grant_embedded(
+                &authentication_kp.address(),
+                hashgraph::Role::Authentication,
+            )
+            .grant_embedded(&invocation_kp.address(), hashgraph::Role::Invocation)
+            .grant_embedded(&exchange_kp.address(), hashgraph::Role::KeyAgreement)
             .sign(&identifier_kp)
             .sign(&assertion_kp)
             .sign(&authentication_kp)
@@ -297,23 +304,11 @@ impl Account {
             crate::crypto::account::Account::new(authentication_kp.clone(), exchange_kp);
         olm_account.generate_one_time_keys(100)?;
 
-        let mut one_time_keys = Vec::new();
-        ciborium::ser::into_writer(&olm_account.one_time_keys(), &mut one_time_keys)
-            .expect("failed to encode one time keys");
-
-        let device_identifier = Identifier::Owned(authentication_kp.clone());
-
         // submit public key operation to api
-        rest.post("/v2/identities", &operation, None, None, true)?;
+        rpc.execute(&identifier_kp.address(), &operation)?;
 
         // upload prekeys for device key
-        rest.post(
-            "/v2/prekeys",
-            &one_time_keys,
-            Some(&device_identifier),
-            None,
-            false,
-        )?;
+        rpc.publish(&identifier_kp.address(), &olm_account.one_time_keys())?;
 
         // persist account keys to keychain
         let mut storage = storage.lock().unwrap();
@@ -334,7 +329,7 @@ impl Account {
 
         websocket.connect(&subscriptions)?;
 
-        Ok(identifier)
+        Ok(Identifier::from_bytes(&identifier_kp.id())?)
     }
 
     /// registers an epehemral identifier
@@ -525,11 +520,6 @@ impl Account {
     }
 
     pub fn group_create(&mut self, using: &Identifier) -> Result<Identifier, SelfError> {
-        let rest = match &self.rest {
-            Some(rest) => rest,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
         let storage = match &self.storage {
             Some(storage) => storage,
             None => return Err(SelfError::AccountNotConfigured),
@@ -544,10 +534,10 @@ impl Account {
         let group_kp = KeyPair::new();
         let group_identifier = Identifier::Owned(group_kp.clone());
 
-        let request = KeyCreateRequest::encode(&group_identifier)?;
+        //let request = KeyCreateRequest::encode(&group_identifier)?;
 
         // submit public key to the to api
-        rest.post("/v2/keys", &request, None, None, true)?;
+        //rest.post("/v2/keys", &request, None, None, true)?;
 
         // persist account keys to keychain
         let mut storage = storage.lock().unwrap();
@@ -625,7 +615,7 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        let mut storage = match &mut self.storage {
+        let storage = match &mut self.storage {
             Some(storage) => storage.lock().unwrap(),
             None => return Err(SelfError::AccountNotConfigured),
         };
@@ -637,9 +627,10 @@ impl Account {
             authorization.is_none(),
         )?;
 
-        let prekey = PrekeyResponse::new(&response.data)?;
+        //let prekey = PrekeyResponse::new(&response.data)?;
 
-        storage.connection_add(using, with, None, Some(&prekey.key))
+        // storage.connection_add(using, with, None, Some(&prekey.key))
+        Ok(())
     }
 
     fn encrypt_and_send(&mut self, to: &Identifier, plaintext: &[u8]) -> Result<(), SelfError> {
