@@ -4,11 +4,11 @@ use crossbeam::channel;
 use prost::Message;
 use tokio::runtime::Runtime;
 use tonic::transport::Channel;
-use tonic::IntoRequest;
 
 use crate::error::SelfError;
 use crate::protocol::api::{
-    ApiClient, ExecuteRequest, PublishRequest, Request, RequestHeader, ResponseStatus, Version,
+    AcquireRequest, AcquireResponse, ApiClient, ExecuteRequest, PublishRequest, Request,
+    RequestHeader, ResponseStatus, Version,
 };
 
 pub struct Rpc {
@@ -136,6 +136,56 @@ impl Rpc {
         }
 
         Ok(())
+    }
+
+    pub fn acquire(&mut self, id: &[u8], by: &[u8]) -> Result<Vec<u8>, SelfError> {
+        let (tx, rx) = channel::bounded(1);
+
+        let id = id.to_vec();
+        let by = by.to_vec();
+
+        let mut client = self.client.clone();
+        let runtime = self.runtime.clone();
+
+        runtime.spawn(async move {
+            let acquire = AcquireRequest { id, by }.encode_to_vec();
+
+            let request = Request {
+                header: Some(RequestHeader {
+                    version: Version::V1 as i32,
+                }),
+                content: acquire,
+                authorization: None,
+                proof_of_work: None,
+            };
+
+            tx.send(client.acquire(request).await).unwrap();
+        });
+
+        let response = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(response) => match response {
+                Ok(response) => response.into_inner(),
+                Err(_) => return Err(SelfError::RpcRequestFailed),
+            },
+            Err(err) => {
+                println!("rpc: {}", err);
+                return Err(SelfError::RpcRequestTimeout);
+            }
+        };
+
+        if let Some(header) = response.header {
+            if header.status > 204 {
+                println!("rpc: request failed with '{}'", header.message);
+                return Err(rpc_error_status(header.status));
+            }
+        }
+
+        let acquire = match AcquireResponse::decode(response.content.as_ref()) {
+            Ok(acquire) => acquire,
+            Err(_) => return Err(SelfError::RpcBadRequest),
+        };
+
+        Ok(acquire.key)
     }
 }
 

@@ -989,9 +989,8 @@ mod tests {
         let sender = PublicKey::from_public_key(&KeyPair::new().public());
 
         for subscription in subscriptions {
-            let recipient = PublicKey::Referenced(
-                PublicKey::from_bytes(&subscription).expect("Invalid subscription public key"),
-            );
+            let recipient =
+                PublicKey::from_bytes(&subscription).expect("Invalid subscription public key");
             msg(&mut socket_tx, &sender, &recipient, 0, b"test message").await;
         }
 
@@ -1055,7 +1054,7 @@ mod tests {
         let (rt, msg_rx) = test_server();
 
         let alice_kp = crate::keypair::signing::KeyPair::new();
-        let alice_id = PublicKey::Owned(alice_kp);
+        let alice_id = alice_kp.public();
 
         let subs = vec![Subscription {
             to_address: alice_id.clone(),
@@ -1065,7 +1064,7 @@ mod tests {
         }];
 
         let bob_kp = crate::keypair::signing::KeyPair::new();
-        let bob_id = PublicKey::Referenced(bob_kp.public());
+        let bob_id = bob_kp.public();
 
         let callbacks = Callbacks {
             on_connect: None,
@@ -1081,8 +1080,8 @@ mod tests {
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
 
         ws.send(
-            &alice_id,
-            &bob_id,
+            &alice_kp,
+            bob_id,
             0,
             b"test message",
             None,

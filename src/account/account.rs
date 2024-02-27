@@ -16,7 +16,6 @@ use crate::protocol::hashgraph;
 use crate::storage::Storage;
 use crate::time;
 use crate::token::Token;
-use crate::transport::rest::Rest;
 use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{Callbacks, Subscription, Websocket};
 
@@ -41,7 +40,6 @@ pub struct MessagingCallbacks {
 }
 
 pub struct Account {
-    rest: Option<Rest>,
     rpc: Option<Rpc>,
     storage: Option<Arc<Mutex<Storage>>>,
     websocket: Option<Websocket>,
@@ -50,7 +48,6 @@ pub struct Account {
 impl Account {
     pub fn new() -> Account {
         Account {
-            rest: None,
             rpc: None,
             storage: None,
             websocket: None,
@@ -68,7 +65,6 @@ impl Account {
         user_data: Arc<dyn Any + Send + Sync>,
         callbacks: MessagingCallbacks,
     ) -> Result<(), SelfError> {
-        let rest = Rest::new(api_endpoint)?;
         let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
         let account_storage = storage.clone();
 
@@ -235,7 +231,6 @@ impl Account {
         let websocket = Websocket::new(messaging_endpoint, ws_callbacks)?;
 
         self.rpc = Some(rpc);
-        self.rest = Some(rest);
         self.storage = Some(account_storage);
         self.websocket = Some(websocket);
 
@@ -427,11 +422,6 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        let _rest = match &self.rest {
-            Some(rest) => rest,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
         if let Some(msg_type) = message.content.type_get() {
             let response = match msg_type.as_str() {
                 message::MESSAGE_TYPE_CONNECTION_REQ => {
@@ -590,8 +580,8 @@ impl Account {
         using: &signing::PublicKey,
         authorization: Option<&Token>,
     ) -> Result<(), SelfError> {
-        let rest = match &mut self.rest {
-            Some(rest) => rest,
+        let rpc = match &mut self.rpc {
+            Some(rpc) => rpc,
             None => return Err(SelfError::AccountNotConfigured),
         };
 
@@ -602,12 +592,7 @@ impl Account {
 
         let using = storage.keypair_signing_get(using)?;
 
-        let response = rest.get(
-            &format!("/v2/prekeys/{}", &hex::encode(with.address())),
-            Some(using.as_ref()),
-            authorization,
-            authorization.is_none(),
-        )?;
+        let one_time_key = rpc.acquire(with.address(), using.address())?;
 
         //let prekey = PrekeyResponse::new(&response.data)?;
 

@@ -340,7 +340,7 @@ mod tests {
         let ekp = crate::keypair::exchange::KeyPair::new();
         let spk = skp.public().id();
         let epk = ekp.public().id();
-        let idf = Identifier::Referenced(skp.public());
+        let idf = skp.public();
         let acc = Account::new(skp, ekp);
 
         // try pickle with both password and no password

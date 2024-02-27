@@ -230,7 +230,7 @@ impl Group {
 mod tests {
 
     use super::*;
-    use crate::{crypto::account::Account, identifier::Identifier};
+    use crate::crypto::account::Account;
 
     #[test]
     fn encrypt_and_decrypt() {
