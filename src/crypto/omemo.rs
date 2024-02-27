@@ -1,6 +1,6 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
-use crate::identifier::Identifier;
+use crate::identifier::Address;
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 pub struct Group {
-    as_identifier: Identifier,
+    as_address: Address,
     participants: Vec<Rc<RefCell<Session>>>,
     sequence_tx: u64,
 }
@@ -47,8 +47,8 @@ impl GroupMessage {
         encoded
     }
 
-    pub fn one_time_key_message(&self, recipient: &Identifier) -> Option<Vec<u8>> {
-        match self.recipients.get(&recipient.id()) {
+    pub fn one_time_key_message(&self, recipient: &Address) -> Option<Vec<u8>> {
+        match self.recipients.get(&recipient.to_vec()) {
             Some(message) => {
                 if message.mtype != 0 {
                     return None;
@@ -75,16 +75,16 @@ impl GroupMessage {
 }
 
 impl Group {
-    pub fn new(as_identifier: Identifier, sequence_tx: u64) -> Group {
+    pub fn new(as_address: Address, sequence_tx: u64) -> Group {
         Group {
-            as_identifier,
+            as_address,
             participants: Vec::new(),
             sequence_tx,
         }
     }
 
-    pub fn as_identifier(&self) -> Identifier {
-        self.as_identifier.clone()
+    pub fn as_address(&self) -> Address {
+        self.as_address.clone()
     }
 
     pub fn sequence(&self) -> u64 {
@@ -99,7 +99,7 @@ impl Group {
         self.participants.push(session);
     }
 
-    pub fn remove_participant(&mut self, id: &Identifier) {
+    pub fn remove_participant(&mut self, id: &Address) {
         self.participants
             .retain(|session| !session.borrow().with_identifier().eq(id));
     }

@@ -1,69 +1,67 @@
 use crate::error::SelfError;
-use crate::keypair::{
-    signing::{KeyPair, PublicKey},
-    Algorithm,
-};
+use crate::keypair::signing::PublicKey;
 
 use hex::ToHex;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use std::fmt;
 
+use super::Address;
+
 #[derive(Clone)]
 pub enum Identifier {
-    Owned(KeyPair),
-    Referenced(PublicKey),
+    Aure(PublicKey),
+    Key(PublicKey),
 }
 
 impl Identifier {
-    pub fn from_bytes(id: &[u8]) -> Result<Identifier, SelfError> {
-        let pk = PublicKey::from_bytes(id, Algorithm::Ed25519)?;
-        Ok(Identifier::Referenced(pk))
+    pub fn from_did(did: &str) -> Result<Identifier, SelfError> {
+        if let Some(encoded_identifier) = did.strip_prefix("aure:") {
+            let decoded_identifier = hex::decode(encoded_identifier).map_err(|_| SelfError::IdentifierEncodingInvalid )?;
+            let public_key = PublicKey::from_address(&decoded_identifier)?;
+            return Ok(Identifier::Aure(public_key))
+        }
+
+        if let Some(encoded_identifier) = did.strip_prefix("key:") {
+            let decoded_identifier = hex::decode(encoded_identifier).map_err(|_| SelfError::IdentifierEncodingInvalid )?;
+            let public_key = PublicKey::from_address(&decoded_identifier)?;
+            return Ok(Identifier::Key(public_key))
+        }
+
+        return Err(SelfError::IdentifierMethodUnsupported)
     }
 
-    pub fn id(&self) -> Vec<u8> {
+    pub fn to_vec(&self) -> Vec<u8> {
         match self {
-            Self::Owned(kp) => kp.id(),
-            Self::Referenced(pk) => pk.id(),
+            Self::Aure(pk) => pk.address(),
+            Self::Key(pk) => pk.address(),
         }
     }
 
-    pub fn public_key(&self) -> PublicKey {
+    pub fn to_address(&self) -> Address {
         match self {
-            Self::Owned(kp) => kp.public(),
-            Self::Referenced(pk) => pk.clone(),
+            Self::Aure(pk) => Address::from_public_key(pk),
+            Self::Key(pk) => Address::from_public_key(pk),
         }
     }
-}
 
-impl Serialize for Identifier {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(&self.id())
-    }
-}
-
-impl<'de> Deserialize<'de> for Identifier {
-    fn deserialize<D>(deserializer: D) -> Result<Identifier, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_bytes(IdentifierVisitor)
+    pub fn to_public_key(&self) -> PublicKey {
+        match self {
+            Self::Aure(pk) => pk.clone(),
+            Self::Key(pk) => pk.clone(),
+        }
     }
 }
 
 impl fmt::Debug for Identifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Identifier::Owned(_) => f
-                .debug_struct("Owned")
-                .field("id", &self.id().encode_hex::<String>())
+            Identifier::Aure(pk) => f
+                .debug_struct("Aure")
+                .field("id", &self.to_vec().encode_hex::<String>())
                 .finish(),
-            Identifier::Referenced(_) => f
-                .debug_struct("Referenced")
-                .field("id", &self.id().encode_hex::<String>())
+            Identifier::Key(_) => f
+                .debug_struct("Key")
+                .field("id", &self.to_vec().encode_hex::<String>())
                 .finish(),
         }
     }
@@ -74,34 +72,15 @@ impl std::hash::Hash for Identifier {
     where
         H: std::hash::Hasher,
     {
-        state.write(&self.id());
+        state.write(&self.to_vec());
         state.finish();
     }
 }
 
 impl PartialEq for Identifier {
     fn eq(&self, other: &Identifier) -> bool {
-        self.public_key().matches(&other.id())
+        self.to_vec().eq(&other.to_vec())
     }
 }
 
 impl Eq for Identifier {}
-
-struct IdentifierVisitor;
-
-impl<'de> serde::de::Visitor<'de> for IdentifierVisitor {
-    type Value = Identifier;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("an identifier 32 bytes long")
-    }
-
-    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(Identifier::Referenced(
-            PublicKey::from_bytes(v, Algorithm::Ed25519).expect("identifier invalid"),
-        ))
-    }
-}

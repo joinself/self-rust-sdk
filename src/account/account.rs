@@ -329,21 +329,7 @@ impl Account {
 
         websocket.connect(&subscriptions)?;
 
-        Ok(Identifier::from_bytes(&identifier_kp.id())?)
-    }
-
-    /// registers an epehemral identifier
-    /// this type of account does not support key revocation or recovery
-    /// and serves as only an identifier to send and receive messages from.
-    /// this type of account can be linked to a persistent account as a
-    /// device identifier later on
-    pub fn register_anonymously(&mut self) -> Result<Identifier, SelfError> {
-        Ok(Identifier::Referenced(
-            crate::keypair::signing::PublicKey::from_bytes(
-                vec![0; 32].as_slice(),
-                crate::keypair::Algorithm::Ed25519,
-            )?,
-        ))
+        Ok(Identifier::Aure(identifier_kp.public()))
     }
 
     /// connect to another identifier

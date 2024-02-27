@@ -1,11 +1,13 @@
 use crate::error::SelfError;
-use crate::identifier::Identifier;
+use crate::identifier::Address;
+use crate::keypair::exchange::PublicKey;
 use olm_sys::*;
 
 pub struct Session {
     session: *mut OlmSession,
-    as_identifier: Identifier,
-    with_identifier: Identifier,
+    as_address: Address,
+    with_address: Address,
+    key_exchange: PublicKey,
     sequence_tx: u64,
     sequence_rx: u64,
 }
@@ -13,7 +15,7 @@ pub struct Session {
 unsafe impl Send for Session {}
 
 impl Session {
-    pub fn new(as_identifier: Identifier, with_identifier: Identifier) -> Session {
+    pub fn new(as_address: Address, with_address: Address) -> Session {
         unsafe {
             let session_len = olm_session_size();
             let session_buf = vec![0_u8; session_len].into_boxed_slice();
@@ -21,8 +23,8 @@ impl Session {
 
             Session {
                 session,
-                as_identifier,
-                with_identifier,
+                as_address,
+                with_address,
                 sequence_tx: 0,
                 sequence_rx: 0,
             }
@@ -30,8 +32,9 @@ impl Session {
     }
 
     pub fn from_pickle(
-        as_identifier: Identifier,
-        with_identifier: Identifier,
+        as_address: Address,
+        with_address: Address,
+        key_exchange: PublicKey,
         sequence_tx: u64,
         sequence_rx: u64,
         pickle: &mut [u8],
@@ -58,8 +61,8 @@ impl Session {
 
             let session = Session {
                 session,
-                as_identifier,
-                with_identifier,
+                as_address,
+                with_address,
                 sequence_tx,
                 sequence_rx,
             };
@@ -135,12 +138,7 @@ impl Session {
     }
 
     pub fn matches_inbound_session(&self, one_time_message: &[u8]) -> Result<bool, SelfError> {
-        let identity_key = match &self.with_identifier {
-            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
-            Identifier::Referenced(pk) => pk.to_exchange_key()?,
-        };
-
-        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
+        let identity_key_buf = base64::encode_config(self.key_exchange.to_vec(), base64::STANDARD_NO_PAD);
 
         unsafe {
             let result = olm_matches_inbound_session_from(
@@ -217,12 +215,12 @@ impl Session {
         }
     }
 
-    pub fn as_identifier(&self) -> &Identifier {
-        &self.as_identifier
+    pub fn as_address(&self) -> &Address {
+        &self.as_address
     }
 
-    pub fn with_identifier(&self) -> &Identifier {
-        &self.with_identifier
+    pub fn with_address(&self) -> &Address {
+        &self.with_address
     }
 
     pub fn sequence_tx(&self) -> u64 {

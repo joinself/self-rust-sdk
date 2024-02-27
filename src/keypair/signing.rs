@@ -64,7 +64,7 @@ impl PublicKey {
         self.bytes.clone()
     }
 
-    pub fn address(&self) -> Vec<u8> {
+    pub fn to_address_bytes(&self) -> Vec<u8> {
         // TODO properly address this later
         let mut address = vec![0; 33];
         address[0] = crate::keypair::Algorithm::Ed25519 as u8;
@@ -243,8 +243,8 @@ impl KeyPair {
         self.public_key.id()
     }
 
-    pub fn address(&self) -> Vec<u8> {
-        self.public_key.address()
+    pub fn to_address_bytes(&self) -> Vec<u8> {
+        self.public_key.to_address_bytes()
     }
 
     pub fn algorithm(&self) -> Algorithm {
