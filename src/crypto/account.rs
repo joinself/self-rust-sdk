@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 pub struct Account {
+    address: signing::PublicKey,
     account: *mut OlmAccount,
 }
 
@@ -19,9 +20,9 @@ struct OneTimeKeys {
 impl Account {
     pub fn new(signing_keypair: signing::KeyPair, exchange_keypair: exchange::KeyPair) -> Account {
         let mut ed25519_secret_key = signing_keypair.to_vec();
-        let mut ed25519_public_key = signing_keypair.public().id();
+        let mut ed25519_public_key = signing_keypair.public().public_key_bytes().to_vec();
         let mut curve25519_secret_key = exchange_keypair.to_vec();
-        let mut curve25519_public_key = exchange_keypair.public().id();
+        let mut curve25519_public_key = exchange_keypair.public().public_key_bytes().to_vec();
 
         unsafe {
             let account_len = olm_account_size();
@@ -36,14 +37,14 @@ impl Account {
                 curve25519_public_key.as_mut_ptr() as *mut libc::c_void,
             );
 
-            Account {
-                account,
-            }
+            let address = signing_keypair.public().to_owned();
+
+            Account { account, address }
         }
     }
 
     pub fn from_pickle(
-        with_address: signing::PublicKey,
+        address: signing::PublicKey,
         pickle: &mut [u8],
         password: Option<&[u8]>,
     ) -> Result<Account, SelfError> {
@@ -66,14 +67,16 @@ impl Account {
                 pickle.len(),
             );
 
-            let account = Account {
-                account,
-            };
+            let account = Account { account, address };
 
             account.last_error()?;
 
             Ok(account)
         }
+    }
+
+    pub fn address(&self) -> &[u8] {
+        self.address.address()
     }
 
     pub fn one_time_keys(&self) -> Vec<Vec<u8>> {
@@ -182,9 +185,10 @@ impl Account {
         with_exchange: exchange::PublicKey,
         one_time_message: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key_buf = base64::encode_config(with_exchange.id(), base64::STANDARD_NO_PAD);
+        let identity_key_buf =
+            base64::encode_config(with_exchange.public_key_bytes(), base64::STANDARD_NO_PAD);
 
-        let session = Session::new(self.identifier.clone(), with_address, with_exchange);
+        let session = Session::new(self.address.clone(), with_address, with_exchange);
 
         unsafe {
             let mut one_time_message_buf = one_time_message.to_owned();
@@ -210,9 +214,10 @@ impl Account {
         with_exchange: exchange::PublicKey,
         one_time_key: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key_buf = base64::encode_config(with_exchange.id(), base64::STANDARD_NO_PAD);
+        let identity_key_buf =
+            base64::encode_config(with_exchange.public_key_bytes(), base64::STANDARD_NO_PAD);
 
-        let session = Session::new(self.identifier.clone(), with_address, with_exchange);
+        let session = Session::new(self.address.clone(), with_address, with_exchange);
 
         unsafe {
             let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());

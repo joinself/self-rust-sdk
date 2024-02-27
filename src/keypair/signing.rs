@@ -45,6 +45,10 @@ impl PublicKey {
         &self.bytes
     }
 
+    pub fn public_key_bytes(&self) -> &[u8] {
+        &self.bytes[1..33]
+    }
+
     pub fn to_did_key(&self) -> String {
         self.bytes.encode_hex()
     }
@@ -91,14 +95,17 @@ pub struct SecretKey {
 impl KeyPair {
     pub fn new() -> KeyPair {
         let mut ed25519_pk =
-            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES + 1 as usize].into_boxed_slice();
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize + 1].into_boxed_slice();
         let mut ed25519_sk =
             vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
 
         ed25519_pk[0] = crate::keypair::Algorithm::Ed25519 as u8;
 
         unsafe {
-            sodium_sys::crypto_sign_keypair(ed25519_pk[1..33].as_mut_ptr(), ed25519_sk.as_mut_ptr());
+            sodium_sys::crypto_sign_keypair(
+                ed25519_pk[1..33].as_mut_ptr(),
+                ed25519_sk.as_mut_ptr(),
+            );
         }
 
         KeyPair {
@@ -143,7 +150,7 @@ impl KeyPair {
         };
 
         let mut ed25519_pk =
-            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES + 1 as usize].into_boxed_slice();
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize + 1].into_boxed_slice();
         let mut ed25519_sk =
             vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
 
@@ -167,16 +174,8 @@ impl KeyPair {
         })
     }
 
-    pub fn id(&self) -> Vec<u8> {
-        self.public_key.id()
-    }
-
     pub fn address(&self) -> &[u8] {
-        self.public_key.to_address_bytes()
-    }
-
-    pub fn algorithm(&self) -> Algorithm {
-        self.public_key.algorithm
+        self.public_key.address()
     }
 
     pub fn public(&self) -> &PublicKey {

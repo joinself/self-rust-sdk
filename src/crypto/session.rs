@@ -14,7 +14,11 @@ pub struct Session {
 unsafe impl Send for Session {}
 
 impl Session {
-    pub fn new(as_address: signing::PublicKey, with_address: signing::PublicKey, with_exchange: exchange::PublicKey) -> Session {
+    pub fn new(
+        as_address: signing::PublicKey,
+        with_address: signing::PublicKey,
+        with_exchange: exchange::PublicKey,
+    ) -> Session {
         unsafe {
             let session_len = olm_session_size();
             let session_buf = vec![0_u8; session_len].into_boxed_slice();
@@ -139,7 +143,10 @@ impl Session {
     }
 
     pub fn matches_inbound_session(&self, one_time_message: &[u8]) -> Result<bool, SelfError> {
-        let identity_key_buf = base64::encode_config(self.key_exchange.to_vec(), base64::STANDARD_NO_PAD);
+        let identity_key_buf = base64::encode_config(
+            self.with_exchange.public_key_bytes(),
+            base64::STANDARD_NO_PAD,
+        );
 
         unsafe {
             let result = olm_matches_inbound_session_from(
@@ -224,6 +231,10 @@ impl Session {
         &self.with_address
     }
 
+    pub fn with_exchange(&self) -> &exchange::PublicKey {
+        &self.with_exchange
+    }
+
     pub fn sequence_tx(&self) -> u64 {
         self.sequence_tx
     }
@@ -265,7 +276,11 @@ mod tests {
 
         // encrypt a message from bob with a new session to alice
         let mut bobs_session_with_alice = bob_acc
-            .create_outbound_session(alice_skp.public(), alice_ekp.public(), &alices_one_time_keys[0])
+            .create_outbound_session(
+                alice_skp.public(),
+                alice_ekp.public(),
+                &alices_one_time_keys[0],
+            )
             .expect("failed to create outbound session");
 
         let (mtype, mut bobs_message_to_alice_1) = bobs_session_with_alice
@@ -353,7 +368,11 @@ mod tests {
 
         // encrypt a message from bob with a new session to alice
         let mut bobs_session_with_alice = bob_acc
-            .create_outbound_session(alice_skp.public(), alice_ekp.public(), &alices_one_time_keys[0])
+            .create_outbound_session(
+                alice_skp.public(),
+                alice_ekp.public(),
+                &alices_one_time_keys[0],
+            )
             .expect("failed to create outbound session");
 
         let (mtype, mut bobs_message_to_alice_1) = bobs_session_with_alice

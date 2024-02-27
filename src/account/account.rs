@@ -1,10 +1,12 @@
+use libc::group;
+
 use crate::account::responder::*;
 use crate::account::token::token_create_authorization;
 
 use crate::error::SelfError;
 use crate::hashgraph::Hashgraph;
 use crate::keypair::signing::{self, KeyPair};
-use crate::keypair::Usage;
+use crate::keypair::{exchange, Usage};
 use crate::message::{
     self, ConnectionRequest, Content, Envelope, GroupInviteRequest, ResponseStatus,
     MESSAGE_TYPE_CHAT_MSG,
@@ -93,7 +95,7 @@ impl Account {
             on_message: Some(Arc::new(
                 move |sender: &signing::PublicKey,
                       recipient: &signing::PublicKey,
-                      subscriber: Option<signing::PublicKey>,
+                      subscriber: &signing::PublicKey,
                       sequence: u64,
                       ciphertext: &[u8]|
                       -> Option<crate::transport::websocket::Response> {
@@ -101,8 +103,18 @@ impl Account {
                     let on_message_st = storage.clone();
                     let mut storage = on_message_st.lock().unwrap();
 
-                    let plaintext = storage
-                        .decrypt_and_queue(sender, recipient, subscriber, sequence, ciphertext);
+                    // TODO lookup exchange key as we can't convert them anymore
+                    // due to NIST compliance related restrictions
+                    let sender_exchange = exchange::KeyPair::new();
+
+                    let plaintext = storage.decrypt_and_queue(
+                        sender,
+                        sender_exchange.public(),
+                        recipient,
+                        Some(subscriber.to_owned()),
+                        sequence,
+                        ciphertext,
+                    );
                     drop(storage);
 
                     let mut response: Option<crate::transport::websocket::Response> = None;
@@ -166,7 +178,7 @@ impl Account {
 
                                                 response =
                                                     Some(crate::transport::websocket::Response {
-                                                        from,
+                                                        from: from.public().to_owned(),
                                                         to: sender.clone(),
                                                         sequence,
                                                         content,
@@ -181,7 +193,7 @@ impl Account {
                                                                 on_response_st.lock().unwrap();
                                                             storage
                                                                 .outbox_dequeue(
-                                                                    &from_clone,
+                                                                    from_clone.public(),
                                                                     &sender_clone.clone(),
                                                                     sequence,
                                                                 )
@@ -210,7 +222,7 @@ impl Account {
                     dyn Fn(
                             &signing::PublicKey,
                             &signing::PublicKey,
-                            Option<signing::PublicKey>,
+                            &signing::PublicKey,
                             u64,
                             &[u8],
                         ) -> Option<crate::transport::websocket::Response>
@@ -228,26 +240,6 @@ impl Account {
         self.websocket = Some(websocket);
 
         Ok(())
-    }
-
-    /// returns the primary messaging identifier of this account
-    /// if the account has been registered as a persistent identifier
-    /// then this will be the device that was created when the account
-    /// was made. if the account is an ephemeral, then it will the
-    /// ephemeral identifier
-    pub fn messaging_identifer(&self) -> Option<signing::PublicKey> {
-        if let Some(storage) = &self.storage {
-            let mut storage = storage.lock().expect("failed to lock storage");
-
-            if let Ok(keypairs) = storage.keypair_list(Some(Usage::Messaging), true) {
-                // there should only be one persistent messaging keypair for this device
-                if let Some(keypair) = keypairs.first() {
-                    return Some(signing::PublicKey::Owned(keypair.to_owned()));
-                }
-            }
-        }
-
-        None
     }
 
     /// register a persistent identifier
@@ -276,7 +268,7 @@ impl Account {
             KeyPair::new(),
             KeyPair::new(),
         );
-        let exchange_kp = KeyPair::new().to_exchange_key()?;
+        let exchange_kp = exchange::KeyPair::new();
 
         // construct a public key operation to serve as
         // the initial public state for the account
@@ -284,7 +276,7 @@ impl Account {
 
         let operation = graph
             .create()
-            .id(&identifier_kp.id())
+            .id(identifier_kp.address())
             .grant_embedded(&assertion_kp.address(), hashgraph::Role::Assertion)
             .grant_embedded(
                 &authentication_kp.address(),
@@ -312,8 +304,8 @@ impl Account {
         // persist account keys to keychain
         let mut storage = storage.lock().unwrap();
 
-        storage.keypair_create(Usage::signing::PublicKey, &identifier_kp, None, true)?;
-        storage.keypair_create(
+        storage.keypair_signing_create(Usage::Identifier, &identifier_kp, None, true)?;
+        storage.keypair_signing_create(
             Usage::Messaging,
             &authentication_kp,
             Some(olm_account),
@@ -328,24 +320,20 @@ impl Account {
 
         websocket.connect(&subscriptions)?;
 
-        Ok(signing::PublicKey::Aure(identifier_kp.public()))
+        Ok(identifier_kp.public().to_owned())
     }
 
     /// connect to another identifier
     pub fn connect(
         &mut self,
-        with: &signing::PublicKey,
+        as_address: &signing::PublicKey,
+        with_address: &signing::PublicKey,
         authorization: Option<&Token>,
         _notification: Option<&Token>,
     ) -> Result<(), SelfError> {
-        let using = match self.messaging_identifer() {
-            Some(using) => using,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
         // attempt to acquire a one time key for the identifier
         // and create a connection and session with the identifier
-        self.connect_and_create_session(with, &using, authorization)?;
+        self.connect_and_create_session(with_address, as_address, authorization)?;
 
         // send a connection request to the identifier
         let request_id = crate::crypto::random_id();
@@ -364,7 +352,8 @@ impl Account {
 
         let content = ConnectionRequest {
             ath: Some(
-                token_create_authorization(&mut storage, Some(with), &using, None)?.encode()?,
+                token_create_authorization(&mut storage, Some(with_address), as_address, None)?
+                    .encode()?,
             ),
             ntf: None,
         }
@@ -374,7 +363,7 @@ impl Account {
 
         drop(storage);
 
-        self.encrypt_and_send(with, &msg.encode()?)?;
+        self.encrypt_and_send(with_address, &msg.encode()?)?;
 
         // TODO if we have a notificaiton token, use it to notify the recipient
 
@@ -382,7 +371,11 @@ impl Account {
     }
 
     /// connect to another identifier using an identifier that is already assoicated with this account
-    pub fn connect_as(&mut self, _with: &signing::PublicKey, _using: &signing::PublicKey) -> Result<(), SelfError> {
+    pub fn connect_as(
+        &mut self,
+        _with: &signing::PublicKey,
+        _using: &signing::PublicKey,
+    ) -> Result<(), SelfError> {
         Ok(())
     }
 
@@ -394,21 +387,17 @@ impl Account {
     /// creates an authorization and notification token (if a notification secret has been set) for the primary messaging identifier that can be shared with other identifier(s)
     pub fn token_generate(
         &mut self,
-        with: Option<&signing::PublicKey>,
+        as_address: &signing::PublicKey,
+        with_address: Option<&signing::PublicKey>,
         expires: Option<i64>,
     ) -> Result<(Token, Option<Token>), SelfError> {
-        let as_identifier = match self.messaging_identifer() {
-            Some(as_identifier) => as_identifier,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
         let mut storage = match &mut self.storage {
             Some(storage) => storage.lock().unwrap(),
             None => return Err(SelfError::AccountNotConfigured),
         };
 
         let authentication_token =
-            token_create_authorization(&mut storage, with, &as_identifier, expires)?;
+            token_create_authorization(&mut storage, with_address, as_address, expires)?;
 
         Ok((authentication_token, None))
     }
@@ -504,7 +493,10 @@ impl Account {
         Ok(Vec::new())
     }
 
-    pub fn group_create(&mut self, using: &signing::PublicKey) -> Result<signing::PublicKey, SelfError> {
+    pub fn group_create(
+        &mut self,
+        as_address: &signing::PublicKey,
+    ) -> Result<signing::PublicKey, SelfError> {
         let storage = match &self.storage {
             Some(storage) => storage,
             None => return Err(SelfError::AccountNotConfigured),
@@ -517,7 +509,6 @@ impl Account {
 
         // generate keypair for the group identifier
         let group_kp = KeyPair::new();
-        let group_identifier = signing::PublicKey::Owned(group_kp.clone());
 
         //let request = KeyCreateRequest::encode(&group_identifier)?;
 
@@ -527,17 +518,18 @@ impl Account {
         // persist account keys to keychain
         let mut storage = storage.lock().unwrap();
 
-        storage.keypair_create(Usage::Group, &group_kp, None, false)?;
+        let as_address = storage.keypair_signing_get(as_address)?;
+        storage.keypair_signing_create(Usage::Group, &group_kp, None, false)?;
 
         // create tokens for the identifier that will join the group
         websocket.subscribe(vec![Subscription {
-            to_identifier: group_identifier.clone(),
-            as_identifier: Some(using.clone()),
+            to_address: group_kp.public().to_owned(),
+            as_address: as_address.as_ref().to_owned(),
             from: time::unix(),
             token: None, // TODO add token
         }])?;
 
-        Ok(group_identifier)
+        Ok(group_kp.public().to_owned())
     }
 
     pub fn group_invite(
@@ -559,7 +551,10 @@ impl Account {
             msg.issued_at_set(now.timestamp());
             msg.expires_at_set((now + chrono::Duration::days(7)).timestamp());
 
-            let content = GroupInviteRequest { gid: group.id() }.encode()?;
+            let content = GroupInviteRequest {
+                gid: group.address().to_vec(),
+            }
+            .encode()?;
 
             msg.content_set(&content);
             let plaintext = msg.encode()?;
@@ -600,14 +595,16 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        let storage = match &mut self.storage {
+        let mut storage = match &mut self.storage {
             Some(storage) => storage.lock().unwrap(),
             None => return Err(SelfError::AccountNotConfigured),
         };
 
+        let using = storage.keypair_signing_get(using)?;
+
         let response = rest.get(
-            &format!("/v2/prekeys/{}", &hex::encode(with.id())),
-            Some(using),
+            &format!("/v2/prekeys/{}", &hex::encode(with.address())),
+            Some(using.as_ref()),
             authorization,
             authorization.is_none(),
         )?;
@@ -618,7 +615,11 @@ impl Account {
         Ok(())
     }
 
-    fn encrypt_and_send(&mut self, to: &signing::PublicKey, plaintext: &[u8]) -> Result<(), SelfError> {
+    fn encrypt_and_send(
+        &mut self,
+        to: &signing::PublicKey,
+        plaintext: &[u8],
+    ) -> Result<(), SelfError> {
         let mut storage = match &mut self.storage {
             Some(storage) => storage.lock().unwrap(),
             None => return Err(SelfError::AccountNotConfigured),
@@ -665,5 +666,5 @@ fn encrypt_and_send(
         .recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
 
-    storage.outbox_dequeue(&from, to, sequence)
+    storage.outbox_dequeue(from.public(), to, sequence)
 }

@@ -48,7 +48,7 @@ impl GroupMessage {
     }
 
     pub fn one_time_key_message(&self, recipient: &signing::PublicKey) -> Option<Vec<u8>> {
-        match self.recipients.get(&recipient.to_vec()) {
+        match self.recipients.get(recipient.address()) {
             Some(message) => {
                 if message.mtype != 0 {
                     return None;
@@ -101,7 +101,7 @@ impl Group {
 
     pub fn remove_participant(&mut self, id: &signing::PublicKey) {
         self.participants
-            .retain(|session| !session.borrow().with_identifier().eq(id));
+            .retain(|session| !session.borrow().with_address().eq(id));
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, SelfError> {
@@ -154,7 +154,7 @@ impl Group {
 
             let (mtype, ciphertext) = s.encrypt(&key_and_nonce)?;
 
-            group_message.set_recipient_ciphertext(&s.with_identifier().id(), mtype, &ciphertext);
+            group_message.set_recipient_ciphertext(s.as_address().address(), mtype, &ciphertext);
         }
 
         self.sequence_tx += 1;
@@ -162,7 +162,11 @@ impl Group {
         Ok(group_message)
     }
 
-    pub fn decrypt(&mut self, from: &signing::PublicKey, ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {
+    pub fn decrypt(
+        &mut self,
+        from: &signing::PublicKey,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, SelfError> {
         let mut group_message = GroupMessage::decode(ciphertext)?;
         self.decrypt_group_message(from, &mut group_message)
     }
@@ -176,7 +180,7 @@ impl Group {
         let sender = match self
             .participants
             .iter()
-            .position(|s| s.borrow().with_identifier().eq(from))
+            .position(|s| s.borrow().with_address().eq(from))
         {
             Some(p) => &mut self.participants[p],
             None => return Err(SelfError::CryptoUnknownGroupParticipant),
@@ -185,7 +189,7 @@ impl Group {
         // TODO error handling
         let message = group_message
             .recipients
-            .get_mut(&self.as_identifier.id())
+            .get_mut(self.as_address.address())
             .unwrap();
         let mut plaintext_len = (group_message.ciphertext.len() as u32
             - sodium_sys::crypto_aead_xchacha20poly1305_ietf_ABYTES)
@@ -264,11 +268,19 @@ mod tests {
 
         // create bob a new session with alice and carol
         let bobs_session_with_alice = bob_acc
-            .create_outbound_session(alice_skp.public(), alice_ekp.public(), &alices_one_time_keys[0])
+            .create_outbound_session(
+                alice_skp.public(),
+                alice_ekp.public(),
+                &alices_one_time_keys[0],
+            )
             .expect("failed to create outbound session");
 
         let bobs_session_with_carol = bob_acc
-            .create_outbound_session(carol_skp.public(), carol_ekp.public(), &carols_one_time_keys[0])
+            .create_outbound_session(
+                carol_skp.public(),
+                carol_ekp.public(),
+                &carols_one_time_keys[0],
+            )
             .expect("failed to create outbound session");
 
         // create a group with alice and carol

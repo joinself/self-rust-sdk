@@ -1,4 +1,7 @@
-use crate::{error::SelfError, keypair::signing::{KeyPair, PublicKey}};
+use crate::{
+    error::SelfError,
+    keypair::signing::{KeyPair, PublicKey},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -112,7 +115,7 @@ pub struct Authentication {
 
 impl Authentication {
     pub fn new(issued_by: &KeyPair, expires: i64, signed_data: &[u8]) -> Authentication {
-        let mut token = vec![0; 1 + 1 + 20 + 4 + 8 +  33 + 64];
+        let mut token = vec![0; 1 + 1 + 20 + 4 + 8 + 33 + 64];
 
         token[0] = TOKEN_VERSION_1;
         token[1] = TOKEN_KIND_AUTHENTICATION;
@@ -154,12 +157,12 @@ pub struct Authorization {
 
 impl Authorization {
     pub fn new(
-        issued_by: &PublicKey,
+        issued_by: &KeyPair,
         intended_for: Option<&PublicKey>,
         expires: i64,
     ) -> Authorization {
         if let Some(for_identifier) = intended_for {
-            let mut token = vec![0; 1 + 1 + 4 + 20 + 8 + 32 + 32 + 1 + 64];
+            let mut token = vec![0; 1 + 1 + 4 + 20 + 8 + 33 + 33 + 1 + 64];
             let mut options: i32 = 0;
             options |= FLAG_BEARER_PROMISCUOUS as i32;
 
@@ -168,30 +171,24 @@ impl Authorization {
             token[2..6].copy_from_slice(&options.to_le_bytes());
             crate::crypto::random::read_bytes(&mut token[6..26]);
             token[26..34].copy_from_slice(&expires.to_le_bytes());
-            token[34] = SIGNER_ALG_ED25519;
-            token[35..67].copy_from_slice(&issued_by.id());
-            token[67..99].copy_from_slice(&for_identifier.id());
+            token[34..67].copy_from_slice(issued_by.address());
+            token[67..100].copy_from_slice(for_identifier.address());
 
-            if let PublicKey::Owned(signer) = issued_by {
-                let signature = signer.sign(&token[0..99]);
-                token[99..163].copy_from_slice(&signature);
-            };
+            let signature = issued_by.sign(&token[0..100]);
+            token[100..164].copy_from_slice(&signature);
 
             Authorization { token }
         } else {
-            let mut token = vec![0; 1 + 1 + 4 + 20 + 8 + 32 + 1 + 64];
+            let mut token = vec![0; 1 + 1 + 4 + 20 + 8 + 33 + 1 + 64];
 
             token[0] = TOKEN_VERSION_1;
             token[1] = TOKEN_KIND_AUTHORIZATION;
             crate::crypto::random::read_bytes(&mut token[6..26]);
             token[26..34].copy_from_slice(&expires.to_le_bytes());
-            token[34] = SIGNER_ALG_ED25519;
-            token[35..67].copy_from_slice(&issued_by.id());
+            token[34..67].copy_from_slice(issued_by.address());
 
-            if let PublicKey::Owned(signer) = issued_by {
-                let signature = signer.sign(&token[0..67]);
-                token[67..131].copy_from_slice(&signature);
-            };
+            let signature = issued_by.sign(&token[0..67]);
+            token[67..131].copy_from_slice(&signature);
 
             Authorization { token }
         }
@@ -210,8 +207,7 @@ pub struct Delegation {
 
 impl Delegation {
     pub fn signer(&self) -> PublicKey {
-        PublicKey::from_bytes(&self.token[35..67])
-                .expect("already validated public key")
+        PublicKey::from_bytes(&self.token[35..67]).expect("already validated public key")
     }
 }
 
@@ -222,12 +218,10 @@ pub struct Subscription {
 
 impl Subscription {
     pub fn signer(&self) -> PublicKey {
-        PublicKey::from_bytes(&self.token[35..67])
-                .expect("already validated public key")
+        PublicKey::from_bytes(&self.token[35..67]).expect("already validated public key")
     }
 
     pub fn bearer(&self) -> PublicKey {
-        PublicKey::from_bytes(&self.token[35..67])
-                .expect("already validated public key")
+        PublicKey::from_bytes(&self.token[35..67]).expect("already validated public key")
     }
 }

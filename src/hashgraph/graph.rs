@@ -166,7 +166,7 @@ impl Hashgraph {
                     return Err(SelfError::HashgraphInvalidSignatureLength);
                 }
 
-                let signers_pk = PublicKey::from_address(signer)?;
+                let signers_pk = PublicKey::from_bytes(signer)?;
                 if !signers_pk.verify(&self.sig_buf, signature_data) {
                     return Err(SelfError::HashgraphInvalidSignature);
                 }
@@ -577,7 +577,7 @@ impl Hashgraph {
                             role: action.roles(),
                             from: op.timestamp(),
                         }],
-                        public_key: PublicKey::from_bytes(id, Algorithm::Ed25519)?,
+                        public_key: PublicKey::from_bytes(id)?,
                         created_at: op.timestamp(),
                         revoked_at: 0,
                         incoming: Vec::new(),
@@ -642,7 +642,7 @@ impl Hashgraph {
                             role: action.roles(),
                             from: op.timestamp(),
                         }],
-                        public_key: PublicKey::from_bytes(id, Algorithm::Ed25519)?,
+                        public_key: PublicKey::from_bytes(id)?,
                         created_at: op.timestamp(),
                         revoked_at: 0,
                         incoming: Vec::new(),
@@ -880,22 +880,22 @@ impl Hashgraph {
         };
 
         if root.revoked_at == 0 {
-            if references.contains_key(&root.public_key.id()) {
+            if references.contains_key(root.public_key.address()) {
                 return Err(SelfError::HashgraphDuplicateAction);
             }
 
-            references.insert(root.public_key.id(), (Actionable::Recover, 0));
+            references.insert(root.public_key.address().to_vec(), (Actionable::Recover, 0));
         }
 
         for child in root.collect().iter() {
             let borrowed_child = child.as_ref().borrow();
 
             if borrowed_child.revoked_at == 0 {
-                if references.contains_key(&borrowed_child.public_key.id()) {
+                if references.contains_key(borrowed_child.public_key.address()) {
                     return Err(SelfError::HashgraphDuplicateAction);
                 }
 
-                references.insert(root.public_key.id(), (Actionable::Recover, 0));
+                references.insert(root.public_key.address().to_vec(), (Actionable::Recover, 0));
             }
         }
 
@@ -938,22 +938,28 @@ impl Hashgraph {
         };
 
         if root.revoked_at == 0 {
-            if references.contains_key(&root.public_key.id()) {
+            if references.contains_key(root.public_key.address()) {
                 return Err(SelfError::HashgraphDuplicateAction);
             }
 
-            references.insert(root.public_key.id(), (Actionable::Deactivate, 0));
+            references.insert(
+                root.public_key.address().to_vec(),
+                (Actionable::Deactivate, 0),
+            );
         }
 
         for child in root.collect().iter() {
             let borrowed_child = child.as_ref().borrow();
 
             if borrowed_child.revoked_at == 0 {
-                if references.contains_key(&borrowed_child.public_key.id()) {
+                if references.contains_key(borrowed_child.public_key.address()) {
                     return Err(SelfError::HashgraphDuplicateAction);
                 }
 
-                references.insert(root.public_key.id(), (Actionable::Deactivate, 0));
+                references.insert(
+                    root.public_key.address().to_vec(),
+                    (Actionable::Deactivate, 0),
+                );
             }
         }
 

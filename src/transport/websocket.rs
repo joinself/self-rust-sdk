@@ -28,11 +28,8 @@ pub struct Response {
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<
-    dyn Fn(&PublicKey, &PublicKey, &KeyPair, u64, &[u8]) -> Option<Response>
-        + Sync
-        + Send,
->;
+pub type OnMessageCB =
+    Arc<dyn Fn(&PublicKey, &PublicKey, &PublicKey, u64, &[u8]) -> Option<Response> + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
@@ -232,15 +229,18 @@ impl Websocket {
 
                                     drop(active_subs);
 
-                                    let sender = PublicKey::from_bytes(sender).expect("server has forwarded a message with a bad sender");
-                                    let recipient = PublicKey::from_bytes(recipient).expect("server has forwarded a message with a bad recipient");
+                                    let sender = PublicKey::from_bytes(sender)
+                                        .expect("server has forwarded a message with a bad sender");
+                                    let recipient = PublicKey::from_bytes(recipient).expect(
+                                        "server has forwarded a message with a bad recipient",
+                                    );
 
                                     let content = payload.content().unwrap();
 
                                     if let Some(response) = on_message(
                                         &sender,
                                         &recipient,
-                                        &subscriber,
+                                        subscriber.public(),
                                         payload.sequence(),
                                         content,
                                     ) {
@@ -535,9 +535,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
     for subscription in subscriptions {
-        let as_address = subscription
-            .as_address
-            .clone();
+        let as_address = subscription.as_address.clone();
 
         let inbox = builder.create_vector(subscription.to_address.address());
 
@@ -875,8 +873,8 @@ mod tests {
                         details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
                         details_sig_buf[1..details_len + 1].copy_from_slice(details_buf);
 
-                        let pk = PublicKey::from_bytes(signer)
-                            .expect("Subscription signer invalid");
+                        let pk =
+                            PublicKey::from_bytes(signer).expect("Subscription signer invalid");
 
                         if !(pk.verify(&details_sig_buf, sig)) {
                             err(&mut socket_tx, event.id().unwrap(), b"bad auth").await;
@@ -992,8 +990,7 @@ mod tests {
 
         for subscription in subscriptions {
             let recipient = PublicKey::Referenced(
-                PublicKey::from_bytes(&subscription)
-                    .expect("Invalid subscription public key"),
+                PublicKey::from_bytes(&subscription).expect("Invalid subscription public key"),
             );
             msg(&mut socket_tx, &sender, &recipient, 0, b"test message").await;
         }

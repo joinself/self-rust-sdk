@@ -6,8 +6,8 @@ use crate::crypto::{
     session::Session,
 };
 use crate::error::SelfError;
-use crate::keypair::{exchange, signing};
 use crate::keypair::Usage;
+use crate::keypair::{exchange, signing};
 use crate::token::Token;
 use crate::transport::websocket::Subscription;
 
@@ -16,7 +16,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub type QueuedInboxMessage = (signing::PublicKey, signing::PublicKey, signing::PublicKey, u64, Vec<u8>);
+pub type QueuedInboxMessage = (
+    signing::PublicKey,
+    signing::PublicKey,
+    signing::PublicKey,
+    u64,
+    Vec<u8>,
+);
 pub type QueuedOutboxMessage = (signing::PublicKey, signing::PublicKey, u64, Vec<u8>);
 
 pub struct Storage {
@@ -24,7 +30,10 @@ pub struct Storage {
     acache: HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
     gcache: HashMap<signing::PublicKey, Rc<RefCell<Group>>>,
     kcache: HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
-    scache: HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
 }
 
 // TODO verify this is actually safe
@@ -298,7 +307,10 @@ impl Storage {
         Ok(())
     }
 
-    pub fn keypair_signing_get(&mut self, address: &signing::PublicKey) -> Result<Arc<signing::KeyPair>, SelfError> {
+    pub fn keypair_signing_get(
+        &mut self,
+        address: &signing::PublicKey,
+    ) -> Result<Arc<signing::KeyPair>, SelfError> {
         // check if the key exists in the cache
         if let Some(kp) = self.kcache.get(address) {
             return Ok(kp.clone());
@@ -324,10 +336,8 @@ impl Storage {
         account: Option<Account>,
         persistent: bool,
     ) -> Result<(), SelfError> {
-        let address = signing::PublicKey::from_public_key(&keypair.public());
-
         // check if the key exists in the cache
-        if self.kcache.contains_key(&address) {
+        if self.kcache.contains_key(keypair.public()) {
             return Err(SelfError::KeychainKeyExists);
         };
 
@@ -337,7 +347,7 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
         // create an record for the address we are creating a keypair with
-        address_create(&mut txn, &address)?;
+        address_create(&mut txn, keypair.public())?;
 
         // create the keypair
         if let Some(olm_account) = account {
@@ -351,7 +361,7 @@ impl Storage {
                     ?5
                 );",
                 (
-                    &address.to_vec(),
+                    &keypair.address(),
                     usage.kind(),
                     persistent,
                     &keypair.encode(),
@@ -369,7 +379,7 @@ impl Storage {
                     ?4
                 );",
                 (
-                    &address.to_vec(),
+                    keypair.address(),
                     usage.kind(),
                     persistent,
                     &keypair.encode(),
@@ -381,7 +391,8 @@ impl Storage {
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
-        self.kcache.insert(address, Arc::new(keypair.clone()));
+        self.kcache
+            .insert(keypair.public().to_owned(), Arc::new(keypair.clone()));
 
         Ok(())
     }
@@ -480,7 +491,7 @@ impl Storage {
 
             // TODO correctly load 'from' value
             subscriptions.push(Subscription {
-                to_address: signing::PublicKey::from_public_key(&keypair.public()),
+                to_address: keypair.public().to_owned(),
                 as_address: keypair,
                 from: 0,
                 token: None,
@@ -560,15 +571,14 @@ impl Storage {
                     ?5
                 );",
                 (
-                    &from_address.to_vec(),
-                    &for_address.to_vec(),
+                    from_address.address(),
+                    for_address.address(),
                     token.kind(),
                     expires,
                     &encoded_token,
                 ),
             )
-            .expect("f");
-            //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         } else {
             txn.execute(
                 "INSERT INTO tokens (from_address, purpose, expires, token) 
@@ -578,10 +588,14 @@ impl Storage {
                     ?3,
                     ?4
                 );",
-                (&from_address.to_vec(), token.kind(), expires, &encoded_token),
+                (
+                    from_address.address(),
+                    token.kind(),
+                    expires,
+                    &encoded_token,
+                ),
             )
-            .expect("f");
-            //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         }
 
         txn.commit()
@@ -662,17 +676,14 @@ impl Storage {
         let sequence: u64 = row.get(3).unwrap();
         let message: Vec<u8> = row.get(4).unwrap();
 
-        let as_address =
-            signing::PublicKey::from_bytes(&as_address)?;
-        let with_address =
-            signing::PublicKey::from_bytes(&with_address)?;
-        let via_address =
-            signing::PublicKey::from_bytes(&via_address)?;
+        let as_address = signing::PublicKey::from_bytes(&as_address)?;
+        let with_address = signing::PublicKey::from_bytes(&with_address)?;
+        let via_address = signing::PublicKey::from_bytes(&via_address)?;
 
         Ok(Some((
-            signing::PublicKey::from_public_key(&as_address),
-            signing::PublicKey::from_public_key(&with_address),
-            signing::PublicKey::from_public_key(&via_address),
+            as_address,
+            with_address,
+            via_address,
             sequence,
             message,
         )))
@@ -716,17 +727,10 @@ impl Storage {
         let sequence: u64 = row.get(2).unwrap();
         let message: Vec<u8> = row.get(3).unwrap();
 
-        let as_address =
-            signing::PublicKey::from_bytes(&as_address)?;
-        let via_address =
-            signing::PublicKey::from_bytes(&via_address)?;
+        let as_address = signing::PublicKey::from_bytes(&as_address)?;
+        let via_address = signing::PublicKey::from_bytes(&via_address)?;
 
-        Ok(Some((
-            signing::PublicKey::from_public_key(&as_address),
-            signing::PublicKey::from_public_key(&via_address),
-            sequence,
-            message,
-        )))
+        Ok(Some((as_address, via_address, sequence, message)))
     }
 
     pub fn inbox_dequeue(
@@ -760,9 +764,9 @@ impl Storage {
                 WHERE i1.address = ?1 AND i2.address = ?2 AND i3.address = ?3
             ) AND sequence = ?4;",
             (
-                &subscriber.as_ref().unwrap_or(recipient).to_vec(),
-                &sender.to_vec(),
-                via_address.to_vec(),
+                subscriber.as_ref().unwrap_or(recipient).address(),
+                sender.address(),
+                via_address.address(),
                 sequence,
             ),
         )
@@ -795,7 +799,7 @@ impl Storage {
                     i2.id = connections.via_address
                 WHERE i1.address = ?1 AND i2.address = ?2
             ) AND sequence = ?3;",
-            (&sender.to_vec(), &recipient.to_vec(), sequence),
+            (sender.address(), recipient.address(), sequence),
         )
         .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -809,7 +813,7 @@ impl Storage {
         &mut self,
         recipient: &signing::PublicKey,
         plaintext: &[u8],
-    ) -> Result<(signing::PublicKey, u64, Vec<u8>), SelfError> {
+    ) -> Result<(signing::KeyPair, u64, Vec<u8>), SelfError> {
         let mut txn = self
             .conn
             .transaction()
@@ -857,13 +861,18 @@ impl Storage {
             sender_address,
             sender_exchange,
             recipient_address,
-            subscriber_address,
+            subscriber_address.clone(),
             ciphertext,
         )?;
 
         // queue to inbox
         inbox_queue(
-            &mut txn, sender_address, recipient_address, subscriber_address, sequence, &plaintext,
+            &mut txn,
+            sender_address,
+            recipient_address,
+            subscriber_address,
+            sequence,
+            &plaintext,
         )?;
 
         txn.commit()
@@ -876,7 +885,7 @@ impl Storage {
 fn address_create(txn: &mut Transaction, address: &signing::PublicKey) -> Result<(), SelfError> {
     txn.execute(
         "INSERT OR IGNORE INTO addresses (address) VALUES (?1)",
-        [&address.to_vec()],
+        [address.address()],
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -886,7 +895,10 @@ fn address_create(txn: &mut Transaction, address: &signing::PublicKey) -> Result
 fn connection_add(
     txn: &mut Transaction,
     acache: &mut HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
-    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
     as_address: &signing::PublicKey,
     with_address: &signing::PublicKey,
     with_exchange: &exchange::PublicKey,
@@ -916,9 +928,9 @@ fn connection_add(
             )
         );",
         (
-            &as_address.to_vec(),
-            &with_address.to_vec(),
-            &via_address.unwrap_or(with_address).to_vec(),
+            as_address.address(),
+            with_address.address(),
+            via_address.unwrap_or(with_address).address(),
         ),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -927,7 +939,11 @@ fn connection_add(
         let account_rc = account_get(txn, acache, as_address)?;
 
         let mut account = account_rc.as_ref().borrow_mut();
-        let session = account.create_outbound_session(with_address.clone(), with_exchange.clone(), one_time_key)?;
+        let session = account.create_outbound_session(
+            with_address.clone(),
+            with_exchange.clone(),
+            one_time_key,
+        )?;
         drop(account);
 
         account_update(txn, &account_rc)?;
@@ -974,9 +990,9 @@ fn inbox_queue(
             ?5
         );",
         (
-            &subscriber.as_ref().unwrap_or(recipient).to_vec(),
-            &sender.to_vec(),
-            via_address.to_vec(),
+            subscriber.as_ref().unwrap_or(recipient).address(),
+            sender.address(),
+            via_address.address(),
             sequence,
             plaintext,
         ),
@@ -988,7 +1004,7 @@ fn inbox_queue(
 
 fn outbox_queue(
     txn: &mut Transaction,
-    sender: &signing::PublicKey,
+    sender: &signing::KeyPair,
     recipient: &signing::PublicKey,
     sequence: u64,
     ciphertext: &[u8],
@@ -1007,7 +1023,7 @@ fn outbox_queue(
             ?3,
             ?4
         );",
-        (&sender.to_vec(), &recipient.to_vec(), sequence, ciphertext),
+        (sender.address(), recipient.address(), sequence, ciphertext),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -1018,10 +1034,13 @@ fn encrypt_for(
     txn: &mut Transaction,
     gcache: &mut HashMap<signing::PublicKey, Rc<RefCell<Group>>>,
     kcache: &mut HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
-    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
     recipient: &signing::PublicKey,
     plaintext: &[u8],
-) -> Result<(signing::PublicKey, u64, Vec<u8>), SelfError> {
+) -> Result<(signing::KeyPair, u64, Vec<u8>), SelfError> {
     // search cache for group
     let group = match group_get(txn, gcache, kcache, scache, recipient)? {
         Some(group) => group,
@@ -1039,15 +1058,20 @@ fn encrypt_for(
     }
 
     // update connection transmit sequence
-    metrics_update_sequence(txn, &group.to_vec(), recipient, group.sequence())?;
+    metrics_update_sequence(txn, &group.as_address(), recipient, group.sequence())?;
 
-    Ok((group.as_address(), group.sequence(), ciphertext))
+    let as_keypair = keypair_signing_get(txn, kcache, &group.as_address())?;
+
+    Ok((as_keypair.as_ref().to_owned(), group.sequence(), ciphertext))
 }
 
 fn decrypt_from(
     txn: &mut Transaction,
     acache: &mut HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
-    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
     sender_address: &signing::PublicKey,
     sender_exchange: &exchange::PublicKey,
     recipient_address: &signing::PublicKey,
@@ -1058,7 +1082,11 @@ fn decrypt_from(
 
     let via_address = subscriber_address.clone().and(Some(recipient_address));
     let as_address = subscriber_address.unwrap_or(recipient_address.clone());
-    let session_address = (as_address.clone(), sender_address.clone());
+    let session_address = (
+        as_address.clone(),
+        sender_address.clone(),
+        sender_exchange.clone(),
+    );
 
     let session = match scache.get(&session_address) {
         Some(session) => {
@@ -1075,8 +1103,11 @@ fn decrypt_from(
                     let account_rc = account_get(txn, acache, recipient_address)?;
                     let mut account = account_rc.as_ref().borrow_mut();
 
-                    let new_session =
-                        account.create_inbound_session(sender_address.clone(), sender_exchange.clone(), &one_time_message)?;
+                    let new_session = account.create_inbound_session(
+                        sender_address.clone(),
+                        sender_exchange.clone(),
+                        &one_time_message,
+                    )?;
 
                     // remove the one time keys used to create the session and update the account
                     account.remove_one_time_keys(&new_session)?;
@@ -1103,8 +1134,11 @@ fn decrypt_from(
                             let account_rc = account_get(txn, acache, recipient_address)?;
                             let mut account = account_rc.as_ref().borrow_mut();
 
-                            let inbound_session = account
-                                .create_inbound_session(sender_address, sender_exchange, &one_time_message)?;
+                            let inbound_session = account.create_inbound_session(
+                                sender_address.to_owned(),
+                                sender_exchange.to_owned(),
+                                &one_time_message,
+                            )?;
 
                             // remove the one time keys used to create the session and update the account
                             account.remove_one_time_keys(&inbound_session)?;
@@ -1138,7 +1172,7 @@ fn decrypt_from(
     };
 
     // construct a temporary group to decrypt the message with
-    let mut group = Group::new(recipient_address, 0);
+    let mut group = Group::new(recipient_address.to_owned(), 0);
     group.add_participant(session.clone());
 
     let plaintext = group.decrypt_group_message(sender_address, &mut group_message);
@@ -1155,7 +1189,10 @@ fn group_get(
     txn: &mut Transaction,
     gcache: &mut HashMap<signing::PublicKey, Rc<RefCell<Group>>>,
     kcache: &mut HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
-    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
     group_address: &signing::PublicKey,
 ) -> Result<Option<Rc<RefCell<Group>>>, SelfError> {
     // check the cache first to determine if there is an existing group that can be reused to send messages
@@ -1175,15 +1212,11 @@ fn group_get(
 
         let session_address = session.as_ref().borrow().as_address().clone();
 
-        let as_address = keypair_signing_get(
-            txn, 
-            kcache, 
-            &session_address
-        )?
-        .as_ref()
-        .clone();
+        let as_address = keypair_signing_get(txn, kcache, &session_address)?
+            .as_ref()
+            .clone();
 
-        let mut group = Group::new(as_address, sequence);
+        let mut group = Group::new(as_address.public().to_owned(), sequence);
 
         for s in &sessions {
             group.add_participant(s.clone());
@@ -1201,7 +1234,10 @@ fn group_get(
 
 fn group_get_session(
     txn: &mut Transaction,
-    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
     group_address: &signing::PublicKey,
 ) -> Result<Vec<Rc<RefCell<Session>>>, SelfError> {
     let mut sessions = Vec::new();
@@ -1225,7 +1261,7 @@ fn group_get_session(
         )
         .expect("failed to prepare statement");
 
-    let mut rows = match statement.query([&group_address.id()]) {
+    let mut rows = match statement.query([group_address.address()]) {
         Ok(rows) => rows,
         Err(_) => return Err(SelfError::MessagingDestinationUnknown),
     };
@@ -1244,8 +1280,13 @@ fn group_get_session(
 
         let as_address = signing::PublicKey::from_bytes(&as_address)?;
         let with_address = signing::PublicKey::from_bytes(&with_address)?;
+        let with_exchange = exchange::PublicKey::from_bytes(&with_exchange)?;
 
-        let session_address = (as_address.clone(), with_address.clone());
+        let session_address = (
+            as_address.clone(),
+            with_address.clone(),
+            with_exchange.clone(),
+        );
 
         // check to see if we have an existing session in our cache that we can use directly
         let session = scache.get(&session_address);
@@ -1294,7 +1335,7 @@ fn account_get(
         )
         .expect("failed to prepare statement");
 
-    let mut rows = match statement.query([&account_address.id()]) {
+    let mut rows = match statement.query([account_address.address()]) {
         Ok(rows) => rows,
         Err(_) => return Err(SelfError::MessagingDestinationUnknown),
     };
@@ -1327,7 +1368,7 @@ fn account_update(txn: &mut Transaction, account: &Rc<RefCell<Account>>) -> Resu
         "UPDATE keypairs
         SET olm_account = ?2
         WHERE for_address = (SELECT id FROM addresses WHERE address=?1);",
-        (&account.address().id(), &encoded_account),
+        (&account.address(), &encoded_account),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -1338,7 +1379,7 @@ fn keypair_signing_get(
     txn: &mut Transaction,
     kcache: &mut HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
     address: &signing::PublicKey,
-) -> Result<Arc<signing::PublicKey>, SelfError> {
+) -> Result<Arc<signing::KeyPair>, SelfError> {
     // check if the key exists in the cache
     if let Some(kp) = kcache.get(address) {
         return Ok(kp.clone());
@@ -1353,7 +1394,7 @@ fn keypair_signing_get(
         )
         .expect("failed to prepare statement");
 
-    let mut rows = match statement.query([&address.id()]) {
+    let mut rows = match statement.query([address.address()]) {
         Ok(rows) => rows,
         Err(err) => {
             println!("{}", err);
@@ -1380,7 +1421,10 @@ fn keypair_signing_get(
 
 fn session_get(
     txn: &mut Transaction,
-    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
     session_address: &(signing::PublicKey, signing::PublicKey, exchange::PublicKey),
 ) -> Result<Option<Rc<RefCell<Session>>>, SelfError> {
     let mut statement = txn
@@ -1396,7 +1440,8 @@ fn session_get(
         )
         .expect("failed to prepare statement");
 
-    let mut rows = match statement.query([&session_address.0.id(), &session_address.1.id()]) {
+    let mut rows = match statement.query([session_address.0.address(), session_address.1.address()])
+    {
         Ok(rows) => rows,
         Err(_) => return Err(SelfError::MessagingDestinationUnknown),
     };
@@ -1426,7 +1471,10 @@ fn session_get(
 
 fn session_create(
     txn: &mut Transaction,
-    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<
+        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
+        Rc<RefCell<Session>>,
+    >,
     session: &Rc<RefCell<Session>>,
 ) -> Result<(), SelfError> {
     let session_ref = session.as_ref().borrow();
@@ -1434,6 +1482,7 @@ fn session_create(
     let session_address = (
         session_ref.as_address().clone(),
         session_ref.with_address().clone(),
+        session_ref.with_exchange().clone(),
     );
 
     address_create(txn, session_ref.with_address())?;
@@ -1448,13 +1497,14 @@ fn session_create(
             ?5
         );",
         (
-            &session_ref.as_address().id(),
-            &session_ref.with_address().id(),
+            session_ref.as_address().address(),
+            session_ref.with_address().address(),
             session_ref.sequence_tx(),
             session_ref.sequence_rx(),
             encoded_session,
         ),
-    ).map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+    )
+    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
     scache.insert(session_address, session.clone());
 
@@ -1471,8 +1521,8 @@ fn session_update(txn: &mut Transaction, session: &Rc<RefCell<Session>>) -> Resu
         WHERE as_address = (SELECT id FROM addresses WHERE address=?1)
         AND with_address = (SELECT id FROM addresses WHERE address=?2);",
         (
-            &session.as_address().id(),
-            &session.with_address().id(),
+            session.as_address().address(),
+            session.with_address().address(),
             session.sequence_tx(),
             session.sequence_rx(),
             encoded_session,
@@ -1495,7 +1545,7 @@ fn metrics_create(
                 (SELECT id FROM addresses WHERE address = ?2),
                 0
             );",
-        (&as_address.id(), &with_address.id()),
+        (as_address.address(), with_address.address()),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -1519,7 +1569,7 @@ fn metrics_get_sequence(
         )
         .expect("failed to prepare statement");
 
-    let mut rows = match statement.query([&as_address.id(), &with_address.id()]) {
+    let mut rows = match statement.query([as_address.address(), with_address.address()]) {
         Ok(rows) => rows,
         Err(_) => return Err(SelfError::MessagingDestinationUnknown),
     };
@@ -1546,7 +1596,7 @@ fn metrics_update_sequence(
         SET sequence = ?3
         WHERE as_address = (SELECT id FROM addresses WHERE address=?1)
         AND with_address = (SELECT id FROM addresses WHERE address=?2);",
-        (&as_address.id(), &with_address.id(), sequence),
+        (as_address.address(), with_address.address(), sequence),
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -1589,7 +1639,9 @@ mod tests {
         storage
             .transaction(|txn| {
                 let mut statement = txn
-                    .prepare("SELECT with_address, olm_session FROM sessions WHERE with_address = ?1")
+                    .prepare(
+                        "SELECT with_address, olm_session FROM sessions WHERE with_address = ?1",
+                    )
                     .expect("failed to prepare statement");
 
                 let mut rows = statement.query([bob_id]).expect("failed to execute query");
@@ -1656,7 +1708,13 @@ mod tests {
 
         // create a connection for the group
         storage
-            .connection_add(&alice_ed25519_pk, &group_ed25519_pk, &group_x25519_pk, None, None)
+            .connection_add(
+                &alice_ed25519_pk,
+                &group_ed25519_pk,
+                &group_x25519_pk,
+                None,
+                None,
+            )
             .expect("failed to create alices connection with group");
 
         // create connections with members of the group
@@ -1683,14 +1741,8 @@ mod tests {
         storage
             .transaction(|txn| {
                 // queue a message intended for the group
-                outbox_queue(
-                    txn,
-                    &alice_address,
-                    &group_address,
-                    0,
-                    b"hello everyone",
-                )
-                .expect("failed to queue");
+                outbox_queue(txn, &alice_address, &group_address, 0, b"hello everyone")
+                    .expect("failed to queue");
 
                 true
             })
@@ -1768,7 +1820,13 @@ mod tests {
 
         // create a connection for the group
         storage
-            .connection_add(&alice_ed25519_pk, &group_ed25519_pk, &group_x25519_pk, None, None)
+            .connection_add(
+                &alice_ed25519_pk,
+                &group_ed25519_pk,
+                &group_x25519_pk,
+                None,
+                None,
+            )
             .expect("failed to create alices connection with group");
 
         // create connections with members of the group
@@ -1835,12 +1893,7 @@ mod tests {
 
         // dequeue the item
         storage
-            .inbox_dequeue(
-                &bob_address,
-                &group_address,
-                Some(alice_address),
-                sequence,
-            )
+            .inbox_dequeue(&bob_address, &group_address, Some(alice_address), sequence)
             .expect("dequeue failed");
 
         // there should be no items left in the queue
@@ -1863,7 +1916,7 @@ mod tests {
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
         let bob_x25519_pk = bob_ekp.public();
-        let bob_acc = Account::new(bob_skp.clone(), bob_ekp);        
+        let bob_acc = Account::new(bob_skp.clone(), bob_ekp);
 
         storage
             .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
@@ -1904,7 +1957,11 @@ mod tests {
             .expect("one time key message missing");
 
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_ed25519_pk.clone(), bob_x25519_pk.clone(), &one_time_message)
+            .create_inbound_session(
+                bob_ed25519_pk.clone(),
+                bob_x25519_pk.clone(),
+                &one_time_message,
+            )
             .expect("failed to create inbound session");
 
         // remove the one time key from alices account
@@ -1982,7 +2039,11 @@ mod tests {
             .expect("one time key message missing");
 
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_ed25519_pk.clone(), bob_x25519_pk.clone(), &one_time_message)
+            .create_inbound_session(
+                bob_ed25519_pk.clone(),
+                bob_x25519_pk.clone(),
+                &one_time_message,
+            )
             .expect("failed to create inbound session");
 
         // remove the one time key from alices account

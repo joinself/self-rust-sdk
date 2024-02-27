@@ -21,11 +21,7 @@ pub fn token_create_authorization(
 
     // create a token that never expires
     // TODO make configurable
-    let token = Token::Authorization(crate::token::Authorization::new(
-        signing_key.public(),
-        to,
-        expires,
-    ));
+    let token = Token::Authorization(crate::token::Authorization::new(&signing_key, to, expires));
 
     // add the token to our own storage so we can track who has been given access
     // this allows us to know which tokens will need to be rotated/revoked, etc

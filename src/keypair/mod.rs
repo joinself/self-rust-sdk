@@ -19,7 +19,6 @@ pub enum Usage {
     Exchange,
 }
 
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum Roles {
     Verification,
