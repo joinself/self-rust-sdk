@@ -13,14 +13,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::SelfError;
-use crate::identifier::Address;
-use crate::keypair::signing::KeyPair;
+use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::protocol::messaging;
 use crate::token::Token;
 
 pub struct Response {
-    pub from: Address,
-    pub to: Address,
+    pub from: PublicKey,
+    pub to: PublicKey,
     pub sequence: u64,
     pub content: Vec<u8>,
     pub tokens: Option<Vec<Token>>,
@@ -30,7 +29,7 @@ pub struct Response {
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 pub type OnMessageCB = Arc<
-    dyn Fn(&Address, &Address, &KeyPair, u64, &[u8]) -> Option<Response>
+    dyn Fn(&PublicKey, &PublicKey, &KeyPair, u64, &[u8]) -> Option<Response>
         + Sync
         + Send,
 >;
@@ -52,7 +51,7 @@ enum Event {
 
 #[derive(Clone)]
 pub struct Subscription {
-    pub to_address: Address,
+    pub to_address: PublicKey,
     pub as_address: KeyPair,
     pub from: i64,
     pub token: Option<Token>,
@@ -119,7 +118,7 @@ impl Websocket {
                 subs_connect
                     .lock()
                     .await
-                    .insert(sub.to_address.to_vec(), sub.clone());
+                    .insert(sub.to_address.address().to_vec(), sub.clone());
             }
 
             let result = match connect_async(&endpoint).await {
@@ -233,8 +232,8 @@ impl Websocket {
 
                                     drop(active_subs);
 
-                                    let sender = Address::from_bytes(sender).expect("server has forwarded a message with a bad sender");
-                                    let recipient = Address::from_bytes(recipient).expect("server has forwarded a message with a bad recipient");
+                                    let sender = PublicKey::from_bytes(sender).expect("server has forwarded a message with a bad sender");
+                                    let recipient = PublicKey::from_bytes(recipient).expect("server has forwarded a message with a bad recipient");
 
                                     let content = payload.content().unwrap();
 
@@ -367,7 +366,7 @@ impl Websocket {
     pub fn send(
         &self,
         from: &KeyPair,
-        to: &Address,
+        to: &PublicKey,
         sequence: u64,
         content: &[u8],
         tokens: Option<Vec<Token>>,
@@ -404,15 +403,15 @@ impl Websocket {
 
 pub fn assemble_payload(
     from: &KeyPair,
-    to: &Address,
+    to: &PublicKey,
     sequence: u64,
     content: &[u8],
 ) -> Result<Vec<u8>, SelfError> {
     // TODO pool/reuse these builders
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
-    let sender = builder.create_vector(&from.id());
-    let recipient = builder.create_vector(&to.to_vec());
+    let sender = builder.create_vector(from.address());
+    let recipient = builder.create_vector(to.address());
     let content = builder.create_vector(content);
 
     let payload = messaging::Payload::create(
@@ -540,7 +539,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
             .as_address
             .clone();
 
-        let inbox = builder.create_vector(&subscription.to_address.to_vec());
+        let inbox = builder.create_vector(subscription.to_address.address());
 
         let details = messaging::SubscriptionDetails::create(
             &mut builder,
@@ -566,7 +565,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
         let mut signer: Option<WIPOffset<Vector<u8>>> = None;
 
         if subscription.token.is_some() {
-            signer = Some(builder.create_vector(&subscription.as_address.to_address_bytes()));
+            signer = Some(builder.create_vector(subscription.as_address.address()));
         }
 
         sigs.push(messaging::Signature::create(
@@ -730,15 +729,15 @@ mod tests {
 
     async fn msg<S>(
         socket_tx: &mut SplitSink<WebSocketStream<S>, Message>,
-        from: &Address,
-        to: &Address,
+        from: &PublicKey,
+        to: &PublicKey,
         sequence: u64,
         content: &[u8],
     ) where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let owned_identifier = match from {
-            Address::Owned(owned) => owned,
+            PublicKey::Owned(owned) => owned,
             _ => return,
         };
 
@@ -876,7 +875,7 @@ mod tests {
                         details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
                         details_sig_buf[1..details_len + 1].copy_from_slice(details_buf);
 
-                        let pk = PublicKey::from_bytes(signer, crate::keypair::Algorithm::Ed25519)
+                        let pk = PublicKey::from_bytes(signer)
                             .expect("Subscription signer invalid");
 
                         if !(pk.verify(&details_sig_buf, sig)) {
@@ -989,11 +988,11 @@ mod tests {
 
         ack(&mut socket_tx, event.id().unwrap()).await;
 
-        let sender = Address::from_public_key(&KeyPair::new().public());
+        let sender = PublicKey::from_public_key(&KeyPair::new().public());
 
         for subscription in subscriptions {
-            let recipient = Address::Referenced(
-                PublicKey::from_bytes(&subscription, crate::keypair::Algorithm::Ed25519)
+            let recipient = PublicKey::Referenced(
+                PublicKey::from_bytes(&subscription)
                     .expect("Invalid subscription public key"),
             );
             msg(&mut socket_tx, &sender, &recipient, 0, b"test message").await;
@@ -1059,7 +1058,7 @@ mod tests {
         let (rt, msg_rx) = test_server();
 
         let alice_kp = crate::keypair::signing::KeyPair::new();
-        let alice_id = Address::Owned(alice_kp);
+        let alice_id = PublicKey::Owned(alice_kp);
 
         let subs = vec![Subscription {
             to_address: alice_id.clone(),
@@ -1069,7 +1068,7 @@ mod tests {
         }];
 
         let bob_kp = crate::keypair::signing::KeyPair::new();
-        let bob_id = Address::Referenced(bob_kp.public());
+        let bob_id = PublicKey::Referenced(bob_kp.public());
 
         let callbacks = Callbacks {
             on_connect: None,

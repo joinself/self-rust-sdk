@@ -1,8 +1,6 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
-use crate::identifier::Identifier;
-use crate::keypair::exchange::KeyPair as ExchangeKeyPair;
-use crate::keypair::signing::KeyPair as SigningKeyPair;
+use crate::keypair::{exchange, signing};
 
 use olm_sys::*;
 use serde::Deserialize;
@@ -11,7 +9,6 @@ use std::collections::HashMap;
 
 pub struct Account {
     account: *mut OlmAccount,
-    identifier: Identifier,
 }
 
 #[derive(Deserialize)]
@@ -20,8 +17,7 @@ struct OneTimeKeys {
 }
 
 impl Account {
-    pub fn new(signing_keypair: SigningKeyPair, exchange_keypair: ExchangeKeyPair) -> Account {
-        let identifier = Identifier::Owned(signing_keypair.clone());
+    pub fn new(signing_keypair: signing::KeyPair, exchange_keypair: exchange::KeyPair) -> Account {
         let mut ed25519_secret_key = signing_keypair.to_vec();
         let mut ed25519_public_key = signing_keypair.public().id();
         let mut curve25519_secret_key = exchange_keypair.to_vec();
@@ -42,13 +38,12 @@ impl Account {
 
             Account {
                 account,
-                identifier,
             }
         }
     }
 
     pub fn from_pickle(
-        identifier: Identifier,
+        with_address: signing::PublicKey,
         pickle: &mut [u8],
         password: Option<&[u8]>,
     ) -> Result<Account, SelfError> {
@@ -73,17 +68,12 @@ impl Account {
 
             let account = Account {
                 account,
-                identifier,
             };
 
             account.last_error()?;
 
             Ok(account)
         }
-    }
-
-    pub fn identifier(&self) -> &Identifier {
-        &self.identifier
     }
 
     pub fn one_time_keys(&self) -> Vec<Vec<u8>> {
@@ -188,17 +178,13 @@ impl Account {
 
     pub fn create_inbound_session(
         &mut self,
-        with_identifier: Identifier,
+        with_address: signing::PublicKey,
+        with_exchange: exchange::PublicKey,
         one_time_message: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key = match with_identifier.clone() {
-            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
-            Identifier::Referenced(pk) => pk.to_exchange_key()?,
-        };
+        let identity_key_buf = base64::encode_config(with_exchange.id(), base64::STANDARD_NO_PAD);
 
-        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
-
-        let session = Session::new(self.identifier.clone(), with_identifier);
+        let session = Session::new(self.identifier.clone(), with_address, with_exchange);
 
         unsafe {
             let mut one_time_message_buf = one_time_message.to_owned();
@@ -220,17 +206,13 @@ impl Account {
 
     pub fn create_outbound_session(
         &mut self,
-        with_identifier: Identifier,
+        with_address: signing::PublicKey,
+        with_exchange: exchange::PublicKey,
         one_time_key: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key = match with_identifier.clone() {
-            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
-            Identifier::Referenced(pk) => pk.to_exchange_key()?,
-        };
+        let identity_key_buf = base64::encode_config(with_exchange.id(), base64::STANDARD_NO_PAD);
 
-        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
-
-        let session = Session::new(self.identifier.clone(), with_identifier);
+        let session = Session::new(self.identifier.clone(), with_address, with_exchange);
 
         unsafe {
             let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());

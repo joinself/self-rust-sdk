@@ -16,7 +16,18 @@ pub enum Usage {
     Identifier,
     Link,
     Messaging,
-    Recovery,
+    Exchange,
+}
+
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum Roles {
+    Verification,
+    Authentication,
+    Assertion,
+    Invocation,
+    Delegation,
+    Exchange,
 }
 
 impl Usage {
@@ -26,7 +37,7 @@ impl Usage {
             Usage::Identifier => 2,
             Usage::Link => 3,
             Usage::Messaging => 4,
-            Usage::Recovery => 5,
+            Usage::Exchange => 5,
         }
     }
 }

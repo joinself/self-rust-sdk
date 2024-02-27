@@ -25,7 +25,7 @@ Holds records on persistent identities that have been witnessed or interacted wi
 
 ### Operations
 
-Holds public key operations tied to persistent identifiers. It is linked to an identifier via it's autoincrementing primary key.
+Holds public key operations tied to identities. It is linked to an identifier via it's autoincrementing primary key.
 
 Clients will persist these operations forever (unless manually removed), to both improve lookup performance and to ensure clients can keep server responses honest.
 
@@ -36,9 +36,9 @@ If there are no matches for the identitiy, or there are existing records that ma
 As clients persist these operations, it allows them to validate that the server is being honest about the records it returns. If the server produces new operations that depend on tampered history that the client has already witnessed, signautures and previous hashes will not match, allowing clients to mark servers as compromised/untrustworthy.
 
 
-### Identifiers
+### Addresses
 
-Holds records of public key address identifiers that have been witnessed or interacted with. 
+Holds records of public key address addresses that have been witnessed or interacted with. 
 
 This is essentially the main table, as public keys serve as an address by which things are routed and entities are connected, etc.
 
@@ -50,7 +50,7 @@ The clients account will use this table to retrieve keys to sign messages or sta
 
 ### Connections
 
-Holds records of other identifiers/addresses that the account has mutually connected with, including membership to groups.
+Holds records of other addresses that the account has mutually connected with, including membership to groups.
 
 ### Sessions
 
@@ -118,7 +118,7 @@ Holds an epehemeral queue of messages that are scheduled to or have been sent to
 # Use DBML to define your database structure
 # Docs: https://www.dbml.org/docs
 
-Table identifiers {
+Table addresses {
   id integer [primary key]
   identifier blob
 }
@@ -191,16 +191,16 @@ Table outbox {
   message blob
 }
 
-Ref: keypairs.for_identifier > identifiers.id
-Ref: operations.on_identifier > identifiers.id
-Ref: connections.as_identifier > identifiers.id
-Ref: connections.via_identifier > identifiers.id
-Ref: connections.with_identifier > identifiers.id
-Ref: sessions.as_identifier > identifiers.id
-Ref: sessions.with_identifier > identifiers.id
-Ref: credentials.from_identifier > identifiers.id
-Ref: credentials.about_identifier > identifiers.id
-Ref: tokens.from_identifier > identifiers.id
+Ref: keypairs.for_identifier > addresses.id
+Ref: operations.on_identifier > addresses.id
+Ref: connections.as_identifier > addresses.id
+Ref: connections.via_identifier > addresses.id
+Ref: connections.with_identifier > addresses.id
+Ref: sessions.as_identifier > addresses.id
+Ref: sessions.with_identifier > addresses.id
+Ref: credentials.from_identifier > addresses.id
+Ref: credentials.about_identifier > addresses.id
+Ref: tokens.from_identifier > addresses.id
 Ref: inbox.connection > connections.id
 Ref: outbox.connection > connections.id
 ```

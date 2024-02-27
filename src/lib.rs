@@ -4,7 +4,6 @@ pub mod account;
 pub mod crypto;
 pub mod error;
 pub mod hashgraph;
-pub mod identifier;
 pub mod keypair;
 pub mod message;
 pub mod protocol;

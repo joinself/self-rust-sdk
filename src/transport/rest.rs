@@ -3,7 +3,7 @@ use reqwest::Url;
 
 use crate::crypto::pow::ProofOfWork;
 use crate::error::SelfError;
-use crate::identifier::Identifier;
+use crate::keypair::signing::KeyPair;
 use crate::token::{Authentication, Token};
 
 pub struct Rest {
@@ -27,7 +27,7 @@ impl Rest {
     pub fn get(
         &self,
         url: &str,
-        authenticate_as: Option<&Identifier>,
+        authenticate_as: Option<&KeyPair>,
         authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
@@ -45,7 +45,7 @@ impl Rest {
         &self,
         url: &str,
         body: &[u8],
-        authenticate_as: Option<&Identifier>,
+        authenticate_as: Option<&KeyPair>,
         authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
@@ -63,7 +63,7 @@ impl Rest {
         &self,
         url: &str,
         body: &[u8],
-        authenticate_as: Option<&Identifier>,
+        authenticate_as: Option<&KeyPair>,
         authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
@@ -80,7 +80,7 @@ impl Rest {
     pub fn delete(
         &self,
         url: &str,
-        authenticate_as: Option<&Identifier>,
+        authenticate_as: Option<&KeyPair>,
         authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
@@ -99,7 +99,7 @@ impl Rest {
         method: reqwest::Method,
         url: &str,
         body: Option<&[u8]>,
-        authenticate_as: Option<&Identifier>,
+        authenticate_as: Option<&KeyPair>,
         authorization: Option<&Token>,
         pow: bool,
     ) -> Result<Response, SelfError> {
@@ -165,7 +165,7 @@ impl Rest {
 
     fn authentication(
         &self,
-        authenticate_as: &Identifier,
+        authenticate_as: &KeyPair,
         method: &str,
         request_url: &str,
         headers: &mut reqwest::header::HeaderMap,

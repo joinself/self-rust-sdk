@@ -6,8 +6,7 @@ use crate::crypto::{
     session::Session,
 };
 use crate::error::SelfError;
-use crate::identifier::Address;
-use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::keypair::{exchange, signing};
 use crate::keypair::Usage;
 use crate::token::Token;
 use crate::transport::websocket::Subscription;
@@ -17,15 +16,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub type QueuedInboxMessage = (Address, Address, Address, u64, Vec<u8>);
-pub type QueuedOutboxMessage = (Address, Address, u64, Vec<u8>);
+pub type QueuedInboxMessage = (signing::PublicKey, signing::PublicKey, signing::PublicKey, u64, Vec<u8>);
+pub type QueuedOutboxMessage = (signing::PublicKey, signing::PublicKey, u64, Vec<u8>);
 
 pub struct Storage {
     conn: Connection,
-    acache: HashMap<Address, Rc<RefCell<Account>>>,
-    gcache: HashMap<Address, Rc<RefCell<Group>>>,
-    kcache: HashMap<Address, Arc<KeyPair>>,
-    scache: HashMap<(Address, Address), Rc<RefCell<Session>>>,
+    acache: HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
+    gcache: HashMap<signing::PublicKey, Rc<RefCell<Group>>>,
+    kcache: HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
+    scache: HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
 }
 
 // TODO verify this is actually safe
@@ -56,7 +55,7 @@ impl Storage {
             scache: HashMap::new(),
         };
 
-        storage.setup_addresss_table()?;
+        storage.setup_addresses_table()?;
         storage.setup_keypairs_table()?;
         storage.setup_operations_table()?;
         storage.setup_connections_table()?;
@@ -70,7 +69,7 @@ impl Storage {
         Ok(storage)
     }
 
-    fn setup_addresss_table(&mut self) -> Result<(), SelfError> {
+    fn setup_addresses_table(&mut self) -> Result<(), SelfError> {
         self.conn
             .execute(
                 "CREATE TABLE addresses (
@@ -95,8 +94,7 @@ impl Storage {
                 "CREATE TABLE keypairs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     for_address INTEGER NOT NULL,
-                    usage INTEGER NOT NULL,
-                    persistent BOOL NOT NULL,
+                    roles INTEGER NOT NULL,
                     revoked_at INTEGER,
                     keypair BLOB NOT NULL,
                     olm_account BLOB
@@ -162,6 +160,7 @@ impl Storage {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     as_address INTEGER NOT NULL,
                     with_address INTEGER NOT NULL,
+                    with_exchange INTEGER NOT NULL,
                     sequence_tx INTEGER NOT NULL,
                     sequence_rx INTEGER NOT NULL,
                     olm_session BLOB NOT NULL
@@ -299,7 +298,7 @@ impl Storage {
         Ok(())
     }
 
-    pub fn keypair_get(&mut self, address: &Address) -> Result<Arc<KeyPair>, SelfError> {
+    pub fn keypair_signing_get(&mut self, address: &signing::PublicKey) -> Result<Arc<signing::KeyPair>, SelfError> {
         // check if the key exists in the cache
         if let Some(kp) = self.kcache.get(address) {
             return Ok(kp.clone());
@@ -310,7 +309,7 @@ impl Storage {
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        let keypair = keypair_get(&mut txn, &mut self.kcache, address)?;
+        let keypair = keypair_signing_get(&mut txn, &mut self.kcache, address)?;
 
         txn.commit()
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
@@ -318,14 +317,14 @@ impl Storage {
         Ok(keypair)
     }
 
-    pub fn keypair_create(
+    pub fn keypair_signing_create(
         &mut self,
         usage: Usage,
-        keypair: &KeyPair,
+        keypair: &signing::KeyPair,
         account: Option<Account>,
         persistent: bool,
     ) -> Result<(), SelfError> {
-        let address = Address::from_public_key(&keypair.public());
+        let address = signing::PublicKey::from_public_key(&keypair.public());
 
         // check if the key exists in the cache
         if self.kcache.contains_key(&address) {
@@ -387,11 +386,11 @@ impl Storage {
         Ok(())
     }
 
-    pub fn keypair_list(
+    pub fn keypair_signing_list(
         &mut self,
         usage: Option<Usage>,
         persistent: bool,
-    ) -> Result<Vec<KeyPair>, SelfError> {
+    ) -> Result<Vec<signing::KeyPair>, SelfError> {
         let mut keypairs = Vec::new();
 
         let txn = self
@@ -418,7 +417,7 @@ impl Storage {
             {
                 // let for_address: Vec<u8> = row.get(0).unwrap();
                 let keypair: Vec<u8> = row.get(0).unwrap();
-                let keypair = KeyPair::decode(&keypair)?;
+                let keypair = signing::KeyPair::decode(&keypair)?;
                 keypairs.push(keypair);
             }
         } else {
@@ -440,7 +439,7 @@ impl Storage {
             {
                 // let for_address: Vec<u8> = row.get(0).unwrap();
                 let keypair: Vec<u8> = row.get(0).unwrap();
-                let keypair = KeyPair::decode(&keypair)?;
+                let keypair = signing::KeyPair::decode(&keypair)?;
                 keypairs.push(keypair);
             }
         }
@@ -477,11 +476,11 @@ impl Storage {
             .map_err(|_| SelfError::MessagingDestinationUnknown)?
         {
             let keypair: Vec<u8> = row.get(0).unwrap();
-            let keypair = KeyPair::decode(&keypair)?;
+            let keypair = signing::KeyPair::decode(&keypair)?;
 
             // TODO correctly load 'from' value
             subscriptions.push(Subscription {
-                to_address: Address::from_public_key(&keypair.public()),
+                to_address: signing::PublicKey::from_public_key(&keypair.public()),
                 as_address: keypair,
                 from: 0,
                 token: None,
@@ -515,10 +514,10 @@ impl Storage {
             let keypair: Vec<u8> = row.get(1).unwrap();
             let token: Vec<u8> = row.get(2).unwrap();
 
-            let keypair = KeyPair::decode(&keypair)?;
+            let keypair = signing::KeyPair::decode(&keypair)?;
             let token = Token::decode(&token)?;
 
-            let to_address = Address::from_bytes(&to_address)?;
+            let to_address = signing::PublicKey::from_bytes(&to_address)?;
 
             // TODO de-duplicate keypair serialisation
             // TODO correctly load 'from' value
@@ -535,8 +534,8 @@ impl Storage {
 
     pub fn token_create(
         &mut self,
-        from_address: &Address,
-        for_address: Option<&Address>,
+        from_address: &signing::PublicKey,
+        for_address: Option<&signing::PublicKey>,
         expires: i64,
         token: &Token,
     ) -> Result<(), SelfError> {
@@ -593,9 +592,10 @@ impl Storage {
 
     pub fn connection_add(
         &mut self,
-        as_address: &Address,
-        with_address: &Address,
-        via_address: Option<&Address>,
+        as_address: &signing::PublicKey,
+        with_address: &signing::PublicKey,
+        with_exchange: &exchange::PublicKey,
+        via_address: Option<&signing::PublicKey>,
         one_time_key: Option<&[u8]>,
     ) -> Result<(), SelfError> {
         // get the next item in the inbox to be sent to the server
@@ -610,6 +610,7 @@ impl Storage {
             &mut self.scache,
             as_address,
             with_address,
+            with_exchange,
             via_address,
             one_time_key,
         )?;
@@ -662,16 +663,16 @@ impl Storage {
         let message: Vec<u8> = row.get(4).unwrap();
 
         let as_address =
-            PublicKey::from_bytes(&as_address, crate::keypair::Algorithm::Ed25519)?;
+            signing::PublicKey::from_bytes(&as_address)?;
         let with_address =
-            PublicKey::from_bytes(&with_address, crate::keypair::Algorithm::Ed25519)?;
+            signing::PublicKey::from_bytes(&with_address)?;
         let via_address =
-            PublicKey::from_bytes(&via_address, crate::keypair::Algorithm::Ed25519)?;
+            signing::PublicKey::from_bytes(&via_address)?;
 
         Ok(Some((
-            Address::from_public_key(&as_address),
-            Address::from_public_key(&with_address),
-            Address::from_public_key(&via_address),
+            signing::PublicKey::from_public_key(&as_address),
+            signing::PublicKey::from_public_key(&with_address),
+            signing::PublicKey::from_public_key(&via_address),
             sequence,
             message,
         )))
@@ -716,13 +717,13 @@ impl Storage {
         let message: Vec<u8> = row.get(3).unwrap();
 
         let as_address =
-            PublicKey::from_bytes(&as_address, crate::keypair::Algorithm::Ed25519)?;
+            signing::PublicKey::from_bytes(&as_address)?;
         let via_address =
-            PublicKey::from_bytes(&via_address, crate::keypair::Algorithm::Ed25519)?;
+            signing::PublicKey::from_bytes(&via_address)?;
 
         Ok(Some((
-            Address::from_public_key(&as_address),
-            Address::from_public_key(&via_address),
+            signing::PublicKey::from_public_key(&as_address),
+            signing::PublicKey::from_public_key(&via_address),
             sequence,
             message,
         )))
@@ -730,9 +731,9 @@ impl Storage {
 
     pub fn inbox_dequeue(
         &mut self,
-        sender: &Address,
-        recipient: &Address,
-        subscriber: Option<Address>,
+        sender: &signing::PublicKey,
+        recipient: &signing::PublicKey,
+        subscriber: Option<signing::PublicKey>,
         sequence: u64,
     ) -> Result<(), SelfError> {
         let via_address = if subscriber.is_some() {
@@ -775,8 +776,8 @@ impl Storage {
 
     pub fn outbox_dequeue(
         &mut self,
-        sender: &Address,
-        recipient: &Address,
+        sender: &signing::PublicKey,
+        recipient: &signing::PublicKey,
         sequence: u64,
     ) -> Result<(), SelfError> {
         // remove the messaage from the outbox once it has been confirmed as received by the server
@@ -806,9 +807,9 @@ impl Storage {
 
     pub fn encrypt_and_queue(
         &mut self,
-        recipient: &Address,
+        recipient: &signing::PublicKey,
         plaintext: &[u8],
-    ) -> Result<(Address, u64, Vec<u8>), SelfError> {
+    ) -> Result<(signing::PublicKey, u64, Vec<u8>), SelfError> {
         let mut txn = self
             .conn
             .transaction()
@@ -836,9 +837,10 @@ impl Storage {
 
     pub fn decrypt_and_queue(
         &mut self,
-        sender: &Address,
-        recipient: &Address,
-        subscriber: Option<Address>,
+        sender_address: &signing::PublicKey,
+        sender_exchange: &exchange::PublicKey,
+        recipient_address: &signing::PublicKey,
+        subscriber_address: Option<signing::PublicKey>,
         sequence: u64,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, SelfError> {
@@ -852,15 +854,16 @@ impl Storage {
             &mut txn,
             &mut self.acache,
             &mut self.scache,
-            sender,
-            recipient,
-            subscriber.clone(),
+            sender_address,
+            sender_exchange,
+            recipient_address,
+            subscriber_address,
             ciphertext,
         )?;
 
         // queue to inbox
         inbox_queue(
-            &mut txn, sender, recipient, subscriber, sequence, &plaintext,
+            &mut txn, sender_address, recipient_address, subscriber_address, sequence, &plaintext,
         )?;
 
         txn.commit()
@@ -870,7 +873,7 @@ impl Storage {
     }
 }
 
-fn address_create(txn: &mut Transaction, address: &Address) -> Result<(), SelfError> {
+fn address_create(txn: &mut Transaction, address: &signing::PublicKey) -> Result<(), SelfError> {
     txn.execute(
         "INSERT OR IGNORE INTO addresses (address) VALUES (?1)",
         [&address.to_vec()],
@@ -882,11 +885,12 @@ fn address_create(txn: &mut Transaction, address: &Address) -> Result<(), SelfEr
 
 fn connection_add(
     txn: &mut Transaction,
-    acache: &mut HashMap<Address, Rc<RefCell<Account>>>,
-    scache: &mut HashMap<(Address, Address), Rc<RefCell<Session>>>,
-    as_address: &Address,
-    with_address: &Address,
-    via_address: Option<&Address>,
+    acache: &mut HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
+    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    as_address: &signing::PublicKey,
+    with_address: &signing::PublicKey,
+    with_exchange: &exchange::PublicKey,
+    via_address: Option<&signing::PublicKey>,
     one_time_key: Option<&[u8]>,
 ) -> Result<(), SelfError> {
     address_create(txn, with_address)?;
@@ -923,7 +927,7 @@ fn connection_add(
         let account_rc = account_get(txn, acache, as_address)?;
 
         let mut account = account_rc.as_ref().borrow_mut();
-        let session = account.create_outbound_session(with_address.clone(), one_time_key)?;
+        let session = account.create_outbound_session(with_address.clone(), with_exchange.clone(), one_time_key)?;
         drop(account);
 
         account_update(txn, &account_rc)?;
@@ -941,9 +945,9 @@ fn connection_add(
 
 fn inbox_queue(
     txn: &mut Transaction,
-    sender: &Address,
-    recipient: &Address,
-    subscriber: Option<Address>,
+    sender: &signing::PublicKey,
+    recipient: &signing::PublicKey,
+    subscriber: Option<signing::PublicKey>,
     sequence: u64,
     plaintext: &[u8],
 ) -> Result<(), SelfError> {
@@ -984,8 +988,8 @@ fn inbox_queue(
 
 fn outbox_queue(
     txn: &mut Transaction,
-    sender: &Address,
-    recipient: &Address,
+    sender: &signing::PublicKey,
+    recipient: &signing::PublicKey,
     sequence: u64,
     ciphertext: &[u8],
 ) -> Result<(), SelfError> {
@@ -1012,12 +1016,12 @@ fn outbox_queue(
 
 fn encrypt_for(
     txn: &mut Transaction,
-    gcache: &mut HashMap<Address, Rc<RefCell<Group>>>,
-    kcache: &mut HashMap<Address, Arc<KeyPair>>,
-    scache: &mut HashMap<(Address, Address), Rc<RefCell<Session>>>,
-    recipient: &Address,
+    gcache: &mut HashMap<signing::PublicKey, Rc<RefCell<Group>>>,
+    kcache: &mut HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
+    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    recipient: &signing::PublicKey,
     plaintext: &[u8],
-) -> Result<(Address, u64, Vec<u8>), SelfError> {
+) -> Result<(signing::PublicKey, u64, Vec<u8>), SelfError> {
     // search cache for group
     let group = match group_get(txn, gcache, kcache, scache, recipient)? {
         Some(group) => group,
@@ -1042,23 +1046,24 @@ fn encrypt_for(
 
 fn decrypt_from(
     txn: &mut Transaction,
-    acache: &mut HashMap<Identifier, Rc<RefCell<Account>>>,
-    scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
-    sender: &Identifier,
-    recipient: &Identifier,
-    subscriber: Option<Identifier>,
+    acache: &mut HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
+    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    sender_address: &signing::PublicKey,
+    sender_exchange: &exchange::PublicKey,
+    recipient_address: &signing::PublicKey,
+    subscriber_address: Option<signing::PublicKey>,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, SelfError> {
     let mut group_message = GroupMessage::decode(ciphertext)?;
 
-    let via_address = subscriber.clone().and(Some(recipient));
-    let as_address = subscriber.unwrap_or(recipient.clone());
-    let session_address = (as_address.clone(), sender.clone());
+    let via_address = subscriber_address.clone().and(Some(recipient_address));
+    let as_address = subscriber_address.unwrap_or(recipient_address.clone());
+    let session_address = (as_address.clone(), sender_address.clone());
 
     let session = match scache.get(&session_address) {
         Some(session) => {
             // the senders session is in the cache! check if this is a one time key message
-            if let Some(one_time_message) = group_message.one_time_key_message(recipient) {
+            if let Some(one_time_message) = group_message.one_time_key_message(recipient_address) {
                 // see if this one time message matches the existing session
                 if !session
                     .as_ref()
@@ -1067,11 +1072,11 @@ fn decrypt_from(
                 {
                     // this is a new inbound session, so lets create a new inbound session and
                     // update the existing one
-                    let account_rc = account_get(txn, acache, recipient)?;
+                    let account_rc = account_get(txn, acache, recipient_address)?;
                     let mut account = account_rc.as_ref().borrow_mut();
 
                     let new_session =
-                        account.create_inbound_session(sender.clone(), &one_time_message)?;
+                        account.create_inbound_session(sender_address.clone(), sender_exchange.clone(), &one_time_message)?;
 
                     // remove the one time keys used to create the session and update the account
                     account.remove_one_time_keys(&new_session)?;
@@ -1091,15 +1096,15 @@ fn decrypt_from(
                 Some(session) => session,
                 None => {
                     // the senders session is in the cache! check if this is a one time key message
-                    match group_message.one_time_key_message(recipient) {
+                    match group_message.one_time_key_message(recipient_address) {
                         Some(one_time_message) => {
                             // this is a new inbound session, so lets create a new inbound session and
                             // update the existing one
-                            let account_rc = account_get(txn, acache, recipient)?;
+                            let account_rc = account_get(txn, acache, recipient_address)?;
                             let mut account = account_rc.as_ref().borrow_mut();
 
                             let inbound_session = account
-                                .create_inbound_session(sender.clone(), &one_time_message)?;
+                                .create_inbound_session(sender_address, sender_exchange, &one_time_message)?;
 
                             // remove the one time keys used to create the session and update the account
                             account.remove_one_time_keys(&inbound_session)?;
@@ -1117,7 +1122,8 @@ fn decrypt_from(
                                 acache,
                                 scache,
                                 &as_address,
-                                sender,
+                                sender_address,
+                                sender_exchange,
                                 via_address,
                                 None,
                             )?;
@@ -1132,10 +1138,10 @@ fn decrypt_from(
     };
 
     // construct a temporary group to decrypt the message with
-    let mut group = Group::new(recipient.clone(), 0);
+    let mut group = Group::new(recipient_address, 0);
     group.add_participant(session.clone());
 
-    let plaintext = group.decrypt_group_message(sender, &mut group_message);
+    let plaintext = group.decrypt_group_message(sender_address, &mut group_message);
 
     if plaintext.is_ok() {
         // only update the session if decryption was successful
@@ -1147,10 +1153,10 @@ fn decrypt_from(
 
 fn group_get(
     txn: &mut Transaction,
-    gcache: &mut HashMap<Identifier, Rc<RefCell<Group>>>,
-    kcache: &mut HashMap<Identifier, Arc<KeyPair>>,
-    scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
-    group_address: &Identifier,
+    gcache: &mut HashMap<signing::PublicKey, Rc<RefCell<Group>>>,
+    kcache: &mut HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
+    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    group_address: &signing::PublicKey,
 ) -> Result<Option<Rc<RefCell<Group>>>, SelfError> {
     // check the cache first to determine if there is an existing group that can be reused to send messages
     if let Some(group) = gcache.get(group_address) {
@@ -1169,14 +1175,13 @@ fn group_get(
 
         let session_address = session.as_ref().borrow().as_address().clone();
 
-        let as_address = match session_address {
-            Identifier::Owned(_) => session_address,
-            Identifier::Referenced(_) => Identifier::Owned(
-                keypair_get(txn, kcache, &session_address)?
-                    .as_ref()
-                    .clone(),
-            ),
-        };
+        let as_address = keypair_signing_get(
+            txn, 
+            kcache, 
+            &session_address
+        )?
+        .as_ref()
+        .clone();
 
         let mut group = Group::new(as_address, sequence);
 
@@ -1196,8 +1201,8 @@ fn group_get(
 
 fn group_get_session(
     txn: &mut Transaction,
-    scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
-    group_address: &Identifier,
+    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    group_address: &signing::PublicKey,
 ) -> Result<Vec<Rc<RefCell<Session>>>, SelfError> {
     let mut sessions = Vec::new();
 
@@ -1205,15 +1210,17 @@ fn group_get_session(
     // and join all matching sessions
     let mut statement = txn
         .prepare(
-            "SELECT i2.address, i3.address, s1.sequence_tx, s1.sequence_rx, s1.olm_session FROM connections
+            "SELECT i2.address, i3.address, i4.address, s1.sequence_tx, s1.sequence_rx, s1.olm_session FROM connections
             JOIN addresses i1 ON
                 i1.id = connections.via_address
             JOIN addresses i2 ON
                 i2.id = connections.as_address
             JOIN addresses i3 ON
                 i3.id = connections.with_address
+            JOIN addresses i4 ON
+                i4.id = connections.with_exchange
             JOIN sessions s1 ON
-                i2.id = s1.as_address AND i3.id = s1.with_address
+                i2.id = s1.as_address AND i3.id = s1.with_address AND i4.id = s1.with_exchange
             WHERE i1.address = ?1;",
         )
         .expect("failed to prepare statement");
@@ -1230,19 +1237,13 @@ fn group_get_session(
     {
         let as_address: Vec<u8> = row.get(0).unwrap();
         let with_address: Vec<u8> = row.get(1).unwrap();
-        let sequence_tx: u64 = row.get(2).unwrap();
-        let sequence_rx: u64 = row.get(3).unwrap();
-        let mut olm_session: Vec<u8> = row.get(4).unwrap();
+        let with_exchange: Vec<u8> = row.get(2).unwrap();
+        let sequence_tx: u64 = row.get(3).unwrap();
+        let sequence_rx: u64 = row.get(4).unwrap();
+        let mut olm_session: Vec<u8> = row.get(5).unwrap();
 
-        let as_address = Identifier::Referenced(PublicKey::from_bytes(
-            &as_address,
-            crate::keypair::Algorithm::Ed25519,
-        )?);
-
-        let with_address = Identifier::Referenced(PublicKey::from_bytes(
-            &with_address,
-            crate::keypair::Algorithm::Ed25519,
-        )?);
+        let as_address = signing::PublicKey::from_bytes(&as_address)?;
+        let with_address = signing::PublicKey::from_bytes(&with_address)?;
 
         let session_address = (as_address.clone(), with_address.clone());
 
@@ -1256,6 +1257,7 @@ fn group_get_session(
                 let s = Rc::new(RefCell::new(Session::from_pickle(
                     as_address.clone(),
                     with_address.clone(),
+                    with_exchange.clone(),
                     sequence_tx,
                     sequence_rx,
                     &mut olm_session,
@@ -1276,8 +1278,8 @@ fn group_get_session(
 
 fn account_get(
     txn: &mut Transaction,
-    acache: &mut HashMap<Identifier, Rc<RefCell<Account>>>,
-    account_address: &Identifier,
+    acache: &mut HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
+    account_address: &signing::PublicKey,
 ) -> Result<Rc<RefCell<Account>>, SelfError> {
     if let Some(account) = acache.get(account_address) {
         return Ok(account.clone());
@@ -1332,11 +1334,11 @@ fn account_update(txn: &mut Transaction, account: &Rc<RefCell<Account>>) -> Resu
     Ok(())
 }
 
-fn keypair_get(
+fn keypair_signing_get(
     txn: &mut Transaction,
-    kcache: &mut HashMap<Identifier, Arc<KeyPair>>,
-    address: &Identifier,
-) -> Result<Arc<KeyPair>, SelfError> {
+    kcache: &mut HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
+    address: &signing::PublicKey,
+) -> Result<Arc<signing::PublicKey>, SelfError> {
     // check if the key exists in the cache
     if let Some(kp) = kcache.get(address) {
         return Ok(kp.clone());
@@ -1368,7 +1370,7 @@ fn keypair_get(
     };
 
     let kp_encoded: Vec<u8> = row.get(3).unwrap();
-    let kp = KeyPair::decode(&kp_encoded)?;
+    let kp = signing::KeyPair::decode(&kp_encoded)?;
     let keypair = Arc::new(kp);
 
     kcache.insert(address.clone(), keypair.clone());
@@ -1378,8 +1380,8 @@ fn keypair_get(
 
 fn session_get(
     txn: &mut Transaction,
-    scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
-    session_address: &(Identifier, Identifier),
+    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
+    session_address: &(signing::PublicKey, signing::PublicKey, exchange::PublicKey),
 ) -> Result<Option<Rc<RefCell<Session>>>, SelfError> {
     let mut statement = txn
         .prepare(
@@ -1407,6 +1409,7 @@ fn session_get(
         let session = Rc::new(RefCell::new(Session::from_pickle(
             session_address.0.clone(),
             session_address.1.clone(),
+            session_address.2.clone(),
             sequence_tx,
             sequence_rx,
             &mut encoded_session,
@@ -1423,7 +1426,7 @@ fn session_get(
 
 fn session_create(
     txn: &mut Transaction,
-    scache: &mut HashMap<(Identifier, Identifier), Rc<RefCell<Session>>>,
+    scache: &mut HashMap<(signing::PublicKey, signing::PublicKey), Rc<RefCell<Session>>>,
     session: &Rc<RefCell<Session>>,
 ) -> Result<(), SelfError> {
     let session_ref = session.as_ref().borrow();
@@ -1482,8 +1485,8 @@ fn session_update(txn: &mut Transaction, session: &Rc<RefCell<Session>>) -> Resu
 
 fn metrics_create(
     txn: &mut Transaction,
-    as_address: &Identifier,
-    with_address: &Identifier,
+    as_address: &signing::PublicKey,
+    with_address: &signing::PublicKey,
 ) -> Result<(), SelfError> {
     txn.execute(
         "INSERT INTO metrics (as_address, with_address, sequence)
@@ -1501,8 +1504,8 @@ fn metrics_create(
 
 fn metrics_get_sequence(
     txn: &mut Transaction,
-    as_address: &Identifier,
-    with_address: &Identifier,
+    as_address: &signing::PublicKey,
+    with_address: &signing::PublicKey,
 ) -> Result<u64, SelfError> {
     // get the metrcis (transmission sequence) for the recipient group
     let mut statement = txn
@@ -1534,8 +1537,8 @@ fn metrics_get_sequence(
 
 fn metrics_update_sequence(
     txn: &mut Transaction,
-    as_address: &Identifier,
-    with_address: &Identifier,
+    as_address: &signing::PublicKey,
+    with_address: &signing::PublicKey,
     sequence: u64,
 ) -> Result<(), SelfError> {
     txn.execute(
@@ -1616,7 +1619,7 @@ mod tests {
             .expect("failed to create keypair");
 
         let kp = storage
-            .keypair_get(&Identifier::Owned(kp))
+            .keypair_get(&kp.public())
             .expect("failed to get keypair");
 
         assert!(kp.public().verify(&msg, &sig));
@@ -1627,23 +1630,25 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
+        let alice_x25519_pk = alice_ekp.public();
         let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
+        let bob_x25519_pk = bob_ekp.public();
 
         let carol_skp = crate::keypair::signing::KeyPair::new();
+        let carol_ekp = crate::keypair::exchange::KeyPair::new();
         let carol_ed25519_pk = carol_skp.public();
+        let carol_x25519_pk = carol_ekp.public();
 
         let group_skp = crate::keypair::signing::KeyPair::new();
+        let group_ekp = crate::keypair::exchange::KeyPair::new();
         let group_ed25519_pk = group_skp.public();
-
-        let alice_address = Identifier::Referenced(alice_ed25519_pk);
-        let bob_address = Identifier::Referenced(bob_ed25519_pk);
-        let carol_address = Identifier::Referenced(carol_ed25519_pk);
-        let group_address = Identifier::Referenced(group_ed25519_pk);
+        let group_x25519_pk = group_ekp.public();
 
         storage
             .keypair_create(Usage::Messaging, &alice_skp, Some(alice_acc), true)
@@ -1651,14 +1656,15 @@ mod tests {
 
         // create a connection for the group
         storage
-            .connection_add(&alice_address, &group_address, None, None)
+            .connection_add(&alice_ed25519_pk, &group_ed25519_pk, &group_x25519_pk, None, None)
             .expect("failed to create alices connection with group");
 
         // create connections with members of the group
         storage
             .connection_add(
-                &alice_address,
-                &bob_address,
+                &alice_ed25519_pk,
+                &bob_ed25519_pk,
+                &bob_x25519_pk,
                 Some(&group_address),
                 None,
             )
@@ -1666,8 +1672,9 @@ mod tests {
 
         storage
             .connection_add(
-                &alice_address,
-                &carol_address,
+                &alice_ed25519_pk,
+                &carol_ed25519_pk,
+                &carol_x25519_pk,
                 Some(&group_address),
                 None,
             )
@@ -1734,23 +1741,25 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
+        let alice_x25519_pk = alice_ekp.public();
         let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
+        let bob_x25519_pk = bob_ekp.public();
 
         let carol_skp = crate::keypair::signing::KeyPair::new();
+        let carol_ekp = crate::keypair::exchange::KeyPair::new();
         let carol_ed25519_pk = carol_skp.public();
+        let carol_x25519_pk = carol_ekp.public();
 
         let group_skp = crate::keypair::signing::KeyPair::new();
+        let group_ekp = crate::keypair::exchange::KeyPair::new();
         let group_ed25519_pk = group_skp.public();
-
-        let alice_address = Identifier::Referenced(alice_ed25519_pk);
-        let bob_address = Identifier::Referenced(bob_ed25519_pk);
-        let carol_address = Identifier::Referenced(carol_ed25519_pk);
-        let group_address = Identifier::Referenced(group_ed25519_pk);
+        let group_x25519_pk = group_ekp.public();
 
         // create alices keypair
         storage
@@ -1759,14 +1768,15 @@ mod tests {
 
         // create a connection for the group
         storage
-            .connection_add(&alice_address, &group_address, None, None)
+            .connection_add(&alice_ed25519_pk, &group_ed25519_pk, &group_x25519_pk, None, None)
             .expect("failed to create alices connection with group");
 
         // create connections with members of the group
         storage
             .connection_add(
-                &alice_address,
-                &bob_address,
+                &alice_ed25519_pk,
+                &bob_ed25519_pk,
+                &bob_x25519_pk,
                 Some(&group_address),
                 None,
             )
@@ -1774,8 +1784,9 @@ mod tests {
 
         storage
             .connection_add(
-                &alice_address,
-                &carol_address,
+                &alice_ed25519_pk,
+                &carol_ed25519_pk,
+                &carol_x25519_pk,
                 Some(&group_address),
                 None,
             )
@@ -1843,17 +1854,16 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
-        let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
+        let alice_x25519_pk = alice_ekp.public();
+        let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = bob_skp.to_exchange_key().expect("conversion failed");
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
-        let bob_acc = crate::crypto::account::Account::new(bob_skp.clone(), bob_ekp);
-
-        let alice_address = Identifier::Referenced(alice_ed25519_pk);
-        let bob_address = Identifier::Referenced(bob_ed25519_pk);
+        let bob_x25519_pk = bob_ekp.public();
+        let bob_acc = Account::new(bob_skp.clone(), bob_ekp);        
 
         storage
             .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
@@ -1868,8 +1878,9 @@ mod tests {
         // create bobs connection with alice and create a session from the one time key
         storage
             .connection_add(
-                &bob_address,
-                &alice_address,
+                &bob_ed25519_pk,
+                &alice_ed25519_pk,
+                &alice_x25519_pk,
                 None,
                 Some(&alices_one_time_keys[0]),
             )
@@ -1893,7 +1904,7 @@ mod tests {
             .expect("one time key message missing");
 
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_address.clone(), &one_time_message)
+            .create_inbound_session(bob_ed25519_pk.clone(), bob_x25519_pk.clone(), &one_time_message)
             .expect("failed to create inbound session");
 
         // remove the one time key from alices account
@@ -1925,17 +1936,16 @@ mod tests {
         let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = alice_skp.to_exchange_key().expect("conversion failed");
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
+        let alice_x25519_pk = alice_ekp.public();
         let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = bob_skp.to_exchange_key().expect("conversion failed");
         let bob_ed25519_pk = bob_skp.public();
+        let bob_x25519_pk = bob_ekp.public();
         let bob_acc = crate::crypto::account::Account::new(bob_skp.clone(), bob_ekp);
-
-        let alice_address = Identifier::Referenced(alice_ed25519_pk);
-        let bob_address = Identifier::Referenced(bob_ed25519_pk);
 
         storage
             .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
@@ -1950,8 +1960,9 @@ mod tests {
         // create bobs connection with alice and create a session from the one time key
         storage
             .connection_add(
-                &bob_address,
-                &alice_address,
+                &bob_ed25519_pk,
+                &alice_ed25519_pk,
+                &alice_x25519_pk,
                 None,
                 Some(&alices_one_time_keys[0]),
             )
@@ -1971,7 +1982,7 @@ mod tests {
             .expect("one time key message missing");
 
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_address.clone(), &one_time_message)
+            .create_inbound_session(bob_ed25519_pk.clone(), bob_x25519_pk.clone(), &one_time_message)
             .expect("failed to create inbound session");
 
         // remove the one time key from alices account
@@ -1998,8 +2009,9 @@ mod tests {
         // decrypt message for bob
         let plaintext = storage
             .decrypt_and_queue(
-                &alice_address,
-                &bob_address,
+                &alice_ed25519_pk,
+                &bob_ed25519_pk,
+                &bob_x25519_pk,
                 None,
                 1,
                 &alices_message_for_bob,
