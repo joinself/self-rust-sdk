@@ -1,6 +1,6 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
-use crate::keypair::{exchange, signing};
+use crate::keypair::signing;
 
 use serde::{Deserialize, Serialize};
 
