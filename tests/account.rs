@@ -1,3 +1,4 @@
+/*
 use crossbeam::channel::Sender;
 use self_sdk::{
     account::{Account, MessagingCallbacks},
@@ -706,3 +707,4 @@ fn default_on_response() -> OnResponseCB {
         );
     })
 }
+*/

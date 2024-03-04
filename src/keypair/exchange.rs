@@ -16,7 +16,7 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
-    pub fn import(algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
+    pub fn import(_algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
         let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_public_key) => decoded_public_key,
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
@@ -182,13 +182,15 @@ mod tests {
     #[test]
     fn new() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
     }
 
     #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
 
         // encode and decode the keypair
         let encoded_skp = skp.encode();

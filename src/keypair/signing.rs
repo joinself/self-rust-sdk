@@ -16,7 +16,7 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
-    pub fn import(algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
+    pub fn import(_algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
         let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_public_key) => decoded_public_key,
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
@@ -63,7 +63,7 @@ impl PublicKey {
                 signature.as_ptr(),
                 message.as_ptr(),
                 message.len() as u64,
-                self.bytes.as_ptr(),
+                self.bytes[1..33].as_ptr(),
             ) == 0
         }
     }
@@ -220,13 +220,15 @@ mod tests {
     #[test]
     fn new() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
     }
 
     #[test]
     fn sign_verify() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();
@@ -249,7 +251,8 @@ mod tests {
     #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();

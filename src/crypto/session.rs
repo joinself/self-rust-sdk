@@ -262,11 +262,11 @@ mod tests {
     fn encrypt_and_decrypt() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let mut alice_acc = Account::new(alice_skp, alice_ekp);
+        let mut alice_acc = Account::new(&alice_skp, &alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let mut bob_acc = Account::new(bob_skp, bob_ekp);
+        let mut bob_acc = Account::new(&bob_skp, &bob_ekp);
 
         alice_acc
             .generate_one_time_keys(10)
@@ -277,8 +277,8 @@ mod tests {
         // encrypt a message from bob with a new session to alice
         let mut bobs_session_with_alice = bob_acc
             .create_outbound_session(
-                alice_skp.public(),
-                alice_ekp.public(),
+                alice_skp.public().to_owned(),
+                alice_ekp.public().to_owned(),
                 &alices_one_time_keys[0],
             )
             .expect("failed to create outbound session");
@@ -291,7 +291,11 @@ mod tests {
 
         // create alices session with bob from bobs first message
         let mut alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_skp.public(), bob_ekp.public(), &bobs_message_to_alice_1)
+            .create_inbound_session(
+                bob_skp.public().to_owned(),
+                bob_ekp.public().to_owned(),
+                &bobs_message_to_alice_1,
+            )
             .expect("failed to create inbound session");
 
         // remove the one time key from alices account
@@ -354,11 +358,11 @@ mod tests {
     fn serialize_and_deserialize() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
-        let mut alice_acc = Account::new(alice_skp, alice_ekp);
+        let mut alice_acc = Account::new(&alice_skp, &alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
-        let mut bob_acc = Account::new(bob_skp, bob_ekp);
+        let mut bob_acc = Account::new(&bob_skp, &bob_ekp);
 
         alice_acc
             .generate_one_time_keys(10)
@@ -369,8 +373,8 @@ mod tests {
         // encrypt a message from bob with a new session to alice
         let mut bobs_session_with_alice = bob_acc
             .create_outbound_session(
-                alice_skp.public(),
-                alice_ekp.public(),
+                alice_skp.public().to_owned(),
+                alice_ekp.public().to_owned(),
                 &alices_one_time_keys[0],
             )
             .expect("failed to create outbound session");
@@ -383,7 +387,11 @@ mod tests {
 
         // create alices session with bob from bobs first message
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_skp.public(), bob_ekp.public(), &bobs_message_to_alice_1)
+            .create_inbound_session(
+                bob_skp.public().to_owned(),
+                bob_ekp.public().to_owned(),
+                &bobs_message_to_alice_1,
+            )
             .expect("failed to create inbound session");
 
         let mut alices_session_with_bob_pickle = alices_session_with_bob
@@ -391,9 +399,9 @@ mod tests {
             .expect("failed to pickle session");
 
         let mut alices_session_with_bob = Session::from_pickle(
-            alice_skp.public(),
-            bob_skp.public(),
-            bob_ekp.public(),
+            alice_skp.public().to_owned(),
+            bob_skp.public().to_owned(),
+            bob_ekp.public().to_owned(),
             0,
             0,
             &mut alices_session_with_bob_pickle,

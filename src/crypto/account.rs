@@ -18,7 +18,10 @@ struct OneTimeKeys {
 }
 
 impl Account {
-    pub fn new(signing_keypair: signing::KeyPair, exchange_keypair: exchange::KeyPair) -> Account {
+    pub fn new(
+        signing_keypair: &signing::KeyPair,
+        exchange_keypair: &exchange::KeyPair,
+    ) -> Account {
         let mut ed25519_secret_key = signing_keypair.to_vec();
         let mut ed25519_public_key = signing_keypair.public().public_key_bytes().to_vec();
         let mut curve25519_secret_key = exchange_keypair.to_vec();
@@ -294,14 +297,14 @@ mod tests {
     fn import_account() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        Account::new(skp, ekp);
+        Account::new(&skp, &ekp);
     }
 
     #[test]
     fn one_time_keys() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let mut acc = Account::new(skp, ekp);
+        let mut acc = Account::new(&skp, &ekp);
 
         acc.generate_one_time_keys(100)
             .expect("failed to generate one time keys");
@@ -314,9 +317,9 @@ mod tests {
     fn identity_keys() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let spk = skp.public().id();
-        let epk = ekp.public().id();
-        let acc = Account::new(skp, ekp);
+        let spk = skp.public().public_key_bytes();
+        let epk = ekp.public().public_key_bytes();
+        let acc = Account::new(&skp, &ekp);
 
         let identity_keys_json = acc.identity_keys();
         let json: std::collections::HashMap<String, serde_json::Value> =
@@ -338,10 +341,10 @@ mod tests {
     fn serialize_deserialize() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let spk = skp.public().id();
-        let epk = ekp.public().id();
+        let spk = skp.public().public_key_bytes();
+        let epk = ekp.public().public_key_bytes();
         let idf = skp.public();
-        let acc = Account::new(skp, ekp);
+        let acc = Account::new(&skp, &ekp);
 
         // try pickle with both password and no password
         acc.pickle(None).expect("failed to pickle account");
@@ -349,7 +352,7 @@ mod tests {
             .pickle(Some("my-password".as_bytes()))
             .expect("failed to pickle account");
 
-        let acc = Account::from_pickle(idf, &mut pickle, Some("my-password".as_bytes()))
+        let acc = Account::from_pickle(idf.to_owned(), &mut pickle, Some("my-password".as_bytes()))
             .expect("failed to unpickle account");
 
         let identity_keys_json = acc.identity_keys();
