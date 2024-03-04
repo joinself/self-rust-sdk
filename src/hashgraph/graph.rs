@@ -1497,7 +1497,8 @@ mod tests {
             .execute(operation)
             .expect("operation execution failed");
 
-        let bad_signing_key = KeyPair::from_parts(invocation_key.public(), other_key.secret());
+        let bad_signing_key =
+            KeyPair::from_parts(invocation_key.public().to_owned(), other_key.secret());
 
         let operation = graph
             .create()
@@ -1582,7 +1583,8 @@ mod tests {
             .execute(operation)
             .expect("operation execution failed");
 
-        let bad_signing_key = KeyPair::from_parts(other_key.public(), invocation_key.secret());
+        let bad_signing_key =
+            KeyPair::from_parts(other_key.public().to_owned(), invocation_key.secret());
 
         let operation = graph
             .create()
