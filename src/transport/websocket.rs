@@ -535,8 +535,6 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
     for subscription in subscriptions {
-        let as_address = subscription.as_address.clone();
-
         let inbox = builder.create_vector(subscription.to_address.address());
 
         let details = messaging::SubscriptionDetails::create(
@@ -727,23 +725,18 @@ mod tests {
 
     async fn msg<S>(
         socket_tx: &mut SplitSink<WebSocketStream<S>, Message>,
-        from: &PublicKey,
+        from: &KeyPair,
         to: &PublicKey,
         sequence: u64,
         content: &[u8],
     ) where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        let owned_identifier = match from {
-            PublicKey::Owned(owned) => owned,
-            _ => return,
-        };
-
         // TODO pool/reuse these builders
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
-        let sender = builder.create_vector(&from.id());
-        let recipient = builder.create_vector(&to.id());
+        let sender = builder.create_vector(from.address());
+        let recipient = builder.create_vector(to.address());
         let content = builder.create_vector(content);
 
         let payload = messaging::Payload::create(
@@ -764,7 +757,7 @@ mod tests {
         let mut payload_sig_buf = vec![0; payload.len() + 1];
         payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
         payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
-        let sig = builder.create_vector(&owned_identifier.sign(&payload_sig_buf));
+        let sig = builder.create_vector(&from.sign(&payload_sig_buf));
 
         let signatures = vec![messaging::Signature::create(
             &mut builder,
@@ -905,8 +898,10 @@ mod tests {
                                 // TODO validate token if not handled by decoding step...
                                 // token.validate();
 
-                                (authorized_by, authorized_for) =
-                                    (Some(token.signer().id()), Some(token.bearer().id()));
+                                (authorized_by, authorized_for) = (
+                                    Some(token.signer().address().to_owned()),
+                                    Some(token.bearer().address().to_owned()),
+                                );
                             }
                             _ => {
                                 err(&mut socket_tx, event.id().unwrap(), b"invalid token").await;
@@ -986,7 +981,7 @@ mod tests {
 
         ack(&mut socket_tx, event.id().unwrap()).await;
 
-        let sender = PublicKey::from_public_key(&KeyPair::new().public());
+        let sender = KeyPair::new();
 
         for subscription in subscriptions {
             let recipient =
@@ -1058,7 +1053,7 @@ mod tests {
 
         let subs = vec![Subscription {
             to_address: alice_id.clone(),
-            as_address: alice_kp,
+            as_address: alice_kp.clone(),
             from: crate::time::unix(),
             token: None,
         }];

@@ -16,8 +16,6 @@ const TOKEN_KIND_NOTIFICATION: u8 = 3;
 const TOKEN_KIND_SUBSCRIPTION: u8 = 4;
 const TOKEN_KIND_DELEGATION: u8 = 5;
 
-const SIGNER_ALG_ED25519: u8 = 1;
-
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Token {
     Authentication(Authentication),
