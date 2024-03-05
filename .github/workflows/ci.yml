@@ -15,6 +15,6 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-      - run: apt install protobuf-compiler
+      - run: sudo apt install protobuf-compiler
       - run: cargo clippy --all-targets --all-features
       - run: RUST_BACKTRACE=1 cargo test -- --nocapture --test-threads=1
