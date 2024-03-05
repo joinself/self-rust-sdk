@@ -1,18 +1,18 @@
-use libc::group;
-
 use crate::account::responder::*;
 use crate::account::token::token_create_authorization;
 
 use crate::error::SelfError;
 use crate::hashgraph::Hashgraph;
-use crate::keypair::signing::{self, KeyPair};
-use crate::keypair::{exchange, Usage};
+use crate::keypair::{
+    exchange,
+    signing::{self, KeyPair},
+};
 use crate::message::{
     self, ConnectionRequest, Content, Envelope, GroupInviteRequest, ResponseStatus,
     MESSAGE_TYPE_CHAT_MSG,
 };
 
-use crate::protocol::hashgraph;
+use crate::protocol::hashgraph::{self, Role};
 use crate::storage::Storage;
 use crate::time;
 use crate::token::Token;
@@ -272,13 +272,10 @@ impl Account {
         let operation = graph
             .create()
             .id(identifier_kp.address())
-            .grant_embedded(&assertion_kp.address(), hashgraph::Role::Assertion)
-            .grant_embedded(
-                &authentication_kp.address(),
-                hashgraph::Role::Authentication,
-            )
-            .grant_embedded(&invocation_kp.address(), hashgraph::Role::Invocation)
-            .grant_embedded(&exchange_kp.address(), hashgraph::Role::KeyAgreement)
+            .grant_embedded(assertion_kp.address(), hashgraph::Role::Assertion)
+            .grant_embedded(authentication_kp.address(), hashgraph::Role::Authentication)
+            .grant_embedded(invocation_kp.address(), hashgraph::Role::Invocation)
+            .grant_embedded(exchange_kp.address(), hashgraph::Role::KeyAgreement)
             .sign(&identifier_kp)
             .sign(&assertion_kp)
             .sign(&authentication_kp)
@@ -287,24 +284,29 @@ impl Account {
 
         // create an olm account for the device identifier
         let mut olm_account =
-            crate::crypto::account::Account::new(authentication_kp.clone(), exchange_kp);
+            crate::crypto::account::Account::new(&authentication_kp, &exchange_kp);
         olm_account.generate_one_time_keys(100)?;
 
         // submit public key operation to api
-        rpc.execute(&identifier_kp.address(), &operation)?;
+        rpc.execute(identifier_kp.address(), &operation)?;
 
         // upload prekeys for device key
-        rpc.publish(&identifier_kp.address(), &olm_account.one_time_keys())?;
+        rpc.publish(identifier_kp.address(), &olm_account.one_time_keys())?;
 
         // persist account keys to keychain
         let mut storage = storage.lock().unwrap();
 
-        storage.keypair_signing_create(Usage::Identifier, &identifier_kp, None, true)?;
         storage.keypair_signing_create(
-            Usage::Messaging,
-            &authentication_kp,
+            crate::keypair::Roles::Authentication as u64,
+            identifier_kp.clone(),
+            None,
+        )?;
+        storage.keypair_signing_create(
+            crate::keypair::Roles::Verification as u64
+                | crate::keypair::Roles::Invocation as u64
+                | crate::keypair::Roles::Authentication as u64,
+            authentication_kp,
             Some(olm_account),
-            true,
         )?;
 
         // TODO determine whether it makes sense from a security perspective to store the recover key
@@ -509,7 +511,13 @@ impl Account {
         let mut storage = storage.lock().unwrap();
 
         let as_address = storage.keypair_signing_get(as_address)?;
-        storage.keypair_signing_create(Usage::Group, &group_kp, None, false)?;
+        storage.keypair_signing_create(
+            crate::keypair::Roles::Verification as u64
+                | crate::keypair::Roles::Invocation as u64
+                | crate::keypair::Roles::Authentication as u64,
+            group_kp.clone(),
+            None,
+        )?;
 
         // create tokens for the identifier that will join the group
         websocket.subscribe(vec![Subscription {
