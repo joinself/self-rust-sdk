@@ -885,6 +885,7 @@ fn address_create(txn: &mut Transaction, address: &[u8]) -> Result<(), SelfError
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn connection_add(
     txn: &mut Transaction,
     acache: &mut HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
@@ -1058,6 +1059,7 @@ fn encrypt_for(
     Ok((as_keypair.as_ref().to_owned(), group.sequence(), ciphertext))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decrypt_from(
     txn: &mut Transaction,
     acache: &mut HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
