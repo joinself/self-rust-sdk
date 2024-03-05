@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{error::SelfError, identifier::Identifier, keypair::signing::PublicKey, token::Token};
+use crate::{error::SelfError, keypair::signing::PublicKey, token::Token};
 
 pub enum Request {
     Connection(ConnectionRequest),
@@ -57,8 +57,7 @@ impl GroupInviteRequest {
         ciborium::de::from_reader(data).map_err(|_| SelfError::MessageDecodingInvalid)
     }
 
-    pub fn group_identifier(&self) -> Result<Identifier, SelfError> {
-        let pk = PublicKey::from_bytes(&self.gid, crate::keypair::Algorithm::Ed25519)?;
-        Ok(Identifier::Referenced(pk))
+    pub fn group_identifier(&self) -> Result<PublicKey, SelfError> {
+        PublicKey::from_bytes(&self.gid)
     }
 }

@@ -4,28 +4,19 @@ pub mod signing;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[repr(u8)]
 pub enum Algorithm {
     Ed25519,
     Curve25519,
 }
 
+#[repr(u64)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum Usage {
-    Group,
-    Identifier,
-    Link,
-    Messaging,
-    Recovery,
-}
-
-impl Usage {
-    pub fn kind(&self) -> u8 {
-        match *self {
-            Usage::Group => 1,
-            Usage::Identifier => 2,
-            Usage::Link => 3,
-            Usage::Messaging => 4,
-            Usage::Recovery => 5,
-        }
-    }
+pub enum Roles {
+    Verification = 1 << 1,
+    Authentication = 1 << 2,
+    Assertion = 1 << 3,
+    Invocation = 1 << 4,
+    Delegation = 1 << 5,
+    Exchange = 1 << 6,
 }

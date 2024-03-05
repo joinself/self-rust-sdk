@@ -1,8 +1,6 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
-use crate::identifier::Identifier;
-use crate::keypair::exchange::KeyPair as ExchangeKeyPair;
-use crate::keypair::signing::KeyPair as SigningKeyPair;
+use crate::keypair::{exchange, signing};
 
 use olm_sys::*;
 use serde::Deserialize;
@@ -10,8 +8,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 pub struct Account {
+    address: signing::PublicKey,
     account: *mut OlmAccount,
-    identifier: Identifier,
 }
 
 #[derive(Deserialize)]
@@ -20,12 +18,14 @@ struct OneTimeKeys {
 }
 
 impl Account {
-    pub fn new(signing_keypair: SigningKeyPair, exchange_keypair: ExchangeKeyPair) -> Account {
-        let identifier = Identifier::Owned(signing_keypair.clone());
+    pub fn new(
+        signing_keypair: &signing::KeyPair,
+        exchange_keypair: &exchange::KeyPair,
+    ) -> Account {
         let mut ed25519_secret_key = signing_keypair.to_vec();
-        let mut ed25519_public_key = signing_keypair.public().id();
+        let mut ed25519_public_key = signing_keypair.public().public_key_bytes().to_vec();
         let mut curve25519_secret_key = exchange_keypair.to_vec();
-        let mut curve25519_public_key = exchange_keypair.public().id();
+        let mut curve25519_public_key = exchange_keypair.public().public_key_bytes().to_vec();
 
         unsafe {
             let account_len = olm_account_size();
@@ -40,15 +40,14 @@ impl Account {
                 curve25519_public_key.as_mut_ptr() as *mut libc::c_void,
             );
 
-            Account {
-                account,
-                identifier,
-            }
+            let address = signing_keypair.public().to_owned();
+
+            Account { account, address }
         }
     }
 
     pub fn from_pickle(
-        identifier: Identifier,
+        address: signing::PublicKey,
         pickle: &mut [u8],
         password: Option<&[u8]>,
     ) -> Result<Account, SelfError> {
@@ -71,10 +70,7 @@ impl Account {
                 pickle.len(),
             );
 
-            let account = Account {
-                account,
-                identifier,
-            };
+            let account = Account { account, address };
 
             account.last_error()?;
 
@@ -82,8 +78,8 @@ impl Account {
         }
     }
 
-    pub fn identifier(&self) -> &Identifier {
-        &self.identifier
+    pub fn address(&self) -> &[u8] {
+        self.address.address()
     }
 
     pub fn one_time_keys(&self) -> Vec<Vec<u8>> {
@@ -188,17 +184,14 @@ impl Account {
 
     pub fn create_inbound_session(
         &mut self,
-        with_identifier: Identifier,
+        with_address: signing::PublicKey,
+        with_exchange: exchange::PublicKey,
         one_time_message: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key = match with_identifier.clone() {
-            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
-            Identifier::Referenced(pk) => pk.to_exchange_key()?,
-        };
+        let identity_key_buf =
+            base64::encode_config(with_exchange.public_key_bytes(), base64::STANDARD_NO_PAD);
 
-        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
-
-        let session = Session::new(self.identifier.clone(), with_identifier);
+        let session = Session::new(self.address.clone(), with_address, with_exchange);
 
         unsafe {
             let mut one_time_message_buf = one_time_message.to_owned();
@@ -220,17 +213,14 @@ impl Account {
 
     pub fn create_outbound_session(
         &mut self,
-        with_identifier: Identifier,
+        with_address: signing::PublicKey,
+        with_exchange: exchange::PublicKey,
         one_time_key: &[u8],
     ) -> Result<Session, SelfError> {
-        let identity_key = match with_identifier.clone() {
-            Identifier::Owned(kp) => kp.public().to_exchange_key()?,
-            Identifier::Referenced(pk) => pk.to_exchange_key()?,
-        };
+        let identity_key_buf =
+            base64::encode_config(with_exchange.public_key_bytes(), base64::STANDARD_NO_PAD);
 
-        let identity_key_buf = base64::encode_config(identity_key.id(), base64::STANDARD_NO_PAD);
-
-        let session = Session::new(self.identifier.clone(), with_identifier);
+        let session = Session::new(self.address.clone(), with_address, with_exchange);
 
         unsafe {
             let random_len = olm_create_outbound_session_random_length(session.as_mut_ptr());
@@ -307,14 +297,14 @@ mod tests {
     fn import_account() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        Account::new(skp, ekp);
+        Account::new(&skp, &ekp);
     }
 
     #[test]
     fn one_time_keys() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let mut acc = Account::new(skp, ekp);
+        let mut acc = Account::new(&skp, &ekp);
 
         acc.generate_one_time_keys(100)
             .expect("failed to generate one time keys");
@@ -327,9 +317,9 @@ mod tests {
     fn identity_keys() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let spk = skp.public().id();
-        let epk = ekp.public().id();
-        let acc = Account::new(skp, ekp);
+        let spk = skp.public().public_key_bytes();
+        let epk = ekp.public().public_key_bytes();
+        let acc = Account::new(&skp, &ekp);
 
         let identity_keys_json = acc.identity_keys();
         let json: std::collections::HashMap<String, serde_json::Value> =
@@ -351,10 +341,10 @@ mod tests {
     fn serialize_deserialize() {
         let skp = crate::keypair::signing::KeyPair::new();
         let ekp = crate::keypair::exchange::KeyPair::new();
-        let spk = skp.public().id();
-        let epk = ekp.public().id();
-        let idf = Identifier::Referenced(skp.public());
-        let acc = Account::new(skp, ekp);
+        let spk = skp.public().public_key_bytes();
+        let epk = ekp.public().public_key_bytes();
+        let idf = skp.public();
+        let acc = Account::new(&skp, &ekp);
 
         // try pickle with both password and no password
         acc.pickle(None).expect("failed to pickle account");
@@ -362,7 +352,7 @@ mod tests {
             .pickle(Some("my-password".as_bytes()))
             .expect("failed to pickle account");
 
-        let acc = Account::from_pickle(idf, &mut pickle, Some("my-password".as_bytes()))
+        let acc = Account::from_pickle(idf.to_owned(), &mut pickle, Some("my-password".as_bytes()))
             .expect("failed to unpickle account");
 
         let identity_keys_json = acc.identity_keys();

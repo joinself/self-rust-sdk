@@ -78,10 +78,7 @@ impl SignedContent {
                 return Err(SelfError::MessageUnsupportedSignatureAlgorithm);
             }
 
-            let signer = PublicKey::from_bytes(
-                &sig.protected.header.key_id,
-                crate::keypair::Algorithm::Ed25519,
-            )?;
+            let signer = PublicKey::from_bytes(&sig.protected.header.key_id)?;
 
             sm.verify_signature(index, &Vec::new(), |sig, data| {
                 if signer.verify(data, sig) {
@@ -201,7 +198,7 @@ impl SignedContent {
             // construct a header for the signer
             let mut header = coset::HeaderBuilder::new()
                 .algorithm(iana::Algorithm::EdDSA)
-                .key_id(sig.iss.id());
+                .key_id(sig.iss.address().to_vec());
 
             if let Some(iat) = sig.iat {
                 header = header.value(HeaderLabel::Iat as i64, Value::from(iat));
@@ -237,7 +234,7 @@ impl SignedContent {
         let mut header = coset::HeaderBuilder::new()
             .algorithm(iana::Algorithm::EdDSA)
             .value(HeaderLabel::Iat as i64, Value::from(iat))
-            .key_id(signer.id());
+            .key_id(signer.address().to_vec());
 
         if let Some(exp) = exp {
             header = header.value(HeaderLabel::Exp as i64, Value::from(exp));
@@ -260,7 +257,7 @@ impl SignedContent {
         let signature = signer.sign(&message);
 
         self.signatures.push(Signature {
-            iss: signer.public(),
+            iss: signer.public().clone(),
             iat: Some(iat),
             exp,
             protected: Vec::new(),

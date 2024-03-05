@@ -12,12 +12,11 @@ pub struct KeyPair {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PublicKey {
-    algorithm: Algorithm,
     bytes: Vec<u8>,
 }
 
 impl PublicKey {
-    pub fn import(algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
+    pub fn import(_algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
         let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_public_key) => decoded_public_key,
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
@@ -28,27 +27,29 @@ impl PublicKey {
         }
 
         Ok(PublicKey {
-            algorithm,
             bytes: decoded_public_key,
         })
     }
 
-    pub fn from_bytes(bytes: &[u8], algorithm: Algorithm) -> Result<PublicKey, SelfError> {
-        if bytes.len() < 32 {
+    pub fn from_bytes(bytes: &[u8]) -> Result<PublicKey, SelfError> {
+        if bytes.len() < 33 {
             return Err(SelfError::KeyPairPublicKeyInvalidLength);
         }
 
         Ok(PublicKey {
-            algorithm,
             bytes: bytes.to_vec(),
         })
     }
 
-    pub fn id(&self) -> Vec<u8> {
-        self.bytes.clone()
+    pub fn address(&self) -> &[u8] {
+        &self.bytes
     }
 
-    pub fn encoded_id(&self) -> String {
+    pub fn public_key_bytes(&self) -> &[u8] {
+        &self.bytes[1..33]
+    }
+
+    pub fn to_did_key(&self) -> String {
         self.bytes.encode_hex()
     }
 
@@ -62,26 +63,9 @@ impl PublicKey {
                 signature.as_ptr(),
                 message.as_ptr(),
                 message.len() as u64,
-                self.bytes.as_ptr(),
+                self.bytes[1..33].as_ptr(),
             ) == 0
         }
-    }
-
-    pub fn to_exchange_key(&self) -> Result<crate::keypair::exchange::PublicKey, SelfError> {
-        let mut curve25519_pk =
-            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
-
-        unsafe {
-            if sodium_sys::crypto_sign_ed25519_pk_to_curve25519(
-                curve25519_pk.as_mut_ptr(),
-                self.bytes.as_ptr(),
-            ) != 0
-            {
-                return Err(SelfError::KeyPairConversionFailed);
-            }
-        }
-
-        crate::keypair::exchange::PublicKey::from_bytes(&curve25519_pk, Algorithm::Curve25519)
     }
 }
 
@@ -111,17 +95,21 @@ pub struct SecretKey {
 impl KeyPair {
     pub fn new() -> KeyPair {
         let mut ed25519_pk =
-            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize + 1].into_boxed_slice();
         let mut ed25519_sk =
             vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
 
+        ed25519_pk[0] = crate::keypair::Algorithm::Ed25519 as u8;
+
         unsafe {
-            sodium_sys::crypto_sign_keypair(ed25519_pk.as_mut_ptr(), ed25519_sk.as_mut_ptr());
+            sodium_sys::crypto_sign_keypair(
+                ed25519_pk[1..33].as_mut_ptr(),
+                ed25519_sk.as_mut_ptr(),
+            );
         }
 
         KeyPair {
             public_key: PublicKey {
-                algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
             },
             secret_key: SecretKey {
@@ -130,34 +118,11 @@ impl KeyPair {
         }
     }
 
-    pub fn to_exchange_key(&self) -> Result<crate::keypair::exchange::KeyPair, SelfError> {
-        let mut curve25519_pk =
-            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
-        let mut curve25519_sk =
-            vec![0u8; sodium_sys::crypto_box_SECRETKEYBYTES as usize].into_boxed_slice();
-
-        unsafe {
-            if sodium_sys::crypto_sign_ed25519_sk_to_curve25519(
-                curve25519_sk.as_mut_ptr(),
-                self.secret_key.bytes.as_ptr(),
-            ) != 0
-            {
-                return Err(SelfError::KeyPairConversionFailed);
-            }
-
-            if sodium_sys::crypto_sign_ed25519_pk_to_curve25519(
-                curve25519_pk.as_mut_ptr(),
-                self.public_key.bytes.as_ptr(),
-            ) != 0
-            {
-                return Err(SelfError::KeyPairConversionFailed);
-            }
+    pub fn from_parts(public_key: PublicKey, secret_key: SecretKey) -> KeyPair {
+        KeyPair {
+            public_key,
+            secret_key,
         }
-
-        crate::keypair::exchange::KeyPair::from_bytes(
-            curve25519_pk.to_vec(),
-            curve25519_sk.to_vec(),
-        )
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
@@ -185,13 +150,15 @@ impl KeyPair {
         };
 
         let mut ed25519_pk =
-            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
+            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize + 1].into_boxed_slice();
         let mut ed25519_sk =
             vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
 
+        ed25519_pk[0] = crate::keypair::Algorithm::Ed25519 as u8;
+
         unsafe {
             sodium_sys::crypto_sign_seed_keypair(
-                ed25519_pk.as_mut_ptr(),
+                ed25519_pk[1..33].as_mut_ptr(),
                 ed25519_sk.as_mut_ptr(),
                 seed.as_ptr(),
             );
@@ -199,7 +166,6 @@ impl KeyPair {
 
         Ok(KeyPair {
             public_key: PublicKey {
-                algorithm: Algorithm::Ed25519,
                 bytes: ed25519_pk.to_vec(),
             },
             secret_key: SecretKey {
@@ -208,16 +174,16 @@ impl KeyPair {
         })
     }
 
-    pub fn id(&self) -> Vec<u8> {
-        self.public_key.id()
+    pub fn address(&self) -> &[u8] {
+        self.public_key.address()
     }
 
-    pub fn algorithm(&self) -> Algorithm {
-        self.public_key.algorithm
+    pub fn public(&self) -> &PublicKey {
+        &self.public_key
     }
 
-    pub fn public(&self) -> PublicKey {
-        self.public_key.clone()
+    pub fn secret(&self) -> SecretKey {
+        self.secret_key.clone()
     }
 
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
@@ -254,13 +220,15 @@ mod tests {
     #[test]
     fn new() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
     }
 
     #[test]
     fn sign_verify() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();
@@ -283,7 +251,8 @@ mod tests {
     #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
 
         // sign some data
         let message = "hello".as_bytes();

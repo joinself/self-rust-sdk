@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use super::Content;
-use crate::{error::SelfError, identifier::Identifier};
+use crate::error::SelfError;
+use crate::keypair::signing::PublicKey;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Envelope {
-    pub to: Identifier,
-    pub from: Identifier,
+    pub to: PublicKey,
+    pub from: PublicKey,
     pub sequence: u64,
     pub content: Content,
 }

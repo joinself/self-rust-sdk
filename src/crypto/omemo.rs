@@ -1,6 +1,6 @@
 use crate::crypto::session::Session;
 use crate::error::SelfError;
-use crate::identifier::Identifier;
+use crate::keypair::signing;
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 pub struct Group {
-    as_identifier: Identifier,
+    as_address: signing::PublicKey,
     participants: Vec<Rc<RefCell<Session>>>,
     sequence_tx: u64,
 }
@@ -47,8 +47,8 @@ impl GroupMessage {
         encoded
     }
 
-    pub fn one_time_key_message(&self, recipient: &Identifier) -> Option<Vec<u8>> {
-        match self.recipients.get(&recipient.id()) {
+    pub fn one_time_key_message(&self, recipient: &signing::PublicKey) -> Option<Vec<u8>> {
+        match self.recipients.get(recipient.address()) {
             Some(message) => {
                 if message.mtype != 0 {
                     return None;
@@ -75,16 +75,16 @@ impl GroupMessage {
 }
 
 impl Group {
-    pub fn new(as_identifier: Identifier, sequence_tx: u64) -> Group {
+    pub fn new(as_address: signing::PublicKey, sequence_tx: u64) -> Group {
         Group {
-            as_identifier,
+            as_address,
             participants: Vec::new(),
             sequence_tx,
         }
     }
 
-    pub fn as_identifier(&self) -> Identifier {
-        self.as_identifier.clone()
+    pub fn as_address(&self) -> signing::PublicKey {
+        self.as_address.clone()
     }
 
     pub fn sequence(&self) -> u64 {
@@ -99,9 +99,9 @@ impl Group {
         self.participants.push(session);
     }
 
-    pub fn remove_participant(&mut self, id: &Identifier) {
+    pub fn remove_participant(&mut self, id: &signing::PublicKey) {
         self.participants
-            .retain(|session| !session.borrow().with_identifier().eq(id));
+            .retain(|session| !session.borrow().with_address().eq(id));
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, SelfError> {
@@ -154,7 +154,7 @@ impl Group {
 
             let (mtype, ciphertext) = s.encrypt(&key_and_nonce)?;
 
-            group_message.set_recipient_ciphertext(&s.with_identifier().id(), mtype, &ciphertext);
+            group_message.set_recipient_ciphertext(s.with_address().address(), mtype, &ciphertext);
         }
 
         self.sequence_tx += 1;
@@ -162,21 +162,25 @@ impl Group {
         Ok(group_message)
     }
 
-    pub fn decrypt(&mut self, from: &Identifier, ciphertext: &[u8]) -> Result<Vec<u8>, SelfError> {
+    pub fn decrypt(
+        &mut self,
+        from: &signing::PublicKey,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, SelfError> {
         let mut group_message = GroupMessage::decode(ciphertext)?;
         self.decrypt_group_message(from, &mut group_message)
     }
 
     pub fn decrypt_group_message(
         &mut self,
-        from: &Identifier,
+        from: &signing::PublicKey,
         group_message: &mut GroupMessage,
     ) -> Result<Vec<u8>, SelfError> {
         // TODO error handling
         let sender = match self
             .participants
             .iter()
-            .position(|s| s.borrow().with_identifier().eq(from))
+            .position(|s| s.borrow().with_address().eq(from))
         {
             Some(p) => &mut self.participants[p],
             None => return Err(SelfError::CryptoUnknownGroupParticipant),
@@ -185,7 +189,7 @@ impl Group {
         // TODO error handling
         let message = group_message
             .recipients
-            .get_mut(&self.as_identifier.id())
+            .get_mut(self.as_address.address())
             .unwrap();
         let mut plaintext_len = (group_message.ciphertext.len() as u32
             - sodium_sys::crypto_aead_xchacha20poly1305_ietf_ABYTES)
@@ -226,30 +230,21 @@ impl Group {
 mod tests {
 
     use super::*;
-    use crate::{crypto::account::Account, identifier::Identifier};
+    use crate::crypto::account::Account;
 
     #[test]
     fn encrypt_and_decrypt() {
         let alice_skp = crate::keypair::signing::KeyPair::new();
-        let alice_ekp = alice_skp
-            .to_exchange_key()
-            .expect("can't convert to exchange key");
-        let alice_id = Identifier::Referenced(alice_skp.public());
-        let mut alice_acc = Account::new(alice_skp, alice_ekp);
+        let alice_ekp = crate::keypair::exchange::KeyPair::new();
+        let mut alice_acc = Account::new(&alice_skp, &alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = bob_skp
-            .to_exchange_key()
-            .expect("can't convert to exchange key");
-        let bob_id = Identifier::Owned(bob_skp.clone());
-        let mut bob_acc = Account::new(bob_skp, bob_ekp);
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
+        let mut bob_acc = Account::new(&bob_skp, &bob_ekp);
 
         let carol_skp = crate::keypair::signing::KeyPair::new();
-        let carol_ekp = carol_skp
-            .to_exchange_key()
-            .expect("can't convert to exchange key");
-        let carol_id = Identifier::Referenced(carol_skp.public());
-        let mut carol_acc = Account::new(carol_skp, carol_ekp);
+        let carol_ekp = crate::keypair::exchange::KeyPair::new();
+        let mut carol_acc = Account::new(&carol_skp, &carol_ekp);
 
         // generate one time keys or alice and get one for bob to use
         alice_acc
@@ -267,15 +262,23 @@ mod tests {
 
         // create bob a new session with alice and carol
         let bobs_session_with_alice = bob_acc
-            .create_outbound_session(alice_id.clone(), &alices_one_time_keys[0])
+            .create_outbound_session(
+                alice_skp.public().to_owned(),
+                alice_ekp.public().to_owned(),
+                &alices_one_time_keys[0],
+            )
             .expect("failed to create outbound session");
 
         let bobs_session_with_carol = bob_acc
-            .create_outbound_session(carol_id.clone(), &carols_one_time_keys[0])
+            .create_outbound_session(
+                carol_skp.public().to_owned(),
+                carol_ekp.public().to_owned(),
+                &carols_one_time_keys[0],
+            )
             .expect("failed to create outbound session");
 
         // create a group with alice and carol
-        let mut group = Group::new(bob_id.clone(), 0);
+        let mut group = Group::new(bob_skp.public().to_owned(), 0);
         group.add_participant(Rc::new(RefCell::new(bobs_session_with_alice)));
         group.add_participant(Rc::new(RefCell::new(bobs_session_with_carol)));
 
@@ -287,34 +290,42 @@ mod tests {
 
         // create alices session with bob
         let alices_one_time_message = alices_message_from_bob
-            .one_time_key_message(&alice_id)
+            .one_time_key_message(alice_skp.public())
             .expect("failed to find alice in the recipients");
         let alices_session_with_bob = alice_acc
-            .create_inbound_session(bob_id.clone(), &alices_one_time_message)
+            .create_inbound_session(
+                bob_skp.public().to_owned(),
+                bob_ekp.public().to_owned(),
+                &alices_one_time_message,
+            )
             .expect("failed to create alices session with bob");
 
         // create carols session with bob
         let carols_one_time_message = carols_message_from_bob
-            .one_time_key_message(&carol_id)
+            .one_time_key_message(carol_skp.public())
             .expect("failed to find carol in the recipients");
         let carols_session_with_bob = carol_acc
-            .create_inbound_session(bob_id.clone(), &carols_one_time_message)
+            .create_inbound_session(
+                bob_skp.public().to_owned(),
+                bob_ekp.public().to_owned(),
+                &carols_one_time_message,
+            )
             .expect("failed to create carols session with bob");
 
         // attempt to decrypt the group message intended for alice
-        let mut alices_group = Group::new(alice_id, 0);
+        let mut alices_group = Group::new(alice_skp.public().to_owned(), 0);
         alices_group.add_participant(Rc::new(RefCell::new(alices_session_with_bob)));
         let plaintext = alices_group
-            .decrypt_group_message(&bob_id, &mut alices_message_from_bob)
+            .decrypt_group_message(bob_skp.public(), &mut alices_message_from_bob)
             .expect("failed to decrypt message from bob");
 
         assert_eq!(plaintext, b"hello alice and carol");
 
         // attempt to decrypt the group message intended for alice
-        let mut carols_group = Group::new(carol_id, 0);
+        let mut carols_group = Group::new(carol_skp.public().to_owned(), 0);
         carols_group.add_participant(Rc::new(RefCell::new(carols_session_with_bob)));
         let plaintext = carols_group
-            .decrypt_group_message(&bob_id, &mut carols_message_from_bob)
+            .decrypt_group_message(bob_skp.public(), &mut carols_message_from_bob)
             .expect("failed to decrypt message from bob");
 
         assert_eq!(plaintext, b"hello alice and carol");

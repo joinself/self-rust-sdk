@@ -7,8 +7,8 @@ To update the flatbuffer definitions:
 ```sh
 cd protocol/messaging
 flatc --rust --filename-suffix "" messaging.fbs
-cd protocol/siggraph
-flatc --rust --filename-suffix "" siggraph.fbs
+cd protocol/hashgraph
+flatc --rust --filename-suffix "" hashgraph.fbs
 ```
 
 # testing

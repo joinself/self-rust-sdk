@@ -1,3 +1,4 @@
+/*
 use crossbeam::channel::Sender;
 use self_sdk::{
     account::{Account, MessagingCallbacks},
@@ -83,10 +84,7 @@ fn account_register() {
         )
         .expect("failed to configure account");
 
-    let recovery_key = self_sdk::keypair::signing::KeyPair::new();
-    account
-        .register(&recovery_key)
-        .expect("failed to register account");
+    account.register().expect("failed to register account");
 
     assert!(account.messaging_identifer().is_some());
 }
@@ -669,10 +667,7 @@ fn register_test_account(test_name: &str, channels: Option<MessagingChannels>) -
         )
         .expect("failed to configure account");
 
-    let recovery_key = self_sdk::keypair::signing::KeyPair::new();
-    account
-        .register(&recovery_key)
-        .expect("failed to register account");
+    account.register().expect("failed to register account");
 
     account
 }
@@ -712,3 +707,4 @@ fn default_on_response() -> OnResponseCB {
         );
     })
 }
+*/

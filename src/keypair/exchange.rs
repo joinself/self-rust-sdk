@@ -12,12 +12,11 @@ pub struct KeyPair {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PublicKey {
-    algorithm: Algorithm,
     bytes: Vec<u8>,
 }
 
 impl PublicKey {
-    pub fn import(algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
+    pub fn import(_algorithm: Algorithm, public_key: &str) -> Result<PublicKey, SelfError> {
         let decoded_public_key = match base64::decode_config(public_key, base64::URL_SAFE_NO_PAD) {
             Ok(decoded_public_key) => decoded_public_key,
             Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
@@ -28,29 +27,54 @@ impl PublicKey {
         }
 
         Ok(PublicKey {
-            algorithm,
             bytes: decoded_public_key,
         })
     }
 
-    pub fn from_bytes(bytes: &[u8], algorithm: Algorithm) -> Result<PublicKey, SelfError> {
-        if bytes.len() < 32 {
+    pub fn from_bytes(bytes: &[u8]) -> Result<PublicKey, SelfError> {
+        if bytes.len() < 33 {
             return Err(SelfError::KeyPairPublicKeyInvalidLength);
         }
 
         Ok(PublicKey {
-            algorithm,
             bytes: bytes.to_vec(),
         })
     }
-    pub fn id(&self) -> Vec<u8> {
-        self.bytes.clone()
+
+    pub fn matches(&self, bytes: &[u8]) -> bool {
+        self.bytes.eq(bytes)
+    }
+
+    pub fn address(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn public_key_bytes(&self) -> &[u8] {
+        &self.bytes[1..33]
     }
 
     pub fn encoded_id(&self) -> String {
         self.bytes.encode_hex()
     }
 }
+
+impl std::hash::Hash for PublicKey {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        state.write(&self.bytes);
+        state.finish();
+    }
+}
+
+impl PartialEq for PublicKey {
+    fn eq(&self, other: &PublicKey) -> bool {
+        self.bytes.eq(&other.bytes)
+    }
+}
+
+impl Eq for PublicKey {}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SecretKey {
@@ -60,40 +84,27 @@ pub struct SecretKey {
 impl KeyPair {
     pub fn new() -> KeyPair {
         let mut curve25519_pk =
-            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
+            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize + 1].into_boxed_slice();
         let mut curve25519_sk =
             vec![0u8; sodium_sys::crypto_box_SECRETKEYBYTES as usize].into_boxed_slice();
 
+        curve25519_pk[0] = Algorithm::Curve25519 as u8;
+
         unsafe {
-            sodium_sys::crypto_box_keypair(curve25519_pk.as_mut_ptr(), curve25519_sk.as_mut_ptr());
+            sodium_sys::crypto_box_keypair(
+                curve25519_pk[1..33].as_mut_ptr(),
+                curve25519_sk.as_mut_ptr(),
+            );
         }
 
         KeyPair {
             public_key: PublicKey {
-                algorithm: Algorithm::Curve25519,
                 bytes: curve25519_pk.to_vec(),
             },
             secret_key: SecretKey {
                 bytes: curve25519_sk.to_vec(),
             },
         }
-    }
-
-    pub fn from_bytes(public_key: Vec<u8>, secret_key: Vec<u8>) -> Result<KeyPair, SelfError> {
-        if public_key.len() != sodium_sys::crypto_box_PUBLICKEYBYTES as usize {
-            return Err(SelfError::KeyPairDataIncorrectLength);
-        }
-        if secret_key.len() != sodium_sys::crypto_box_SECRETKEYBYTES as usize {
-            return Err(SelfError::KeyPairDataIncorrectLength);
-        }
-
-        Ok(KeyPair {
-            public_key: PublicKey {
-                algorithm: Algorithm::Curve25519,
-                bytes: public_key,
-            },
-            secret_key: SecretKey { bytes: secret_key },
-        })
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
@@ -121,13 +132,15 @@ impl KeyPair {
         };
 
         let mut curve25519_pk =
-            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize].into_boxed_slice();
+            vec![0u8; sodium_sys::crypto_box_PUBLICKEYBYTES as usize + 1].into_boxed_slice();
         let mut curve25519_sk =
             vec![0u8; sodium_sys::crypto_box_SECRETKEYBYTES as usize].into_boxed_slice();
 
+        curve25519_pk[0] = Algorithm::Curve25519 as u8;
+
         unsafe {
             sodium_sys::crypto_box_seed_keypair(
-                curve25519_pk.as_mut_ptr(),
+                curve25519_pk[1..33].as_mut_ptr(),
                 curve25519_sk.as_mut_ptr(),
                 seed.as_ptr(),
             );
@@ -135,7 +148,6 @@ impl KeyPair {
 
         Ok(KeyPair {
             public_key: PublicKey {
-                algorithm: Algorithm::Curve25519,
                 bytes: curve25519_pk.to_vec(),
             },
             secret_key: SecretKey {
@@ -144,16 +156,12 @@ impl KeyPair {
         })
     }
 
-    pub fn id(&self) -> Vec<u8> {
-        self.public_key.bytes.clone()
+    pub fn address(&self) -> &[u8] {
+        self.public_key.address()
     }
 
-    pub fn algorithm(&self) -> Algorithm {
-        self.public_key.algorithm
-    }
-
-    pub fn public(&self) -> PublicKey {
-        self.public_key.clone()
+    pub fn public(&self) -> &PublicKey {
+        &self.public_key
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
@@ -174,13 +182,15 @@ mod tests {
     #[test]
     fn new() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
     }
 
     #[test]
     fn encode_decode() {
         let skp = KeyPair::new();
-        assert_eq!(skp.public().id().len(), 32);
+        assert_eq!(skp.public().address().len(), 33);
+        assert_eq!(skp.public().public_key_bytes().len(), 32);
 
         // encode and decode the keypair
         let encoded_skp = skp.encode();

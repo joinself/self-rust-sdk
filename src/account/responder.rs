@@ -1,7 +1,7 @@
 use crate::account::token::token_create_authorization;
 use crate::crypto::random_id;
 use crate::error::SelfError;
-use crate::identifier::Identifier;
+use crate::keypair::signing::PublicKey;
 use crate::message::{
     self, ChatDelivered, ChatRead, ConnectionResponse, Content, Envelope, ResponseStatus,
 };
@@ -14,7 +14,7 @@ use std::sync::MutexGuard;
 pub fn connection_request_accept(
     message: &Envelope,
     storage: &mut MutexGuard<Storage>,
-) -> Result<(Identifier, Vec<u8>), SelfError> {
+) -> Result<(PublicKey, Vec<u8>), SelfError> {
     if let Some(payload) = message.content.content_get() {
         let connection_req = message::ConnectionRequest::decode(&payload)?;
 
@@ -68,7 +68,7 @@ pub fn connection_request_accept(
 pub fn connection_request_reject(
     message: &Envelope,
     storage: &mut MutexGuard<Storage>,
-) -> Result<(Identifier, Vec<u8>), SelfError> {
+) -> Result<(PublicKey, Vec<u8>), SelfError> {
     if let Some(payload) = message.content.content_get() {
         let connection_req = message::ConnectionRequest::decode(&payload)?;
 
@@ -117,7 +117,7 @@ pub fn connection_request_reject(
 }
 
 /// build a response to indicate a message has been delivered
-pub fn chat_message_delivered(message: &Envelope) -> Result<(Identifier, Vec<u8>), SelfError> {
+pub fn chat_message_delivered(message: &Envelope) -> Result<(PublicKey, Vec<u8>), SelfError> {
     if let Some(message_id) = message.content.cti_get() {
         let mut msg = Content::new();
         msg.cti_set(&random_id());
@@ -137,7 +137,7 @@ pub fn chat_message_delivered(message: &Envelope) -> Result<(Identifier, Vec<u8>
 }
 
 /// build a response to indicate a message has been read
-pub fn chat_message_read(message: &Envelope) -> Result<(Identifier, Vec<u8>), SelfError> {
+pub fn chat_message_read(message: &Envelope) -> Result<(PublicKey, Vec<u8>), SelfError> {
     if let Some(message_id) = message.content.cti_get() {
         // respond to sender
         let content = ChatRead {
@@ -161,7 +161,7 @@ pub fn chat_message_read(message: &Envelope) -> Result<(Identifier, Vec<u8>), Se
 
 /*
 /// build response to accept a group invitation
-pub fn group_invite_accept(message: &Envelope, storage: &mut MutexGuard<Storage>, rest: &Rest) -> Result<(Identifier, Vec<u8>), SelfError> {
+pub fn group_invite_accept(message: &Envelope, storage: &mut MutexGuard<Storage>, rest: &Rest) -> Result<(PublicKey, Vec<u8>), SelfError> {
     if let Some(payload) = message.content.content_get() {
         let group_invite_req = message::GroupInviteRequest::decode(&payload)?;
 
