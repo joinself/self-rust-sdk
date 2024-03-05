@@ -1858,8 +1858,8 @@ mod tests {
             .transaction(|txn| {
                 inbox_queue(
                     txn,
-                    &bob_ed25519_pk,
-                    &group_ed25519_pk,
+                    bob_ed25519_pk,
+                    group_ed25519_pk,
                     Some(alice_ed25519_pk.clone()),
                     0,
                     b"hello everyone",
@@ -1983,14 +1983,14 @@ mod tests {
 
         // decrypt the first message from bob
         let plaintext = group
-            .decrypt(&bob_ed25519_pk, &bobs_message_to_alice_1)
+            .decrypt(bob_ed25519_pk, &bobs_message_to_alice_1)
             .expect("failed to decrypt bobs message");
 
         assert_eq!(&plaintext, "hello alice pt1".as_bytes());
 
         // decrypt the second message from bob
         let plaintext = group
-            .decrypt(&bob_ed25519_pk, &bobs_message_to_alice_2)
+            .decrypt(bob_ed25519_pk, &bobs_message_to_alice_2)
             .expect("failed to decrypt bobs message");
 
         assert_eq!(&plaintext, "hello alice pt2".as_bytes());
