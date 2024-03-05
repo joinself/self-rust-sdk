@@ -119,7 +119,7 @@ impl Authentication {
         token[1] = TOKEN_KIND_AUTHENTICATION;
         crate::crypto::random::read_bytes(&mut token[6..26]);
         token[26..34].copy_from_slice(&expires.to_le_bytes());
-        token[34..67].copy_from_slice(&issued_by.address());
+        token[34..67].copy_from_slice(issued_by.address());
 
         // concatonate the tokens data and the data that is needed to be signed
         // and sign the resulting buffer

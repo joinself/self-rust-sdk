@@ -12,7 +12,7 @@ use crate::message::{
     MESSAGE_TYPE_CHAT_MSG,
 };
 
-use crate::protocol::hashgraph::{self, Role};
+use crate::protocol::hashgraph::{self};
 use crate::storage::Storage;
 use crate::time;
 use crate::token::Token;
@@ -586,7 +586,7 @@ impl Account {
         &mut self,
         with: &signing::PublicKey,
         using: &signing::PublicKey,
-        authorization: Option<&Token>,
+        _authorization: Option<&Token>,
     ) -> Result<(), SelfError> {
         let rpc = match &mut self.rpc {
             Some(rpc) => rpc,
@@ -600,7 +600,7 @@ impl Account {
 
         let using = storage.keypair_signing_get(using)?;
 
-        let one_time_key = rpc.acquire(with.address(), using.address())?;
+        let _one_time_key = rpc.acquire(with.address(), using.address())?;
 
         //let prekey = PrekeyResponse::new(&response.data)?;
 

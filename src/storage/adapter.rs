@@ -1273,7 +1273,7 @@ fn group_get_session(
         let with_address = signing::PublicKey::from_bytes(&with_address)?;
 
         // TODO fix this....
-        let with_exchange = exchange::PublicKey::from_bytes(&vec![0; 33])?;
+        let with_exchange = exchange::PublicKey::from_bytes(&[0; 33])?;
 
         let session_address = (
             as_address.clone(),

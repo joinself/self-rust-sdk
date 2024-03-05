@@ -1,5 +1,5 @@
 use crate::error::SelfError;
-use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::keypair::signing::PublicKey;
 use crate::storage::Storage;
 use crate::token::Token;
 
