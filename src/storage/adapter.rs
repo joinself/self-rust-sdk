@@ -1,15 +1,17 @@
 use rusqlite::{Connection, Result, Transaction};
 
-use crate::crypto::{
-    account::Account,
-    omemo::{Group, GroupMessage},
-    session::Session,
-};
 use crate::error::SelfError;
-use crate::keypair::Usage;
 use crate::keypair::{exchange, signing};
 use crate::token::Token;
 use crate::transport::websocket::Subscription;
+use crate::{
+    crypto::{
+        account::Account,
+        omemo::{Group, GroupMessage},
+        session::Session,
+    },
+    keypair::Roles,
+};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,6 +36,7 @@ pub struct Storage {
         (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
         Rc<RefCell<Session>>,
     >,
+    _encryption_key: Vec<u8>,
 }
 
 // TODO verify this is actually safe
@@ -46,15 +49,18 @@ unsafe impl Send for Storage {}
 // mutiple tables and caches are accessed for some higher level
 // operations that also require atomicity via a single transaction
 impl Storage {
-    pub fn new(_storage_path: &str, _encryption_key: &[u8]) -> Result<Storage, SelfError> {
-        let conn = Connection::open_in_memory().map_err(|_| SelfError::StorageConnectionFailed)?;
+    pub fn new(storage_path: &str, encryption_key: &[u8]) -> Result<Storage, SelfError> {
+        let conn;
 
-        /*
-           let conn = Connection::open("/tmp/test.db").map_err(|_| SelfError::StorageConnectionFailed)?;
-           conn.pragma_update(None, "synchronous", &"NORMAL").unwrap();
-           conn.pragma_update(None, "journal_mode", &"WAL").unwrap();
-           conn.pragma_update(None, "temp_store", &"MEMORY").unwrap();
-        */
+        if storage_path == ":memory:" {
+            conn = Connection::open_in_memory().map_err(|_| SelfError::StorageConnectionFailed)?;
+        } else {
+            conn =
+                Connection::open(storage_path).map_err(|_| SelfError::StorageConnectionFailed)?;
+            conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.pragma_update(None, "temp_store", "MEMORY").unwrap();
+        }
 
         let mut storage = Storage {
             conn,
@@ -62,6 +68,7 @@ impl Storage {
             gcache: HashMap::new(),
             kcache: HashMap::new(),
             scache: HashMap::new(),
+            _encryption_key: encryption_key.to_vec(),
         };
 
         storage.setup_addresses_table()?;
@@ -216,6 +223,7 @@ impl Storage {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     from_address INTEGER NOT NULL,
                     about_address INTEGER NOT NULL,
+                    kind INTEGER NOT NULL,
                     credential BLOB NOT NULL
                 );",
                 (),
@@ -331,10 +339,9 @@ impl Storage {
 
     pub fn keypair_signing_create(
         &mut self,
-        usage: Usage,
-        keypair: &signing::KeyPair,
+        roles: u64,
+        keypair: signing::KeyPair,
         account: Option<Account>,
-        persistent: bool,
     ) -> Result<(), SelfError> {
         // check if the key exists in the cache
         if self.kcache.contains_key(keypair.public()) {
@@ -347,31 +354,12 @@ impl Storage {
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
         // create an record for the address we are creating a keypair with
-        address_create(&mut txn, keypair.public())?;
+        address_create(&mut txn, keypair.address())?;
 
         // create the keypair
         if let Some(olm_account) = account {
             txn.execute(
-                "INSERT INTO keypairs (for_address, usage, persistent, keypair, olm_account) 
-                VALUES (
-                    (SELECT id FROM addresses WHERE address=?1),
-                    ?2,
-                    ?3,
-                    ?4,
-                    ?5
-                );",
-                (
-                    &keypair.address(),
-                    usage.kind(),
-                    persistent,
-                    &keypair.encode(),
-                    olm_account.pickle(None)?,
-                ),
-            )
-            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-        } else {
-            txn.execute(
-                "INSERT INTO keypairs (for_address, usage, persistent, keypair) 
+                "INSERT INTO keypairs (for_address, roles, keypair, olm_account) 
                 VALUES (
                     (SELECT id FROM addresses WHERE address=?1),
                     ?2,
@@ -379,11 +367,22 @@ impl Storage {
                     ?4
                 );",
                 (
-                    keypair.address(),
-                    usage.kind(),
-                    persistent,
+                    &keypair.address(),
+                    roles,
                     &keypair.encode(),
+                    olm_account.pickle(None)?,
                 ),
+            )
+            .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+        } else {
+            txn.execute(
+                "INSERT INTO keypairs (for_address, roles, keypair) 
+                VALUES (
+                    (SELECT id FROM addresses WHERE address=?1),
+                    ?2,
+                    ?3
+                );",
+                (keypair.address(), roles, &keypair.encode()),
             )
             .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
         }
@@ -399,8 +398,7 @@ impl Storage {
 
     pub fn keypair_signing_list(
         &mut self,
-        usage: Option<Usage>,
-        persistent: bool,
+        roles: Option<u64>,
     ) -> Result<Vec<signing::KeyPair>, SelfError> {
         let mut keypairs = Vec::new();
 
@@ -409,15 +407,15 @@ impl Storage {
             .transaction()
             .map_err(|_| SelfError::StorageTransactionCreationFailed)?;
 
-        if let Some(usage) = usage {
+        if let Some(roles) = roles {
             let mut statement = txn
                 .prepare(
                     "SELECT keypair FROM keypairs
-                    WHERE usage = ?1 AND persistent = ?2;",
+                    WHERE (roles & ?!) != 0;",
                 )
                 .expect("failed to prepare statement");
 
-            let mut rows = match statement.query((usage.kind(), persistent)) {
+            let mut rows = match statement.query([roles]) {
                 Ok(rows) => rows,
                 Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
             };
@@ -426,20 +424,16 @@ impl Storage {
                 .next()
                 .map_err(|_| SelfError::StorageTransactionCommitFailed)?
             {
-                // let for_address: Vec<u8> = row.get(0).unwrap();
                 let keypair: Vec<u8> = row.get(0).unwrap();
                 let keypair = signing::KeyPair::decode(&keypair)?;
                 keypairs.push(keypair);
             }
         } else {
             let mut statement = txn
-                .prepare(
-                    "SELECT keypair FROM keypairs
-                    WHERE persistent = ?1;",
-                )
+                .prepare("SELECT keypair FROM keypairs;")
                 .expect("failed to prepare statement");
 
-            let mut rows = match statement.query([persistent]) {
+            let mut rows = match statement.query([]) {
                 Ok(rows) => rows,
                 Err(_) => return Err(SelfError::StorageTransactionCommitFailed),
             };
@@ -448,7 +442,6 @@ impl Storage {
                 .next()
                 .map_err(|_| SelfError::StorageTransactionCommitFailed)?
             {
-                // let for_address: Vec<u8> = row.get(0).unwrap();
                 let keypair: Vec<u8> = row.get(0).unwrap();
                 let keypair = signing::KeyPair::decode(&keypair)?;
                 keypairs.push(keypair);
@@ -473,11 +466,11 @@ impl Storage {
         let mut statement = txn
             .prepare(
                 "SELECT keypair FROM keypairs
-                WHERE usage = ?1;",
+                WHERE (roles & ?1) != 0;",
             )
             .expect("failed to prepare statement");
 
-        let mut rows = match statement.query([Usage::Messaging.kind()]) {
+        let mut rows = match statement.query([1 << (Roles::Authentication as u64)]) {
             Ok(rows) => rows,
             Err(_) => return Err(SelfError::MessagingDestinationUnknown),
         };
@@ -882,10 +875,10 @@ impl Storage {
     }
 }
 
-fn address_create(txn: &mut Transaction, address: &signing::PublicKey) -> Result<(), SelfError> {
+fn address_create(txn: &mut Transaction, address: &[u8]) -> Result<(), SelfError> {
     txn.execute(
         "INSERT OR IGNORE INTO addresses (address) VALUES (?1)",
-        [address.address()],
+        [address],
     )
     .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
@@ -905,10 +898,10 @@ fn connection_add(
     via_address: Option<&signing::PublicKey>,
     one_time_key: Option<&[u8]>,
 ) -> Result<(), SelfError> {
-    address_create(txn, with_address)?;
+    address_create(txn, with_address.address())?;
 
     if let Some(via_address) = via_address {
-        address_create(txn, via_address)?;
+        address_create(txn, via_address.address())?;
     }
 
     txn.execute(
@@ -1193,14 +1186,14 @@ fn group_get(
         (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
         Rc<RefCell<Session>>,
     >,
-    group_address: &signing::PublicKey,
+    group_ed25519_pk: &signing::PublicKey,
 ) -> Result<Option<Rc<RefCell<Group>>>, SelfError> {
     // check the cache first to determine if there is an existing group that can be reused to send messages
-    if let Some(group) = gcache.get(group_address) {
+    if let Some(group) = gcache.get(group_ed25519_pk) {
         return Ok(Some(group.clone()));
     };
 
-    let sessions = group_get_session(txn, scache, group_address)?;
+    let sessions = group_get_session(txn, scache, group_ed25519_pk)?;
 
     if let Some(session) = sessions.first() {
         // get the latest sequence number for sending messages to the group
@@ -1224,7 +1217,7 @@ fn group_get(
 
         let group = Rc::new(RefCell::new(group));
 
-        gcache.insert(group_address.clone(), group.clone());
+        gcache.insert(group_ed25519_pk.clone(), group.clone());
 
         return Ok(Some(group));
     }
@@ -1238,7 +1231,7 @@ fn group_get_session(
         (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
         Rc<RefCell<Session>>,
     >,
-    group_address: &signing::PublicKey,
+    group_ed25519_pk: &signing::PublicKey,
 ) -> Result<Vec<Rc<RefCell<Session>>>, SelfError> {
     let mut sessions = Vec::new();
 
@@ -1246,22 +1239,20 @@ fn group_get_session(
     // and join all matching sessions
     let mut statement = txn
         .prepare(
-            "SELECT i2.address, i3.address, i4.address, s1.sequence_tx, s1.sequence_rx, s1.olm_session FROM connections
+            "SELECT i2.address, i3.address, s1.sequence_tx, s1.sequence_rx, s1.olm_session FROM connections
             JOIN addresses i1 ON
                 i1.id = connections.via_address
             JOIN addresses i2 ON
                 i2.id = connections.as_address
             JOIN addresses i3 ON
                 i3.id = connections.with_address
-            JOIN addresses i4 ON
-                i4.id = connections.with_exchange
             JOIN sessions s1 ON
-                i2.id = s1.as_address AND i3.id = s1.with_address AND i4.id = s1.with_exchange
+                i2.id = s1.as_address AND i3.id = s1.with_address
             WHERE i1.address = ?1;",
         )
         .expect("failed to prepare statement");
 
-    let mut rows = match statement.query([group_address.address()]) {
+    let mut rows = match statement.query([group_ed25519_pk.address()]) {
         Ok(rows) => rows,
         Err(_) => return Err(SelfError::MessagingDestinationUnknown),
     };
@@ -1273,14 +1264,16 @@ fn group_get_session(
     {
         let as_address: Vec<u8> = row.get(0).unwrap();
         let with_address: Vec<u8> = row.get(1).unwrap();
-        let with_exchange: Vec<u8> = row.get(2).unwrap();
-        let sequence_tx: u64 = row.get(3).unwrap();
-        let sequence_rx: u64 = row.get(4).unwrap();
-        let mut olm_session: Vec<u8> = row.get(5).unwrap();
+        //let with_exchange: Vec<u8> = row.get(2).unwrap();
+        let sequence_tx: u64 = row.get(2).unwrap();
+        let sequence_rx: u64 = row.get(3).unwrap();
+        let mut olm_session: Vec<u8> = row.get(4).unwrap();
 
         let as_address = signing::PublicKey::from_bytes(&as_address)?;
         let with_address = signing::PublicKey::from_bytes(&with_address)?;
-        let with_exchange = exchange::PublicKey::from_bytes(&with_exchange)?;
+
+        // TODO fix this....
+        let with_exchange = exchange::PublicKey::from_bytes(&vec![0; 33])?;
 
         let session_address = (
             as_address.clone(),
@@ -1485,26 +1478,29 @@ fn session_create(
         session_ref.with_exchange().clone(),
     );
 
-    address_create(txn, session_ref.with_address())?;
+    address_create(txn, session_ref.with_address().address())?;
+    address_create(txn, session_ref.with_exchange().address())?;
 
     txn.execute(
-        "INSERT INTO sessions (as_address, with_address, sequence_tx, sequence_rx, olm_session)
+        "INSERT INTO sessions (as_address, with_address, with_exchange, sequence_tx, sequence_rx, olm_session)
         VALUES (
             (SELECT id FROM addresses WHERE address=?1),
             (SELECT id FROM addresses WHERE address=?2),
-            ?3,
+            (SELECT id FROM addresses WHERE address=?3),
             ?4,
-            ?5
+            ?5,
+            ?6
         );",
         (
             session_ref.as_address().address(),
             session_ref.with_address().address(),
+            session_ref.with_exchange().address(),
             session_ref.sequence_tx(),
             session_ref.sequence_rx(),
             encoded_session,
         ),
-    )
-    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
+    ).expect("failed to create session");
+    //.map_err(|_| SelfError::StorageTransactionCommitFailed)?;
 
     scache.insert(session_address, session.clone());
 
@@ -1610,16 +1606,16 @@ mod tests {
     #[test]
     fn transaction() {
         let mut storage =
-            super::Storage::new("/tmp/test.db", b"12345").expect("failed to create transaction");
+            super::Storage::new(":memory:", b"12345").expect("failed to create transaction");
 
-        let (alice_id, bob_id) = (0, 1);
+        let (alice_id, bob_id, exchange_id) = (1, 2, 3);
 
         // create an address for alice and bob
         storage
             .transaction(|txn| {
                 txn.execute(
                     "INSERT INTO addresses (address) VALUES (?1), (?2)",
-                    (b"alice", b"bob"),
+                    (b"alice", b"bob", b"exchange"),
                 )
                 .is_ok()
             })
@@ -1629,8 +1625,8 @@ mod tests {
         storage
             .transaction(|txn| {
                 txn.execute(
-                    "INSERT INTO sessions (as_address, with_address, sequence_tx, sequence_rx, olm_session) VALUES (?1, ?2, 0, 0, ?3)",
-                    (alice_id, bob_id, b"session-with-bob"),
+                    "INSERT INTO sessions (as_address, with_address, with_exchange, sequence_tx, sequence_rx, olm_session) VALUES (?1, ?2, ?3, 0, 0, ?4)",
+                    (alice_id, bob_id, exchange_id, b"session-with-bob"),
                 ).is_ok()
             })
             .expect("failed to create transaction");
@@ -1660,18 +1656,19 @@ mod tests {
 
     #[test]
     fn keypair_create_and_get() {
-        let kp = KeyPair::new();
-        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
+        let kp = crate::keypair::signing::KeyPair::new();
+        let pk = kp.public().to_owned();
+        let mut storage = super::Storage::new(":memory:", b"12345").expect("storage failed");
 
         let msg = vec![8; 128];
         let sig = kp.sign(&msg);
 
         storage
-            .keypair_create(Usage::Messaging, &kp, None, false)
+            .keypair_signing_create(Roles::Authentication as u64, kp, None)
             .expect("failed to create keypair");
 
         let kp = storage
-            .keypair_get(&kp.public())
+            .keypair_signing_get(&pk)
             .expect("failed to get keypair");
 
         assert!(kp.public().verify(&msg, &sig));
@@ -1679,13 +1676,12 @@ mod tests {
 
     #[test]
     fn outbox_queue_and_dequeue() {
-        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
+        let mut storage = super::Storage::new(":memory:", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
-        let alice_x25519_pk = alice_ekp.public();
-        let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
+        let alice_acc = Account::new(&alice_skp, &alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
@@ -1703,15 +1699,19 @@ mod tests {
         let group_x25519_pk = group_ekp.public();
 
         storage
-            .keypair_create(Usage::Messaging, &alice_skp, Some(alice_acc), true)
+            .keypair_signing_create(
+                Roles::Authentication as u64,
+                alice_skp.clone(),
+                Some(alice_acc),
+            )
             .expect("failed to create bob keypair");
 
         // create a connection for the group
         storage
             .connection_add(
-                &alice_ed25519_pk,
-                &group_ed25519_pk,
-                &group_x25519_pk,
+                alice_ed25519_pk,
+                group_ed25519_pk,
+                group_x25519_pk,
                 None,
                 None,
             )
@@ -1720,20 +1720,20 @@ mod tests {
         // create connections with members of the group
         storage
             .connection_add(
-                &alice_ed25519_pk,
-                &bob_ed25519_pk,
-                &bob_x25519_pk,
-                Some(&group_address),
+                alice_ed25519_pk,
+                bob_ed25519_pk,
+                bob_x25519_pk,
+                Some(group_ed25519_pk),
                 None,
             )
             .expect("failed to create alices group connection with bob");
 
         storage
             .connection_add(
-                &alice_ed25519_pk,
-                &carol_ed25519_pk,
-                &carol_x25519_pk,
-                Some(&group_address),
+                alice_ed25519_pk,
+                carol_ed25519_pk,
+                carol_x25519_pk,
+                Some(group_ed25519_pk),
                 None,
             )
             .expect("failed to create alices group connection with carol");
@@ -1741,7 +1741,7 @@ mod tests {
         storage
             .transaction(|txn| {
                 // queue a message intended for the group
-                outbox_queue(txn, &alice_address, &group_address, 0, b"hello everyone")
+                outbox_queue(txn, &alice_skp, group_ed25519_pk, 0, b"hello everyone")
                     .expect("failed to queue");
 
                 true
@@ -1756,8 +1756,8 @@ mod tests {
 
         let (as_address, via_address, sequence, message) =
             next_item.expect("next item isn't a tuple?");
-        assert!(alice_address.eq(&as_address));
-        assert!(group_address.eq(&via_address));
+        assert!(alice_ed25519_pk.eq(&as_address));
+        assert!(group_ed25519_pk.eq(&via_address));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
@@ -1770,14 +1770,14 @@ mod tests {
 
         let (as_address, via_address, sequence, message) =
             next_item.expect("next item isn't a tuple?");
-        assert!(alice_address.eq(&as_address));
-        assert!(group_address.eq(&via_address));
+        assert!(alice_ed25519_pk.eq(&as_address));
+        assert!(group_ed25519_pk.eq(&via_address));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
         // dequeue the item
         storage
-            .outbox_dequeue(&alice_address, &group_address, sequence)
+            .outbox_dequeue(alice_ed25519_pk, group_ed25519_pk, sequence)
             .expect("dequeue failed");
 
         // there should be no items left in the queue
@@ -1790,13 +1790,12 @@ mod tests {
 
     #[test]
     fn inbox_queue_and_dequeue() {
-        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
+        let mut storage = super::Storage::new(":memory:", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
-        let alice_x25519_pk = alice_ekp.public();
-        let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
+        let alice_acc = Account::new(&alice_skp, &alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
@@ -1815,15 +1814,19 @@ mod tests {
 
         // create alices keypair
         storage
-            .keypair_create(Usage::Messaging, &alice_skp, Some(alice_acc), true)
+            .keypair_signing_create(
+                Roles::Authentication as u64,
+                alice_skp.clone(),
+                Some(alice_acc),
+            )
             .expect("failed to create bob keypair");
 
         // create a connection for the group
         storage
             .connection_add(
-                &alice_ed25519_pk,
-                &group_ed25519_pk,
-                &group_x25519_pk,
+                alice_ed25519_pk,
+                group_ed25519_pk,
+                group_x25519_pk,
                 None,
                 None,
             )
@@ -1832,20 +1835,20 @@ mod tests {
         // create connections with members of the group
         storage
             .connection_add(
-                &alice_ed25519_pk,
-                &bob_ed25519_pk,
-                &bob_x25519_pk,
-                Some(&group_address),
+                alice_ed25519_pk,
+                bob_ed25519_pk,
+                bob_x25519_pk,
+                Some(group_ed25519_pk),
                 None,
             )
             .expect("failed to create alices group connection with bob");
 
         storage
             .connection_add(
-                &alice_ed25519_pk,
-                &carol_ed25519_pk,
-                &carol_x25519_pk,
-                Some(&group_address),
+                alice_ed25519_pk,
+                carol_ed25519_pk,
+                carol_x25519_pk,
+                Some(group_ed25519_pk),
                 None,
             )
             .expect("failed to create alices group connection with carol");
@@ -1855,9 +1858,9 @@ mod tests {
             .transaction(|txn| {
                 inbox_queue(
                     txn,
-                    &bob_address,
-                    &group_address,
-                    Some(alice_address.clone()),
+                    &bob_ed25519_pk,
+                    &group_ed25519_pk,
+                    Some(alice_ed25519_pk.clone()),
                     0,
                     b"hello everyone",
                 )
@@ -1872,9 +1875,9 @@ mod tests {
 
         let (as_address, with_address, via_address, sequence, message) =
             next_item.expect("next item isn't a tuple?");
-        assert!(alice_address.eq(&as_address));
-        assert!(bob_address.eq(&with_address));
-        assert!(group_address.eq(&via_address));
+        assert!(alice_ed25519_pk.eq(&as_address));
+        assert!(bob_ed25519_pk.eq(&with_address));
+        assert!(group_ed25519_pk.eq(&via_address));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
@@ -1885,15 +1888,20 @@ mod tests {
 
         let (as_address, with_address, via_address, sequence, message) =
             next_item.expect("next item isn't a tuple?");
-        assert!(alice_address.eq(&as_address));
-        assert!(bob_address.eq(&with_address));
-        assert!(group_address.eq(&via_address));
+        assert!(alice_ed25519_pk.eq(&as_address));
+        assert!(bob_ed25519_pk.eq(&with_address));
+        assert!(group_ed25519_pk.eq(&via_address));
         assert_eq!(sequence, 0);
         assert_eq!(message, b"hello everyone");
 
         // dequeue the item
         storage
-            .inbox_dequeue(&bob_address, &group_address, Some(alice_address), sequence)
+            .inbox_dequeue(
+                bob_ed25519_pk,
+                group_ed25519_pk,
+                Some(alice_ed25519_pk.to_owned()),
+                sequence,
+            )
             .expect("dequeue failed");
 
         // there should be no items left in the queue
@@ -1904,22 +1912,22 @@ mod tests {
 
     #[test]
     fn encrypt_and_queue() {
-        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
+        let mut storage = super::Storage::new(":memory:", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
         let alice_x25519_pk = alice_ekp.public();
-        let alice_acc = Account::new(alice_skp.clone(), alice_ekp);
+        let mut alice_acc = Account::new(&alice_skp, &alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
         let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
         let bob_x25519_pk = bob_ekp.public();
-        let bob_acc = Account::new(bob_skp.clone(), bob_ekp);
+        let bob_acc = Account::new(&bob_skp, &bob_ekp);
 
         storage
-            .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
+            .keypair_signing_create(Roles::Authentication as u64, bob_skp.clone(), Some(bob_acc))
             .expect("failed to create bob keypair");
 
         alice_acc
@@ -1931,9 +1939,9 @@ mod tests {
         // create bobs connection with alice and create a session from the one time key
         storage
             .connection_add(
-                &bob_ed25519_pk,
-                &alice_ed25519_pk,
-                &alice_x25519_pk,
+                bob_ed25519_pk,
+                alice_ed25519_pk,
+                alice_x25519_pk,
                 None,
                 Some(&alices_one_time_keys[0]),
             )
@@ -1941,11 +1949,11 @@ mod tests {
 
         // encrypt and queue two messages to alice
         let (_, _, bobs_message_to_alice_1) = storage
-            .encrypt_and_queue(&alice_address, b"hello alice pt1")
+            .encrypt_and_queue(alice_ed25519_pk, b"hello alice pt1")
             .expect("failed to encrypt and queue");
 
         let (_, _, bobs_message_to_alice_2) = storage
-            .encrypt_and_queue(&alice_address, b"hello alice pt2")
+            .encrypt_and_queue(alice_ed25519_pk, b"hello alice pt2")
             .expect("failed to encrypt and queue");
 
         // create alices session with bob from bobs first message
@@ -1953,7 +1961,7 @@ mod tests {
             .expect("failed to decode group message");
 
         let one_time_message = gm
-            .one_time_key_message(&alice_address)
+            .one_time_key_message(alice_ed25519_pk)
             .expect("one time key message missing");
 
         let alices_session_with_bob = alice_acc
@@ -1970,19 +1978,19 @@ mod tests {
             .expect("failed to remove session");
 
         // create alices group with bob
-        let mut group = Group::new(alice_address.clone(), 0);
+        let mut group = Group::new(alice_ed25519_pk.clone(), 0);
         group.add_participant(Rc::new(RefCell::new(alices_session_with_bob)));
 
         // decrypt the first message from bob
         let plaintext = group
-            .decrypt(&bob_address, &bobs_message_to_alice_1)
+            .decrypt(&bob_ed25519_pk, &bobs_message_to_alice_1)
             .expect("failed to decrypt bobs message");
 
         assert_eq!(&plaintext, "hello alice pt1".as_bytes());
 
         // decrypt the second message from bob
         let plaintext = group
-            .decrypt(&bob_address, &bobs_message_to_alice_2)
+            .decrypt(&bob_ed25519_pk, &bobs_message_to_alice_2)
             .expect("failed to decrypt bobs message");
 
         assert_eq!(&plaintext, "hello alice pt2".as_bytes());
@@ -1990,22 +1998,22 @@ mod tests {
 
     #[test]
     fn decrypt_and_queue() {
-        let mut storage = super::Storage::new("/tmp/test.db", b"12345").expect("storage failed");
+        let mut storage = super::Storage::new(":memory:", b"12345").expect("storage failed");
 
         let alice_skp = crate::keypair::signing::KeyPair::new();
         let alice_ekp = crate::keypair::exchange::KeyPair::new();
         let alice_ed25519_pk = alice_skp.public();
         let alice_x25519_pk = alice_ekp.public();
-        let mut alice_acc = crate::crypto::account::Account::new(alice_skp, alice_ekp);
+        let mut alice_acc = crate::crypto::account::Account::new(&alice_skp, &alice_ekp);
 
         let bob_skp = crate::keypair::signing::KeyPair::new();
-        let bob_ekp = bob_skp.to_exchange_key().expect("conversion failed");
+        let bob_ekp = crate::keypair::exchange::KeyPair::new();
         let bob_ed25519_pk = bob_skp.public();
         let bob_x25519_pk = bob_ekp.public();
-        let bob_acc = crate::crypto::account::Account::new(bob_skp.clone(), bob_ekp);
+        let bob_acc = crate::crypto::account::Account::new(&bob_skp, &bob_ekp);
 
         storage
-            .keypair_create(Usage::Messaging, &bob_skp, Some(bob_acc), true)
+            .keypair_signing_create(Roles::Authentication as u64, bob_skp.clone(), Some(bob_acc))
             .expect("failed to create alice address");
 
         alice_acc
@@ -2017,9 +2025,9 @@ mod tests {
         // create bobs connection with alice and create a session from the one time key
         storage
             .connection_add(
-                &bob_ed25519_pk,
-                &alice_ed25519_pk,
-                &alice_x25519_pk,
+                bob_ed25519_pk,
+                alice_ed25519_pk,
+                alice_x25519_pk,
                 None,
                 Some(&alices_one_time_keys[0]),
             )
@@ -2027,7 +2035,7 @@ mod tests {
 
         // encrypt and queue two messages to alice
         let (_, _, bobs_message_to_alice_1) = storage
-            .encrypt_and_queue(&alice_address, b"hello alice pt1")
+            .encrypt_and_queue(alice_ed25519_pk, b"hello alice pt1")
             .expect("failed to encrypt and queue");
 
         // create alices session with bob from bobs first message
@@ -2035,7 +2043,7 @@ mod tests {
             .expect("failed to decode group message");
 
         let one_time_message = gm
-            .one_time_key_message(&alice_address)
+            .one_time_key_message(alice_ed25519_pk)
             .expect("one time key message missing");
 
         let alices_session_with_bob = alice_acc
@@ -2052,12 +2060,12 @@ mod tests {
             .expect("failed to remove session");
 
         // create alices group with bob
-        let mut group = Group::new(alice_address.clone(), 0);
+        let mut group = Group::new(alice_ed25519_pk.clone(), 0);
         group.add_participant(Rc::new(RefCell::new(alices_session_with_bob)));
 
         // decrypt the first message from bob
         let plaintext = group
-            .decrypt(&bob_address, &bobs_message_to_alice_1)
+            .decrypt(bob_ed25519_pk, &bobs_message_to_alice_1)
             .expect("failed to decrypt bobs message");
 
         assert_eq!(&plaintext, "hello alice pt1".as_bytes());
@@ -2070,9 +2078,9 @@ mod tests {
         // decrypt message for bob
         let plaintext = storage
             .decrypt_and_queue(
-                &alice_ed25519_pk,
-                &bob_ed25519_pk,
-                &bob_x25519_pk,
+                alice_ed25519_pk,
+                alice_x25519_pk,
+                bob_ed25519_pk,
                 None,
                 1,
                 &alices_message_for_bob,

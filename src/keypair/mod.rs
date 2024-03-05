@@ -10,33 +10,13 @@ pub enum Algorithm {
     Curve25519,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum Usage {
-    Group,
-    Identifier,
-    Link,
-    Messaging,
-    Exchange,
-}
-
+#[repr(u64)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum Roles {
-    Verification,
-    Authentication,
-    Assertion,
-    Invocation,
-    Delegation,
-    Exchange,
-}
-
-impl Usage {
-    pub fn kind(&self) -> u8 {
-        match *self {
-            Usage::Group => 1,
-            Usage::Identifier => 2,
-            Usage::Link => 3,
-            Usage::Messaging => 4,
-            Usage::Exchange => 5,
-        }
-    }
+    Verification = 1 << 1,
+    Authentication = 1 << 2,
+    Assertion = 1 << 3,
+    Invocation = 1 << 4,
+    Delegation = 1 << 5,
+    Exchange = 1 << 6,
 }
