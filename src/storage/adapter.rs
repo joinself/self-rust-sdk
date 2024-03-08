@@ -1,17 +1,10 @@
 use rusqlite::{Connection, Result, Transaction};
 
 use crate::error::SelfError;
+use crate::keypair::Roles;
 use crate::keypair::{exchange, signing};
 use crate::token::Token;
 use crate::transport::websocket::Subscription;
-use crate::{
-    crypto::{
-        account::Account,
-        omemo::{Group, GroupMessage},
-        session::Session,
-    },
-    keypair::Roles,
-};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -29,13 +22,6 @@ pub type QueuedOutboxMessage = (signing::PublicKey, signing::PublicKey, u64, Vec
 
 pub struct Storage {
     conn: Connection,
-    acache: HashMap<signing::PublicKey, Rc<RefCell<Account>>>,
-    gcache: HashMap<signing::PublicKey, Rc<RefCell<Group>>>,
-    kcache: HashMap<signing::PublicKey, Arc<signing::KeyPair>>,
-    scache: HashMap<
-        (signing::PublicKey, signing::PublicKey, exchange::PublicKey),
-        Rc<RefCell<Session>>,
-    >,
     _encryption_key: Vec<u8>,
 }
 
@@ -64,10 +50,6 @@ impl Storage {
 
         let mut storage = Storage {
             conn,
-            acache: HashMap::new(),
-            gcache: HashMap::new(),
-            kcache: HashMap::new(),
-            scache: HashMap::new(),
             _encryption_key: encryption_key.to_vec(),
         };
 
