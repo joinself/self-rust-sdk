@@ -1,47 +1,64 @@
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{c_char, c_int, c_void};
+use std::ptr;
 
 use libsqlite3_sys::{
-    sqlite3_bind_blob, sqlite3_bind_double, sqlite3_bind_int64, sqlite3_bind_null,
+    sqlite3, sqlite3_bind_blob, sqlite3_bind_double, sqlite3_bind_int64, sqlite3_bind_null,
     sqlite3_bind_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_column_double,
     sqlite3_column_int64, sqlite3_column_text, sqlite3_column_type, sqlite3_finalize,
-    sqlite3_reset, sqlite3_step, sqlite3_stmt, SQLITE_BLOB, SQLITE_DONE, SQLITE_FLOAT,
-    SQLITE_INTEGER, SQLITE_NULL, SQLITE_ROW, SQLITE_TEXT, SQLITE_TRANSIENT,
+    sqlite3_prepare_v2, sqlite3_reset, sqlite3_step, sqlite3_stmt, SQLITE_BLOB, SQLITE_DONE,
+    SQLITE_FLOAT, SQLITE_INTEGER, SQLITE_NULL, SQLITE_ROW, SQLITE_TEXT, SQLITE_TRANSIENT,
 };
 
-use crate::connection::sqlite_check_result;
-use crate::error::DbError;
+use crate::error::SelfError;
+use crate::storage::connection::sqlite_check_result_debug;
 
 pub struct Statement {
+    conn: *mut sqlite3,
     stmt: *mut sqlite3_stmt,
 }
 
 impl Statement {
-    pub fn new(stmt: *mut sqlite3_stmt) -> Statement {
-        Statement { stmt }
+    pub fn new(conn: *mut sqlite3, statement: &str) -> Result<Statement, SelfError> {
+        let mut stmt = ptr::null_mut();
+        let mut tail = ptr::null();
+
+        unsafe {
+            let result = sqlite3_prepare_v2(
+                conn,
+                statement.as_ptr().cast::<c_char>(),
+                statement.len() as c_int,
+                &mut stmt as *mut *mut sqlite3_stmt,
+                &mut tail as *mut *const c_char,
+            );
+
+            sqlite_check_result_debug(conn, result)?;
+
+            Ok(Statement { conn, stmt })
+        }
     }
 
-    pub fn execute(&self) -> Result<(), DbError> {
+    pub fn execute(&self) -> Result<(), SelfError> {
         self.step().map(|_| ())
     }
 
-    pub fn step(&self) -> Result<bool, DbError> {
+    pub fn step(&self) -> Result<bool, SelfError> {
         unsafe {
             match sqlite3_step(self.stmt) {
                 SQLITE_ROW => Ok(true),
                 SQLITE_DONE => Ok(false),
-                result => Err(sqlite_check_result(result).unwrap_err()),
+                result => Err(sqlite_check_result_debug(self.conn, result).unwrap_err()),
             }
         }
     }
 
-    pub fn reset(&self) -> Result<(), DbError> {
+    pub fn reset(&self) -> Result<(), SelfError> {
         unsafe {
             let result = sqlite3_reset(self.stmt);
-            sqlite_check_result(result)
+            sqlite_check_result_debug(self.conn, result)
         }
     }
 
-    pub fn bind_text(&self, column: i32, text: &str) -> Result<&Statement, DbError> {
+    pub fn bind_text(&self, column: i32, text: &str) -> Result<&Statement, SelfError> {
         unsafe {
             let result = sqlite3_bind_text(
                 self.stmt,
@@ -51,13 +68,13 @@ impl Statement {
                 SQLITE_TRANSIENT(),
             );
 
-            sqlite_check_result(result)?
+            sqlite_check_result_debug(self.conn, result)?
         }
 
         Ok(self)
     }
 
-    pub fn bind_blob(&self, column: i32, blob: &[u8]) -> Result<&Statement, DbError> {
+    pub fn bind_blob(&self, column: i32, blob: &[u8]) -> Result<&Statement, SelfError> {
         unsafe {
             let result = sqlite3_bind_blob(
                 self.stmt,
@@ -67,43 +84,43 @@ impl Statement {
                 SQLITE_TRANSIENT(),
             );
 
-            sqlite_check_result(result)?
+            sqlite_check_result_debug(self.conn, result)?
         }
 
         Ok(self)
     }
 
-    pub fn bind_float(&self, column: i32, float: f64) -> Result<&Statement, DbError> {
+    pub fn bind_float(&self, column: i32, float: f64) -> Result<&Statement, SelfError> {
         unsafe {
             let result = sqlite3_bind_double(self.stmt, column as c_int, float);
-            sqlite_check_result(result)?
+            sqlite_check_result_debug(self.conn, result)?
         }
 
         Ok(self)
     }
 
-    pub fn bind_integer(&self, column: i32, integer: i64) -> Result<&Statement, DbError> {
+    pub fn bind_integer(&self, column: i32, integer: i64) -> Result<&Statement, SelfError> {
         unsafe {
             let result = sqlite3_bind_int64(self.stmt, column as c_int, integer);
-            sqlite_check_result(result)?
+            sqlite_check_result_debug(self.conn, result)?
         }
 
         Ok(self)
     }
 
-    pub fn bind_null(&self, column: i32) -> Result<&Statement, DbError> {
+    pub fn bind_null(&self, column: i32) -> Result<&Statement, SelfError> {
         unsafe {
             let result = sqlite3_bind_null(self.stmt, column as c_int);
-            sqlite_check_result(result)?
+            sqlite_check_result_debug(self.conn, result)?
         }
 
         Ok(self)
     }
 
-    pub fn column_text(&self, column: i32) -> Result<Option<String>, DbError> {
+    pub fn column_text(&self, column: i32) -> Result<Option<String>, SelfError> {
         if let Some(column_type_correct) = self.column_type_is(column, SQLITE_TEXT) {
             if !column_type_correct {
-                return Err(DbError::ColumnTypeMismatch);
+                return Err(SelfError::StorageColumnTypeMismatch);
             }
         } else {
             return Ok(None);
@@ -116,17 +133,17 @@ impl Statement {
 
             let text_ref = match std::str::from_utf8(text) {
                 Ok(text_ref) => text_ref,
-                Err(_) => return Err(DbError::TextUtf8Invalid),
+                Err(_) => return Err(SelfError::StorageTextUtf8Invalid),
             };
 
             Ok(Some(String::from(text_ref)))
         }
     }
 
-    pub fn column_blob(&self, column: i32) -> Result<Option<Vec<u8>>, DbError> {
+    pub fn column_blob(&self, column: i32) -> Result<Option<Vec<u8>>, SelfError> {
         if let Some(column_type_correct) = self.column_type_is(column, SQLITE_BLOB) {
             if !column_type_correct {
-                return Err(DbError::ColumnTypeMismatch);
+                return Err(SelfError::StorageColumnTypeMismatch);
             }
         } else {
             return Ok(None);
@@ -140,10 +157,10 @@ impl Statement {
         }
     }
 
-    pub fn column_float(&self, column: i32) -> Result<Option<f64>, DbError> {
+    pub fn column_float(&self, column: i32) -> Result<Option<f64>, SelfError> {
         if let Some(column_type_correct) = self.column_type_is(column, SQLITE_FLOAT) {
             if !column_type_correct {
-                return Err(DbError::ColumnTypeMismatch);
+                return Err(SelfError::StorageColumnTypeMismatch);
             }
         } else {
             return Ok(None);
@@ -155,11 +172,10 @@ impl Statement {
         }
     }
 
-    pub fn column_integer(&self, column: i32) -> Result<Option<i64>, DbError> {
+    pub fn column_integer(&self, column: i32) -> Result<Option<i64>, SelfError> {
         if let Some(column_type_correct) = self.column_type_is(column, SQLITE_INTEGER) {
-            println!("column type correct: {}", column_type_correct);
             if !column_type_correct {
-                return Err(DbError::ColumnTypeMismatch);
+                return Err(SelfError::StorageColumnTypeMismatch);
             }
         } else {
             return Ok(None);

@@ -1,19 +1,29 @@
-use openmls::prelude::{config::CryptoConfig, *};
-use openmls_basic_credential::SignatureKeyPair;
-use openmls_rust_crypto::{OpenMlsRustCrypto, RustCrypto};
-use openmls_traits::key_store::MlsEntity;
+use openmls::prelude::Ciphersuite;
+use openmls_rust_crypto::RustCrypto;
+use openmls_traits::OpenMlsCryptoProvider;
+
+use crate::storage::Transaction;
 
 const DEFAULT_CIPHER_SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
-struct Provider {
+pub struct MlsProvider<'t> {
     crypto: RustCrypto,
-    store: Store,
+    key_store: &'t Transaction,
 }
 
-impl OpenMlsCryptoProvider for Provider {
+impl MlsProvider<'_> {
+    pub fn new(txn: &Transaction) -> MlsProvider {
+        MlsProvider {
+            crypto: RustCrypto::default(),
+            key_store: txn,
+        }
+    }
+}
+
+impl OpenMlsCryptoProvider for MlsProvider<'_> {
     type CryptoProvider = RustCrypto;
     type RandProvider = RustCrypto;
-    type KeyStoreProvider = Store;
+    type KeyStoreProvider = Transaction;
 
     fn crypto(&self) -> &Self::CryptoProvider {
         &self.crypto
@@ -24,16 +34,6 @@ impl OpenMlsCryptoProvider for Provider {
     }
 
     fn key_store(&self) -> &Self::KeyStoreProvider {
-        &self.store
-    }
-}
-
-pub struct Group {}
-
-impl Group {
-    pub fn new() -> Group {
-        let implementation = OpenMlsRustCrypto::default();
-
-        Group {}
+        self.key_store
     }
 }
