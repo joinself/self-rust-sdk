@@ -110,12 +110,12 @@ pub mod messaging {
         since = "2.0.0",
         note = "Use associated constants instead. This will no longer be generated in 2021."
     )]
-    pub const ENUM_MIN_STATUS_CODE: u8 = 0;
+    pub const ENUM_MIN_STATUS_CODE: i8 = 0;
     #[deprecated(
         since = "2.0.0",
         note = "Use associated constants instead. This will no longer be generated in 2021."
     )]
-    pub const ENUM_MAX_STATUS_CODE: u8 = 1;
+    pub const ENUM_MAX_STATUS_CODE: i8 = 1;
     #[deprecated(
         since = "2.0.0",
         note = "Use associated constants instead. This will no longer be generated in 2021."
@@ -126,14 +126,14 @@ pub mod messaging {
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
     #[repr(transparent)]
-    pub struct StatusCode(pub u8);
+    pub struct StatusCode(pub i8);
     #[allow(non_upper_case_globals)]
     impl StatusCode {
         pub const BADAUTH: Self = Self(0);
         pub const INBOXCLOSED: Self = Self(1);
 
-        pub const ENUM_MIN: u8 = 0;
-        pub const ENUM_MAX: u8 = 1;
+        pub const ENUM_MIN: i8 = 0;
+        pub const ENUM_MAX: i8 = 1;
         pub const ENUM_VALUES: &'static [Self] = &[Self::BADAUTH, Self::INBOXCLOSED];
         /// Returns the variant's name or "" if unknown.
         pub fn variant_name(self) -> Option<&'static str> {
@@ -157,7 +157,7 @@ pub mod messaging {
         type Inner = Self;
         #[inline]
         fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-            let b = unsafe { flatbuffers::read_scalar_at::<u8>(buf, loc) };
+            let b = unsafe { flatbuffers::read_scalar_at::<i8>(buf, loc) };
             Self(b)
         }
     }
@@ -167,7 +167,7 @@ pub mod messaging {
         #[inline]
         fn push(&self, dst: &mut [u8], _rest: &[u8]) {
             unsafe {
-                flatbuffers::emplace_scalar::<u8>(dst, self.0);
+                flatbuffers::emplace_scalar::<i8>(dst, self.0);
             }
         }
     }
@@ -175,13 +175,13 @@ pub mod messaging {
     impl flatbuffers::EndianScalar for StatusCode {
         #[inline]
         fn to_little_endian(self) -> Self {
-            let b = u8::to_le(self.0);
+            let b = i8::to_le(self.0);
             Self(b)
         }
         #[inline]
         #[allow(clippy::wrong_self_convention)]
         fn from_little_endian(self) -> Self {
-            let b = u8::from_le(self.0);
+            let b = i8::from_le(self.0);
             Self(b)
         }
     }
@@ -193,7 +193,7 @@ pub mod messaging {
             pos: usize,
         ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
             use self::flatbuffers::Verifiable;
-            u8::run_verifier(v, pos)
+            i8::run_verifier(v, pos)
         }
     }
 
@@ -1685,9 +1685,6 @@ pub mod messaging {
         ) -> flatbuffers::WIPOffset<OpenDetails<'bldr>> {
             let mut builder = OpenDetailsBuilder::new(_fbb);
             builder.add_issued(args.issued);
-            if let Some(x) = args.nonce {
-                builder.add_nonce(x);
-            }
             if let Some(x) = args.inbox {
                 builder.add_inbox(x);
             }
@@ -1695,23 +1692,13 @@ pub mod messaging {
         }
 
         pub const VT_INBOX: flatbuffers::VOffsetT = 4;
-        pub const VT_NONCE: flatbuffers::VOffsetT = 6;
-        pub const VT_ISSUED: flatbuffers::VOffsetT = 8;
+        pub const VT_ISSUED: flatbuffers::VOffsetT = 6;
 
         #[inline]
         pub fn inbox(&self) -> Option<&'a [u8]> {
             self._tab
                 .get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u8>>>(
                     OpenDetails::VT_INBOX,
-                    None,
-                )
-                .map(|v| v.safe_slice())
-        }
-        #[inline]
-        pub fn nonce(&self) -> Option<&'a [u8]> {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u8>>>(
-                    OpenDetails::VT_NONCE,
                     None,
                 )
                 .map(|v| v.safe_slice())
@@ -1737,11 +1724,6 @@ pub mod messaging {
                     Self::VT_INBOX,
                     false,
                 )?
-                .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>(
-                    &"nonce",
-                    Self::VT_NONCE,
-                    false,
-                )?
                 .visit_field::<i64>(&"issued", Self::VT_ISSUED, false)?
                 .finish();
             Ok(())
@@ -1749,7 +1731,6 @@ pub mod messaging {
     }
     pub struct OpenDetailsArgs<'a> {
         pub inbox: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
-        pub nonce: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub issued: i64,
     }
     impl<'a> Default for OpenDetailsArgs<'a> {
@@ -1757,7 +1738,6 @@ pub mod messaging {
         fn default() -> Self {
             OpenDetailsArgs {
                 inbox: None,
-                nonce: None,
                 issued: 0,
             }
         }
@@ -1771,11 +1751,6 @@ pub mod messaging {
         pub fn add_inbox(&mut self, inbox: flatbuffers::WIPOffset<flatbuffers::Vector<'b, u8>>) {
             self.fbb_
                 .push_slot_always::<flatbuffers::WIPOffset<_>>(OpenDetails::VT_INBOX, inbox);
-        }
-        #[inline]
-        pub fn add_nonce(&mut self, nonce: flatbuffers::WIPOffset<flatbuffers::Vector<'b, u8>>) {
-            self.fbb_
-                .push_slot_always::<flatbuffers::WIPOffset<_>>(OpenDetails::VT_NONCE, nonce);
         }
         #[inline]
         pub fn add_issued(&mut self, issued: i64) {
@@ -1801,7 +1776,6 @@ pub mod messaging {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             let mut ds = f.debug_struct("OpenDetails");
             ds.field("inbox", &self.inbox());
-            ds.field("nonce", &self.nonce());
             ds.field("issued", &self.issued());
             ds.finish()
         }
@@ -1834,6 +1808,7 @@ pub mod messaging {
             args: &'args OpenArgs<'args>,
         ) -> flatbuffers::WIPOffset<Open<'bldr>> {
             let mut builder = OpenBuilder::new(_fbb);
+            builder.add_nonce(args.nonce);
             if let Some(x) = args.signature {
                 builder.add_signature(x);
             }
@@ -1848,7 +1823,8 @@ pub mod messaging {
 
         pub const VT_DETAILS: flatbuffers::VOffsetT = 4;
         pub const VT_POW: flatbuffers::VOffsetT = 6;
-        pub const VT_SIGNATURE: flatbuffers::VOffsetT = 8;
+        pub const VT_NONCE: flatbuffers::VOffsetT = 8;
+        pub const VT_SIGNATURE: flatbuffers::VOffsetT = 10;
 
         #[inline]
         pub fn details(&self) -> Option<&'a [u8]> {
@@ -1867,6 +1843,10 @@ pub mod messaging {
                     None,
                 )
                 .map(|v| v.safe_slice())
+        }
+        #[inline]
+        pub fn nonce(&self) -> u64 {
+            self._tab.get::<u64>(Open::VT_NONCE, Some(0)).unwrap()
         }
         #[inline]
         pub fn signature(&self) -> Option<Signature<'a>> {
@@ -1893,6 +1873,7 @@ pub mod messaging {
                     Self::VT_POW,
                     false,
                 )?
+                .visit_field::<u64>(&"nonce", Self::VT_NONCE, false)?
                 .visit_field::<flatbuffers::ForwardsUOffset<Signature>>(
                     &"signature",
                     Self::VT_SIGNATURE,
@@ -1905,6 +1886,7 @@ pub mod messaging {
     pub struct OpenArgs<'a> {
         pub details: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
         pub pow: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
+        pub nonce: u64,
         pub signature: Option<flatbuffers::WIPOffset<Signature<'a>>>,
     }
     impl<'a> Default for OpenArgs<'a> {
@@ -1913,6 +1895,7 @@ pub mod messaging {
             OpenArgs {
                 details: None,
                 pow: None,
+                nonce: 0,
                 signature: None,
             }
         }
@@ -1934,6 +1917,10 @@ pub mod messaging {
         pub fn add_pow(&mut self, pow: flatbuffers::WIPOffset<flatbuffers::Vector<'b, u8>>) {
             self.fbb_
                 .push_slot_always::<flatbuffers::WIPOffset<_>>(Open::VT_POW, pow);
+        }
+        #[inline]
+        pub fn add_nonce(&mut self, nonce: u64) {
+            self.fbb_.push_slot::<u64>(Open::VT_NONCE, nonce, 0);
         }
         #[inline]
         pub fn add_signature(&mut self, signature: flatbuffers::WIPOffset<Signature<'b>>) {
@@ -1963,6 +1950,7 @@ pub mod messaging {
             let mut ds = f.debug_struct("Open");
             ds.field("details", &self.details());
             ds.field("pow", &self.pow());
+            ds.field("nonce", &self.nonce());
             ds.field("signature", &self.signature());
             ds.finish()
         }

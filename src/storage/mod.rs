@@ -1,5 +1,7 @@
 // mod adapter;
 mod connection;
+mod query;
+mod schema;
 mod statement;
 mod transaction;
 
@@ -9,12 +11,12 @@ pub use self::transaction::Transaction;
 mod tests {
 
     use crate::storage::connection::Connection;
-    use crate::storage::transaction::Transaction;
-    use crate::storage::transaction::{
-        table_create_encryption_key_pairs, table_create_group_states,
-        table_create_hpke_private_keys, table_create_key_packages, table_create_psk_bundles,
-        table_create_signature_key_pairs,
+    use crate::storage::schema::{
+        schema_create_encryption_key_pairs, schema_create_group_states,
+        schema_create_hpke_private_keys, schema_create_key_packages, schema_create_psk_bundles,
+        schema_create_signature_key_pairs,
     };
+    use crate::storage::transaction::Transaction;
     use openmls::prelude::{config::CryptoConfig, *};
     use openmls::treesync::RatchetTree;
     use openmls_basic_credential::SignatureKeyPair;
@@ -60,12 +62,12 @@ mod tests {
         let conn = Connection::new(":memory:").expect("failed to open connection");
 
         conn.transaction(|txn| {
-            table_create_signature_key_pairs(txn);
-            table_create_hpke_private_keys(txn);
-            table_create_key_packages(txn);
-            table_create_psk_bundles(txn);
-            table_create_encryption_key_pairs(txn);
-            table_create_group_states(txn);
+            schema_create_signature_key_pairs(txn);
+            schema_create_hpke_private_keys(txn);
+            schema_create_key_packages(txn);
+            schema_create_psk_bundles(txn);
+            schema_create_encryption_key_pairs(txn);
+            schema_create_group_states(txn);
 
             txn.commit().expect("failed to execute transaction");
         })

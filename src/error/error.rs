@@ -138,8 +138,11 @@ pub enum SelfError {
     TokenSignatureInvalid,
     TokenTypeInvalid,
     TokenVersionInvalid,
+    WebsocketProtocolEmptyContent,
     WebsocketProtocolEncodingInvalid,
     WebsocketProtocolErrorUnknown,
+    WebsocketProtocolRecipientInvalid,
+    WebsocketProtocolSenderInvalid,
     WebsocketSenderIdentifierNotOwned,
     WebsocketTokenUnsupported,
 }
@@ -285,8 +288,11 @@ impl fmt::Display for SelfError {
             SelfError::TokenSignatureInvalid => write!(f, "Token signature invalid"),
             SelfError::TokenTypeInvalid => write!(f, "Token type invalid or unsupported"),
             SelfError::TokenVersionInvalid => write!(f, "Token version not supported"),
+            SelfError::WebsocketProtocolEmptyContent => write!(f, "Websocket protocol event had no content"),
             SelfError::WebsocketProtocolEncodingInvalid => write!(f, "Websocket protocol event could not be decoded"),
             SelfError::WebsocketProtocolErrorUnknown => write!(f, "Websocket protocol error code is unknown"),
+            SelfError::WebsocketProtocolRecipientInvalid => write!(f, "Websocket protocol message recipient invalid"),
+            SelfError::WebsocketProtocolSenderInvalid => write!(f, "Websocket protocol message sender invalid"),
             SelfError::WebsocketSenderIdentifierNotOwned => write!(f, "Websocket cannot send from an identifier that does not belong to this account"),
             SelfError::WebsocketTokenUnsupported => write!(f, "Websocket send attempted with an unsupported token"),
         }
