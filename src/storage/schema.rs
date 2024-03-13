@@ -167,7 +167,7 @@ pub fn schema_create_group_states(txn: &Transaction) {
 
 fn table_exists(txn: &Transaction, table: &str) -> bool {
     let stmt = txn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='?1';")
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?1;")
         .expect("failed to prepare statement");
 
     stmt.bind_text(1, table).expect("failed to bind param");
