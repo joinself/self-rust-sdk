@@ -41,7 +41,7 @@ pub struct MessagingCallbacks {
 
 pub struct Account {
     rpc: Option<Rpc>,
-    storage: Option<Arc<Mutex<Storage>>>,
+    storage: Option<Arc<Storage>>,
     websocket: Option<Websocket>,
 }
 
@@ -62,8 +62,8 @@ impl Account {
         messaging_endpoint: &str,
         storage_path: &str,
         encryption_key: &[u8],
-        user_data: Arc<dyn Any + Send + Sync>,
         callbacks: MessagingCallbacks,
+        user_data: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), SelfError> {
         let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
         let account_storage = storage.clone();

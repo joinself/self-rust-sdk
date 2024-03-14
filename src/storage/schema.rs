@@ -1,6 +1,6 @@
 use crate::storage::Transaction;
 
-fn schema_create_addresses(txn: &Transaction) {
+pub fn schema_create_addresses(txn: &Transaction) {
     if table_exists(txn, "addresses") {
         return;
     }
@@ -19,8 +19,9 @@ fn schema_create_addresses(txn: &Transaction) {
     stmt.execute().expect("failed to execute statement");
 }
 
-fn schema_create_keypairs(txn: &Transaction) {
+pub fn schema_create_keypairs(txn: &Transaction) {
     if table_exists(txn, "keypairs") {
+        print!("keypairs exists!");
         return;
     }
 
@@ -28,6 +29,7 @@ fn schema_create_keypairs(txn: &Transaction) {
         .prepare(
             "CREATE TABLE keypairs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address INTEGER NOT NULL,
                 roles INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 revoked_at INTEGER,
@@ -37,6 +39,8 @@ fn schema_create_keypairs(txn: &Transaction) {
             ON keypairs (for_address);",
         )
         .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
 }
 
 pub fn schema_create_signature_key_pairs(txn: &Transaction) {

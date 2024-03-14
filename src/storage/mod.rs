@@ -1,15 +1,17 @@
 // mod adapter;
 mod connection;
-mod query;
 mod schema;
 mod statement;
 mod transaction;
 
+pub mod query;
+
+pub use self::connection::Connection;
+pub use self::query::KeyPair;
 pub use self::transaction::Transaction;
 
 #[cfg(test)]
 mod tests {
-
     use crate::storage::connection::Connection;
     use crate::storage::schema::{
         schema_create_encryption_key_pairs, schema_create_group_states,
@@ -60,18 +62,6 @@ mod tests {
         // Define ciphersuite and the crypto backend to use.
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
         let conn = Connection::new(":memory:").expect("failed to open connection");
-
-        conn.transaction(|txn| {
-            schema_create_signature_key_pairs(txn);
-            schema_create_hpke_private_keys(txn);
-            schema_create_key_packages(txn);
-            schema_create_psk_bundles(txn);
-            schema_create_encryption_key_pairs(txn);
-            schema_create_group_states(txn);
-
-            txn.commit().expect("failed to execute transaction");
-        })
-        .expect("failed to run transaction");
 
         let mut welcome: Option<Welcome> = None;
         let mut sasha_ratchet_tree: Option<RatchetTree> = None;
@@ -146,7 +136,7 @@ mod tests {
 
             sasha_ratchet_tree = Some(sasha_group.export_ratchet_tree());
 
-            txn.commit().expect("failed to commit transaction");
+            txn.commit()
         })
         .expect("failed to execute transaction");
 
@@ -164,11 +154,9 @@ mod tests {
             )
             .expect("Error joining group from Welcome");
 
-            txn.commit().expect("failed to commit transaction");
+            txn.commit()
         })
         .expect("failed to execute transaction");
-
-        println!("Hello, world!");
     }
 
     // A helper to create and store credentials.

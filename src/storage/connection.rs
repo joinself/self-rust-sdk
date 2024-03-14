@@ -8,6 +8,12 @@ use std::ffi::{CStr, CString};
 use std::ptr;
 
 use crate::error::SelfError;
+use crate::storage::schema::{
+    schema_create_addresses, schema_create_encryption_key_pairs, schema_create_group_states,
+    schema_create_hpke_private_keys, schema_create_key_packages, schema_create_keypairs,
+    schema_create_psk_bundles, schema_create_signature_key_pairs,
+};
+use crate::storage::statement::Statement;
 use crate::storage::transaction::Transaction;
 
 pub struct Connection {
@@ -27,12 +33,33 @@ impl Connection {
             sqlite_check_result(result)?;
         }
 
-        Ok(Connection { conn })
+        let connection = Connection { conn };
+
+        // set sqlite pragmas
+        connection.pragma("PRAGMA synchronous = normal;")?;
+        connection.pragma("PRAGMA journal_mode = wal2;")?;
+        connection.pragma("PRAGMA temp_store = memory;")?;
+
+        connection.transaction(|txn| {
+            // schema migrations
+            schema_create_addresses(txn);
+            schema_create_keypairs(txn);
+            schema_create_signature_key_pairs(txn);
+            schema_create_hpke_private_keys(txn);
+            schema_create_key_packages(txn);
+            schema_create_psk_bundles(txn);
+            schema_create_encryption_key_pairs(txn);
+            schema_create_group_states(txn);
+
+            txn.commit()
+        })?;
+
+        Ok(connection)
     }
 
     pub fn transaction<F>(&self, execute: F) -> Result<(), SelfError>
     where
-        F: FnOnce(&mut Transaction),
+        F: FnOnce(&mut Transaction) -> Result<(), SelfError>,
     {
         unsafe {
             let mutex = sqlite3_db_mutex(self.conn);
@@ -40,12 +67,16 @@ impl Connection {
 
             let mut txn = Transaction::new(self.conn)?;
 
-            execute(&mut txn);
+            execute(&mut txn)?;
 
             sqlite3_mutex_leave(mutex);
         }
 
         Ok(())
+    }
+
+    fn pragma(&self, pragma: &str) -> Result<(), SelfError> {
+        Statement::new(self.conn, pragma)?.execute()
     }
 }
 
@@ -98,21 +129,19 @@ mod tests {
         conn.transaction(|txn| {
             let stmt = txn
                 .prepare(
-                    "
-                CREATE TABLE addresses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    address BLOB NOT NULL
-                );
+                    "CREATE TABLE test_addresses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        address BLOB NOT NULL
+                    );
 
-                CREATE UNIQUE INDEX idx_addresss_address
-                ON addresses (address);
-                ",
+                    CREATE UNIQUE INDEX idx_addresss_address
+                    ON addresses (address);",
                 )
                 .expect("failed to prepare statement");
 
             stmt.execute().expect("failed to execute statement");
 
-            txn.commit().expect("failed to commit transaction");
+            txn.commit()
         })
         .expect("failed to execute transaction");
 
@@ -120,7 +149,7 @@ mod tests {
             let address = vec![1; 33];
 
             let statement = txn
-                .prepare("INSERT OR IGNORE INTO addresses (address) VALUES (?1)")
+                .prepare("INSERT OR IGNORE INTO test_addresses (address) VALUES (?1)")
                 .expect("failed to create statement");
 
             statement
@@ -130,17 +159,16 @@ mod tests {
             statement.execute().expect("failed to execute statement");
 
             let stmt = txn
-                .prepare("SELECT id, address FROM addresses;")
+                .prepare("SELECT id, address FROM test_addresses;")
                 .expect("failed to prepare statement");
 
             while stmt.step().expect("failed to step statement") {
                 let id = stmt.column_integer(0);
                 let address = stmt.column_blob(1);
-
                 // println!("row id: {:?} address: {:?}", id, address);
             }
 
-            txn.commit().expect("failed to commit transaction");
+            txn.commit()
         })
         .expect("failed to execute transaction");
 

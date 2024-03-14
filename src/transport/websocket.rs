@@ -5,7 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::tungstenite::protocol;
 use url::Url;
 
 use std::collections::HashMap;
@@ -26,10 +26,16 @@ pub struct Response {
     pub callback: SendCallback,
 }
 
+pub struct Message<'m> {
+    pub sender: &'m PublicKey,
+    pub recipient: &'m PublicKey,
+    pub content: &'m [u8],
+    pub sequence: u64,
+}
+
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB =
-    Arc<dyn Fn(&PublicKey, &PublicKey, &PublicKey, u64, &[u8]) -> Option<Response> + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(&Message) -> Option<Response> + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
@@ -42,7 +48,7 @@ pub type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 pub type ResponseCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 
 enum Event {
-    Message(Vec<u8>, Message, Option<ResponseCallback>),
+    Message(Vec<u8>, protocol::Message, Option<ResponseCallback>),
     Done,
 }
 
@@ -211,7 +217,7 @@ impl Websocket {
         self.write_tx
             .send(Event::Message(
                 event_id,
-                Message::Binary(event_subscribe),
+                protocol::Message::Binary(event_subscribe),
                 Some(callback),
             ))
             .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
@@ -230,16 +236,6 @@ impl Websocket {
         });
 
         Ok(())
-    }
-
-    pub fn disconnect(&mut self) -> Result<(), SelfError> {
-        if let Some(on_disconnect) = &self.callbacks.on_disconnect {
-            on_disconnect(Ok(()));
-        }
-
-        self.write_tx
-            .send(Event::Done)
-            .map_err(|_| SelfError::RestRequestConnectionFailed)
     }
 
     pub fn send(
@@ -269,7 +265,7 @@ impl Websocket {
 
         let event = Event::Message(
             event_id,
-            Message::Binary(event_message),
+            protocol::Message::Binary(event_message),
             Some(Arc::clone(&callback)),
         );
 
@@ -277,6 +273,16 @@ impl Websocket {
             // TODO handle this error properly
             callback(Err(SelfError::RestRequestConnectionTimeout));
         }
+    }
+
+    pub fn disconnect(&mut self) -> Result<(), SelfError> {
+        if let Some(on_disconnect) = &self.callbacks.on_disconnect {
+            on_disconnect(Ok(()));
+        }
+
+        self.write_tx
+            .send(Event::Done)
+            .map_err(|_| SelfError::RestRequestConnectionFailed)
     }
 }
 
@@ -412,13 +418,12 @@ async fn invoke_message_callback(
     };
 
     // invoke the user defined event and send a response
-    if let Some(response) = on_message(
-        &sender,
-        &recipient,
-        subscriber.public(),
-        payload.sequence(),
+    if let Some(response) = on_message(&Message {
+        sender: &sender,
+        recipient: &recipient,
         content,
-    ) {
+        sequence: payload.sequence(),
+    }) {
         let payload = assemble_payload(
             &subscriber,
             &response.to,
@@ -430,7 +435,7 @@ async fn invoke_message_callback(
 
         let event = Event::Message(
             event_id,
-            Message::Binary(event_message),
+            protocol::Message::Binary(event_message),
             Some(Arc::clone(&response.callback)),
         );
 

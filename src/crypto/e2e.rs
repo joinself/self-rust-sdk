@@ -4,7 +4,8 @@ use openmls_traits::OpenMlsCryptoProvider;
 
 use crate::storage::Transaction;
 
-const DEFAULT_CIPHER_SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+pub const DEFAULT_CIPHER_SUITE: Ciphersuite =
+    Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 pub struct MlsProvider<'t> {
     crypto: RustCrypto,

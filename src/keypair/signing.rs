@@ -1,8 +1,14 @@
 use hex::ToHex;
+use openmls_traits::{
+    key_store::{MlsEntity, MlsEntityId},
+    signatures::Signer,
+    types::SignatureScheme,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SelfError;
 use crate::keypair::Algorithm;
+use crate::storage;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KeyPair {
@@ -125,6 +131,10 @@ impl KeyPair {
         }
     }
 
+    pub fn id(&self) -> Vec<u8> {
+        id(&self.public_key.bytes, SignatureScheme::ED25519)
+    }
+
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
         match ciborium::de::from_reader(encoded_keypair) {
             Ok(keypair) => Ok(keypair),
@@ -182,6 +192,7 @@ impl KeyPair {
         &self.public_key
     }
 
+    // this exists for testing only from other packages
     pub fn secret(&self) -> SecretKey {
         self.secret_key.clone()
     }
@@ -205,6 +216,44 @@ impl KeyPair {
     pub fn to_vec(&self) -> Vec<u8> {
         self.secret_key.bytes.clone()
     }
+}
+
+impl storage::KeyPair for KeyPair {
+    fn address(&self) -> &[u8] {
+        self.address()
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        self.encode()
+    }
+
+    fn decode(d: &[u8]) -> Self {
+        KeyPair::decode(d).expect("failed to decode keypair")
+    }
+}
+
+impl Signer for KeyPair {
+    fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, openmls::prelude::Error> {
+        Ok(self.sign(payload))
+    }
+
+    fn signature_scheme(&self) -> openmls::prelude::SignatureScheme {
+        openmls::prelude::SignatureScheme::ED25519
+    }
+}
+
+impl MlsEntity for KeyPair {
+    const ID: MlsEntityId = MlsEntityId::SignatureKeyPair;
+}
+
+/// Compute the ID for a [`Signature`] in the key store.
+fn id(public_key: &[u8], signature_scheme: SignatureScheme) -> Vec<u8> {
+    const LABEL: &[u8; 22] = b"RustCryptoSignatureKey";
+    let mut id = public_key.to_vec();
+    id.extend_from_slice(LABEL);
+    let signature_scheme = (signature_scheme as u16).to_be_bytes();
+    id.extend_from_slice(&signature_scheme);
+    id
 }
 
 impl Default for KeyPair {
@@ -265,33 +314,5 @@ mod tests {
 
         // verify the signature
         assert!(decoded_skp.public().verify(message, &signature));
-    }
-
-    #[test]
-    fn generate_ed25519_and_curve25519_keypair() {
-        let mut ed25519_pk =
-            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
-        let mut ed25519_sk =
-            vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
-
-        unsafe {
-            sodium_sys::crypto_sign_keypair(ed25519_pk.as_mut_ptr(), ed25519_sk.as_mut_ptr());
-        }
-
-        let mut curve25519_sk =
-            vec![0u8; sodium_sys::crypto_sign_PUBLICKEYBYTES as usize].into_boxed_slice();
-        let mut curve25519_pk =
-            vec![0u8; sodium_sys::crypto_sign_SECRETKEYBYTES as usize].into_boxed_slice();
-
-        unsafe {
-            sodium_sys::crypto_sign_ed25519_sk_to_curve25519(
-                curve25519_sk.as_mut_ptr(),
-                ed25519_sk.as_ptr(),
-            );
-            sodium_sys::crypto_sign_ed25519_pk_to_curve25519(
-                curve25519_pk.as_mut_ptr(),
-                ed25519_pk.as_ptr(),
-            );
-        }
     }
 }

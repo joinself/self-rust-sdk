@@ -44,7 +44,7 @@ impl Storage {
             conn =
                 Connection::open(storage_path).map_err(|_| SelfError::StorageConnectionFailed)?;
             conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
-            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL2").unwrap();
             conn.pragma_update(None, "temp_store", "MEMORY").unwrap();
         }
 

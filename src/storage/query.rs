@@ -2,8 +2,8 @@ use crate::error::SelfError;
 use crate::storage::Transaction;
 
 pub trait KeyPair {
-    fn address() -> Vec<u8>;
-    fn encode() -> Vec<u8>;
+    fn address(&self) -> &[u8];
+    fn encode(&self) -> Vec<u8>;
     fn decode(d: &[u8]) -> Self;
 }
 
@@ -13,23 +13,30 @@ fn address_create(txn: &Transaction, address: &[u8]) -> Result<(), SelfError> {
         .execute()
 }
 
-pub fn keypair_create<K>(txn: &Transaction, keypair: K, roles: i64) -> Result<(), SelfError>
+pub fn keypair_create<K>(
+    txn: &Transaction,
+    keypair: K,
+    roles: u64,
+    created_at: i64,
+) -> Result<(), SelfError>
 where
     K: KeyPair,
 {
-    address_create(txn, &K::address())?;
+    address_create(txn, keypair.address())?;
 
     txn.prepare(
-        "INSERT INTO keypairs (address, roles, keypair) 
+        "INSERT INTO keypairs (address, roles, created_at, keypair) 
         VALUES (
             (SELECT id FROM addresses WHERE address=?1),
             ?2,
-            ?3
+            ?3,
+            ?4
         );",
     )?
-    .bind_blob(1, &K::address())?
-    .bind_integer(2, roles)?
-    .bind_blob(3, &K::encode())?
+    .bind_blob(1, keypair.address())?
+    .bind_integer(2, roles as i64)?
+    .bind_integer(3, created_at)?
+    .bind_blob(4, &keypair.encode())?
     .execute()
 }
 
@@ -44,7 +51,7 @@ where
         WHERE addresses.address = ?1;",
     )?;
 
-    stmt.bind_blob(1, &K::address())?;
+    stmt.bind_blob(1, address)?;
 
     if !stmt.step()? {
         return Ok(None);
