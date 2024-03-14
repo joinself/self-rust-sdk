@@ -5,7 +5,7 @@ enum Version : ubyte {
   V1      = 1,
 }
 
-enum StatusCode : ubyte {
+enum StatusCode : byte {
   BADAUTH     = 0,
   INBOXCLOSED = 1,
 }
@@ -20,7 +20,7 @@ enum SignatureType : byte {
 table Signature {
   type:      SignatureType; // type of signature for authorization to send a message (one for authorization to send as a given sender, one to send as)
   signer:    [ubyte];       // public key of signer, can be used for payload signtures used in conjunction with another token signature when the signer cannot be contextually inferred
-  signature: [ubyte];       // signature over either [content (PAYLOAD), authorizaiton (TOKEN)]
+  signature: [ubyte];       // [signature over content (PAYLOAD), or an authorization token (TOKEN)]
 }
 
 table Payload {
@@ -67,13 +67,13 @@ table Subscribe {
 
 table OpenDetails {
   inbox:  [ubyte]; // address of inbox
-  nonce:  [ubyte]; // random nonce used to satisfy proof of work
   issued: long;    // timestamp of issue date
 }
 
 table Open {
   details:   [ubyte];   // open details
   pow:       [ubyte];   // proof of work hash over details
+  nonce:     ulong;     // random nonce used to satisfy proof of work
   signature: Signature; // signature over details using inboxes secret key
 }
 

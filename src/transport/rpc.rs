@@ -5,10 +5,11 @@ use prost::Message;
 use tokio::runtime::Runtime;
 use tonic::transport::Channel;
 
+use crate::crypto::pow;
 use crate::error::SelfError;
 use crate::protocol::api::{
-    AcquireRequest, AcquireResponse, ApiClient, ExecuteRequest, PublishRequest, Request,
-    RequestHeader, ResponseStatus, Version,
+    AcquireRequest, AcquireResponse, ApiClient, ExecuteRequest, ProofOfWork, PublishRequest,
+    Request, RequestHeader, ResponseStatus, Version,
 };
 
 pub struct Rpc {
@@ -48,7 +49,7 @@ impl Rpc {
         Ok(Rpc { client, runtime })
     }
 
-    pub fn execute(&mut self, id: &[u8], operation: &[u8]) -> Result<(), SelfError> {
+    pub fn execute(&self, id: &[u8], operation: &[u8]) -> Result<(), SelfError> {
         let (tx, rx) = channel::bounded(1);
 
         let id = id.to_vec();
@@ -93,7 +94,7 @@ impl Rpc {
         Ok(())
     }
 
-    pub fn publish(&mut self, id: &[u8], keys: &[Vec<u8>]) -> Result<(), SelfError> {
+    pub fn publish(&self, id: &[u8], keys: &[Vec<u8>]) -> Result<(), SelfError> {
         let (tx, rx) = channel::bounded(1);
 
         let id = id.to_vec();
@@ -104,6 +105,7 @@ impl Rpc {
 
         runtime.spawn(async move {
             let publish = PublishRequest { id, keys }.encode_to_vec();
+            let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&publish);
 
             let request = Request {
                 header: Some(RequestHeader {
@@ -111,7 +113,10 @@ impl Rpc {
                 }),
                 content: publish,
                 authorization: None,
-                proof_of_work: None,
+                proof_of_work: Some(ProofOfWork {
+                    hash: pow_hash,
+                    nonce: pow_nonce,
+                }),
             };
 
             tx.send(client.publish(request).await).unwrap();
@@ -120,7 +125,10 @@ impl Rpc {
         let response = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(response) => match response {
                 Ok(response) => response.into_inner(),
-                Err(_) => return Err(SelfError::RpcRequestFailed),
+                Err(err) => {
+                    println!("error: {:?}", err);
+                    return Err(SelfError::RpcRequestFailed);
+                }
             },
             Err(err) => {
                 println!("rpc: {}", err);
@@ -138,7 +146,7 @@ impl Rpc {
         Ok(())
     }
 
-    pub fn acquire(&mut self, id: &[u8], by: &[u8]) -> Result<Vec<u8>, SelfError> {
+    pub fn acquire(&self, id: &[u8], by: &[u8]) -> Result<Vec<u8>, SelfError> {
         let (tx, rx) = channel::bounded(1);
 
         let id = id.to_vec();
@@ -149,6 +157,7 @@ impl Rpc {
 
         runtime.spawn(async move {
             let acquire = AcquireRequest { id, by }.encode_to_vec();
+            let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&acquire);
 
             let request = Request {
                 header: Some(RequestHeader {
@@ -156,7 +165,10 @@ impl Rpc {
                 }),
                 content: acquire,
                 authorization: None,
-                proof_of_work: None,
+                proof_of_work: Some(ProofOfWork {
+                    hash: pow_hash,
+                    nonce: pow_nonce,
+                }),
             };
 
             tx.send(client.acquire(request).await).unwrap();
@@ -165,7 +177,10 @@ impl Rpc {
         let response = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(response) => match response {
                 Ok(response) => response.into_inner(),
-                Err(_) => return Err(SelfError::RpcRequestFailed),
+                Err(err) => {
+                    println!("error: {:?}", err);
+                    return Err(SelfError::RpcRequestFailed);
+                }
             },
             Err(err) => {
                 println!("rpc: {}", err);
