@@ -27,8 +27,8 @@ use self_sdk::{
 
 type TestMsg = (PublicKey, PublicKey, Vec<u8>);
 
-static mut SERVER: Option<Server> = None;
 static INIT: Once = Once::new();
+static mut SERVER: Option<Server> = None;
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub fn test_server() {
@@ -120,9 +120,9 @@ fn encrypted_message_exchange() {
     let (carol_msg_tx, carol_msg_rx) = crossbeam::channel::bounded::<TestMsg>(64);
 
     let alice_callbacks = Callbacks {
-        on_connect: None,
-        on_disconnect: None,
-        on_message: Some(Arc::new(move |message| -> Option<Response> {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |message| -> Option<Response> {
             alice_msg_tx
                 .send((
                     message.sender.to_owned(),
@@ -131,13 +131,13 @@ fn encrypted_message_exchange() {
                 ))
                 .expect("failed to channel send msg");
             None
-        })),
+        }),
     };
 
     let bobby_callbacks = Callbacks {
-        on_connect: None,
-        on_disconnect: None,
-        on_message: Some(Arc::new(move |message| -> Option<Response> {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |message| -> Option<Response> {
             bobby_msg_tx
                 .send((
                     message.sender.to_owned(),
@@ -146,13 +146,13 @@ fn encrypted_message_exchange() {
                 ))
                 .expect("failed to channel send msg");
             None
-        })),
+        }),
     };
 
     let carol_callbacks = Callbacks {
-        on_connect: None,
-        on_disconnect: None,
-        on_message: Some(Arc::new(move |message| -> Option<Response> {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |message| -> Option<Response> {
             carol_msg_tx
                 .send((
                     message.sender.to_owned(),
@@ -161,7 +161,7 @@ fn encrypted_message_exchange() {
                 ))
                 .expect("failed to channel send msg");
             None
-        })),
+        }),
     };
 
     let ws_url = "ws://127.0.0.1:3001/";

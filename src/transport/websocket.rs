@@ -8,10 +8,12 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol;
 use url::Url;
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::crypto::pow;
 use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::protocol::messaging::{self, ContentType};
@@ -39,9 +41,9 @@ pub type OnMessageCB = Arc<dyn Fn(&Message) -> Option<Response> + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
-    pub on_connect: Option<OnConnectCB>,
-    pub on_disconnect: Option<OnDisconnectCB>,
-    pub on_message: Option<OnMessageCB>,
+    pub on_connect: OnConnectCB,
+    pub on_disconnect: OnDisconnectCB,
+    pub on_message: OnMessageCB,
 }
 
 pub type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
@@ -97,6 +99,7 @@ impl Websocket {
         })
     }
 
+    /// connects to the websocket server
     pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
         let handle = self.runtime.handle();
         let endpoint = self.endpoint.clone();
@@ -196,14 +199,13 @@ impl Websocket {
         });
 
         handle.spawn(async move {
-            if let Some(on_connect) = on_connect {
-                on_connect();
-            }
+            on_connect();
         });
 
         Ok(())
     }
 
+    /// subscribe to some inboxes
     pub fn subscribe(&self, subscriptions: &[Subscription]) -> Result<(), SelfError> {
         let (tx, rx) = channel::bounded(1);
         let (event_id, event_subscribe) = assemble_subscription(subscriptions)?;
@@ -238,6 +240,7 @@ impl Websocket {
         Ok(())
     }
 
+    /// send a message
     pub fn send(
         &self,
         from: &KeyPair,
@@ -275,11 +278,39 @@ impl Websocket {
         }
     }
 
-    pub fn disconnect(&mut self) -> Result<(), SelfError> {
-        if let Some(on_disconnect) = &self.callbacks.on_disconnect {
-            on_disconnect(Ok(()));
-        }
+    /// open an inbox
+    pub fn open(&self, address: &KeyPair) -> Result<(), SelfError> {
+        let (tx, rx) = channel::bounded(1);
+        let (event_id, event_open) = assemble_open(address)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
 
+        let callback = Arc::new(move |result: Result<(), SelfError>| {
+            tx.send(result)
+                .expect("Failed to send subscription response");
+        });
+
+        self.write_tx
+            .send(Event::Message(
+                event_id,
+                protocol::Message::Binary(event_open),
+                Some(callback),
+            ))
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
+
+        rx.recv_deadline(deadline)
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+        Ok(())
+    }
+
+    /// close an inbox
+    pub fn close(&self, address: &KeyPair) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    /// disconnect the websocket
+    pub fn disconnect(&mut self) -> Result<(), SelfError> {
+        (self.callbacks.on_disconnect)(Ok(()));
         self.write_tx
             .send(Event::Done)
             .map_err(|_| SelfError::RestRequestConnectionFailed)
@@ -290,7 +321,7 @@ async fn handle_event_binary(
     requests: &RequestCache,
     subscriptions: &SubscriptionCache,
     write_tx: &Sender<Event>,
-    on_message: &Option<OnMessageCB>,
+    on_message: &OnMessageCB,
     data: &[u8],
 ) -> Result<(), SelfError> {
     let event = match messaging::root_as_event(data) {
@@ -351,7 +382,7 @@ async fn invoke_error_callback(
 async fn invoke_message_callback(
     subscriptions: &SubscriptionCache,
     write_tx: &Sender<Event>,
-    on_message: &Option<OnMessageCB>,
+    on_message: &OnMessageCB,
     content: Option<&[u8]>,
 ) -> Result<(), SelfError> {
     let content = match content {
@@ -410,11 +441,6 @@ async fn invoke_message_callback(
     let content = match payload.content() {
         Some(content) => content,
         None => return Err(SelfError::WebsocketProtocolEmptyContent),
-    };
-
-    let on_message = match on_message {
-        Some(on_message) => on_message,
-        None => return Ok(()),
     };
 
     // invoke the user defined event and send a response
@@ -660,6 +686,80 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
     );
 
     builder.finish(subscribe, None);
+
+    let content = builder.finished_data().to_vec();
+    let event_id = crate::crypto::random_id();
+
+    builder.reset();
+
+    let eid = builder.create_vector(&event_id);
+    let cnt = builder.create_vector(&content);
+
+    let event = messaging::Event::create(
+        &mut builder,
+        &messaging::EventArgs {
+            version: messaging::Version::V1,
+            id: Some(eid),
+            type_: messaging::ContentType::SUBSCRIBE,
+            content: Some(cnt),
+        },
+    );
+
+    builder.finish(event, None);
+
+    return Ok((event_id, builder.finished_data().to_vec()));
+}
+
+fn assemble_open(inbox: &KeyPair) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+    let now = crate::time::unix();
+
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let address = builder.create_vector(inbox.address());
+
+    let details = messaging::OpenDetails::create(
+        &mut builder,
+        &messaging::OpenDetailsArgs {
+            inbox: Some(address),
+            issued: now,
+        },
+    );
+
+    builder.finish(details, None);
+
+    let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
+    details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
+    details_sig_buf[1..builder.finished_data().len() + 1].copy_from_slice(builder.finished_data());
+
+    let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(builder.finished_data());
+
+    builder.reset();
+
+    let details_sig = builder.create_vector(&inbox.sign(&details_sig_buf));
+
+    let signature = messaging::Signature::create(
+        &mut builder,
+        &messaging::SignatureArgs {
+            type_: messaging::SignatureType::PAYLOAD,
+            signer: None,
+            signature: Some(details_sig),
+        },
+    );
+
+    let details = builder.create_vector(&details_sig_buf[1..]);
+    let pow_hash = builder.create_vector(&pow_hash);
+
+    let open = messaging::Open::create(
+        &mut builder,
+        &messaging::OpenArgs {
+            details: Some(details),
+            signature: Some(signature),
+            pow: Some(pow_hash),
+            nonce: pow_nonce,
+        },
+    );
+
+    builder.finish(open, None);
 
     let content = builder.finished_data().to_vec();
     let event_id = crate::crypto::random_id();
@@ -1109,9 +1209,9 @@ mod tests {
         let bob_id = bob_kp.public();
 
         let callbacks = Callbacks {
-            on_connect: None,
-            on_disconnect: None,
-            on_message: None,
+            on_connect: Arc::new(|| {}),
+            on_disconnect: Arc::new(|_| {}),
+            on_message: Arc::new(|_| None),
         };
 
         let mut ws =

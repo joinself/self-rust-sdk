@@ -60,6 +60,34 @@ where
     stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))
 }
 
+pub fn token_create(
+    txn: &Transaction,
+    from_address: &[u8],
+    to_address: &[u8],
+    for_address: &[u8],
+    kind: u64,
+    token: &[u8],
+) -> Result<(), SelfError> {
+    let stmt = txn.prepare(
+        "INSERT INTO tokens (from_address, to_address, for_address, kind, token)
+        VALUES(
+            (SELECT id FROM addresses WHERE address=?1),
+            (SELECT id FROM addresses WHERE address=?2),
+            (SELECT id FROM addresses WHERE address=?3),
+            ?4,
+            ?5
+        );",
+    )?;
+
+    stmt.bind_blob(1, from_address)?;
+    stmt.bind_blob(2, to_address)?;
+    stmt.bind_blob(3, for_address)?;
+    stmt.bind_integer(4, kind as i64)?;
+    stmt.bind_blob(5, token)?;
+
+    Ok(())
+}
+
 /*
 pub fn metrics_create(
     txn: &mut Transaction,

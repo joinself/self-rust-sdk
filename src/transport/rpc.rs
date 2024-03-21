@@ -7,7 +7,7 @@ use tonic::transport::Channel;
 
 use crate::crypto::pow;
 use crate::error::SelfError;
-use crate::protocol::api::{
+use crate::protocol::rpc::{
     AcquireRequest, AcquireResponse, ApiClient, ExecuteRequest, ProofOfWork, PublishRequest,
     Request, RequestHeader, ResponseStatus, Version,
 };

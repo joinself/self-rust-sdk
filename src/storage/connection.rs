@@ -90,6 +90,10 @@ impl Drop for Connection {
     }
 }
 
+/// sychronization/locking happens inside of sqlite
+unsafe impl Send for Connection {}
+unsafe impl Sync for Connection {}
+
 pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
     match result {
         SQLITE_OK => Ok(()),

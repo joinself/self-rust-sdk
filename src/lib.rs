@@ -5,7 +5,6 @@ pub mod crypto;
 pub mod error;
 pub mod hashgraph;
 pub mod keypair;
-pub mod message;
 pub mod protocol;
 pub mod storage;
 pub mod time;
