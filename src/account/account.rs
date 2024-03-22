@@ -157,7 +157,7 @@ impl Account {
     // connect with another address
     pub fn connection_connect(
         &self,
-        as_address: &KeyPair,
+        as_address: &PublicKey,
         with_address: &PublicKey,
         key_package: Option<&[u8]>,
     ) -> Result<(), SelfError> {
@@ -179,11 +179,16 @@ impl Account {
             let mut commit_payload: Vec<u8> = Vec::new();
 
             storage.transaction(|txn| {
+                let as_address: KeyPair = match query::keypair_lookup(txn, as_address.address())? {
+                    Some(as_address) => as_address,
+                    None => return Err(SelfError::KeyPairNotFound),
+                };
+
                 // TODO think about how what roles actually means here...
                 query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
-                e2e::mls_group_create(txn, group_kp.address(), as_address)?;
+                e2e::mls_group_create(txn, group_kp.address(), &as_address)?;
                 let (commit_message, welcome_message) =
-                    e2e::mls_group_add_members(txn, as_address, &[key_package])?;
+                    e2e::mls_group_add_members(txn, &as_address, &[key_package])?;
 
                 // generate send token
 
@@ -192,7 +197,7 @@ impl Account {
                 // generate push token
 
                 payload = websocket::assemble_payload_welcome(
-                    as_address,
+                    &as_address,
                     with_address,
                     0,
                     &welcome_message,
@@ -201,7 +206,7 @@ impl Account {
                 )?;
 
                 commit_payload = websocket::assemble_payload_commit(
-                    as_address,
+                    &as_address,
                     group_kp.public(),
                     0,
                     &commit_message,
