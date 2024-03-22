@@ -6,10 +6,11 @@ enum Version : ubyte {
 }
 
 enum ContentType : byte {
-  MLS_COMMIT   = 0, // an MLS commit message that updates the group's membership
-  MLS_WELCOME  = 1, // an MLS welcome message that invites the recipient to a group
-  MLS_MESSAGE  = 2, // an MLS group message
-  MLS_PROPOSAL = 3, // an MLS proposal message to propose updates the group's membership
+  MLS_COMMIT      = 0, // an MLS commit message that updates the group's membership
+  MLS_WELCOME     = 1, // an MLS welcome message that invites the recipient to a group
+  MLS_MESSAGE     = 2, // an MLS group message
+  MLS_PROPOSAL    = 3, // an MLS proposal message to propose updates the group's membership
+  MLS_KEY_PACKAGE = 4, // an MLS key package message to initiate creating a group with the recipient
 }
 
 enum StatusCode : byte {
@@ -51,7 +52,7 @@ table Message {
 }
 
 table MlsCommit {
-  commit: [ubyte]; // am MLS commit message
+  commit: [ubyte]; // an MLS commit message
 }
 
 table MlsWelcome {
@@ -60,13 +61,19 @@ table MlsWelcome {
   subscription: [ubyte]; // a subcription token to permit the recipient to subscribe to the group's address
 }
 
+table MlsKeyPackage {
+  package:      [ubyte]; // an MLS welcome message
+  send:         [ubyte]; // a send token to permit the recipient to send to the key package issuer's address
+  push:         [ubyte]; // a temporary notification token to permit the recipient to send a push notification to the users device
+}
+
 table MlsMessage {
   message: [ubyte]; // an MLS encrypted message
 }
 
 table MlsProposal {
   proposal:     [ubyte]; // an MLS proposal 
-  notification: [ubyte]; // an optional, temporary notification token that allows a group member to notify it if they can prove the group has delegated access to them
+  push:         [ubyte]; // an optional, temporary notification token that allows a group member to notify it if they can prove the group has delegated access to them
 }
 
 table Acknowledgement {

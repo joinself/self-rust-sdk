@@ -81,7 +81,11 @@ pub fn mls_key_package_create(
     Ok(encoded_key_package)
 }
 
-pub fn mls_group_create(txn: &Transaction, signature_key: &KeyPair) -> Result<(), SelfError> {
+pub fn mls_group_create(
+    txn: &Transaction,
+    group_address: &[u8],
+    signature_key: &KeyPair,
+) -> Result<(), SelfError> {
     let backend = &MlsProvider::new(txn);
 
     let credential =
@@ -91,10 +95,11 @@ pub fn mls_group_create(txn: &Transaction, signature_key: &KeyPair) -> Result<()
         .use_ratchet_tree_extension(true)
         .build();
 
-    MlsGroup::new(
+    MlsGroup::new_with_group_id(
         backend,
         signature_key,
         group_cfg,
+        GroupId::from_slice(group_address),
         CredentialWithKey {
             credential,
             signature_key: signature_key.public().public_key_bytes().into(),
@@ -108,45 +113,10 @@ pub fn mls_group_create(txn: &Transaction, signature_key: &KeyPair) -> Result<()
     Ok(())
 }
 
-pub fn mls_group_add_self(
-    txn: &Transaction,
-    signature_key: &KeyPair,
-) -> Result<Vec<u8>, SelfError> {
-    let backend = &MlsProvider::new(txn);
-
-    let mut group = match MlsGroup::load(&GroupId::from_slice(signature_key.address()), backend) {
-        Some(group) => group,
-        None => return Err(SelfError::KeyPairNotFound),
-    };
-
-    group.create_message(backend, signer, message)
-
-    let credential = mls_credential(signature_key)?;
-    let key_package = mls_key_package_generate(backend, signature_key, credential)?;
-
-    let (commit_out, _, _) = group
-        .add_members(backend, signature_key, &[key_package])
-        .map_err(|err| {
-            println!("mls error: {}", err);
-            SelfError::StorageUnknown
-        })?;
-
-    group.merge_pending_commit(backend).map_err(|err| {
-        println!("mls error: {}", err);
-        SelfError::StorageUnknown
-    })?;
-
-    commit_out.tls_serialize_detached().map_err(|err| {
-        println!("mls error: {}", err);
-        SelfError::StorageUnknown
-    })
-}
-
-
 pub fn mls_group_add_members(
     txn: &Transaction,
     signature_key: &KeyPair,
-    key_packages: Vec<Vec<u8>>,
+    key_packages: &[&[u8]],
 ) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
     let backend = &MlsProvider::new(txn);
 
@@ -157,11 +127,7 @@ pub fn mls_group_add_members(
 
     let key_packages: Vec<KeyPackage> = key_packages
         .iter()
-        .map({
-            |kp| {
-                ciborium::de::from_reader(kp.as_slice()).expect("failed to deserialize key package")
-            }
-        })
+        .map({ |kp| ciborium::de::from_reader(*kp).expect("failed to deserialize key package") })
         .collect();
 
     let (commit_out, welcome_out, _) = group
@@ -189,6 +155,32 @@ pub fn mls_group_add_members(
     Ok((commit, welcome))
 }
 
+pub fn mls_group_encrypt(
+    txn: &Transaction,
+    group_address: &[u8],
+    as_address: &KeyPair,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, SelfError> {
+    let backend = &MlsProvider::new(txn);
+
+    let mut group = match MlsGroup::load(&GroupId::from_slice(group_address), backend) {
+        Some(group) => group,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let message = group
+        .create_message(backend, as_address, plaintext)
+        .map_err(|err| {
+            println!("mls error: {}", err);
+            SelfError::StorageUnknown
+        })?;
+
+    message.tls_serialize_detached().map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })
+}
+
 fn mls_credential_create(
     backend: &impl OpenMlsCryptoProvider,
     signature_key: &KeyPair,
@@ -212,9 +204,7 @@ fn mls_credential_create(
     })
 }
 
-fn mls_credential(
-    signature_key: &KeyPair,
-) -> Result<CredentialWithKey, SelfError> {
+fn mls_credential(signature_key: &KeyPair) -> Result<CredentialWithKey, SelfError> {
     let credential =
         Credential::new(signature_key.address().to_owned(), CredentialType::Basic).unwrap();
 

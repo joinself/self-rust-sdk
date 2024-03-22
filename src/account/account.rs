@@ -5,7 +5,9 @@ use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::storage::{query, Connection};
 use crate::time;
 use crate::transport::rpc::Rpc;
-use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
+use crate::transport::websocket::{
+    self, assemble_payload_key_package, Callbacks, Subscription, Websocket,
+};
 
 use std::any::Any;
 use std::sync::Arc;
@@ -61,6 +63,7 @@ impl Account {
         Ok(())
     }
 
+    /// generates and stores a new signing keypair
     pub fn keypair_create(&self) -> Result<PublicKey, SelfError> {
         let storage = match &self.storage {
             Some(storage) => storage,
@@ -80,10 +83,7 @@ impl Account {
         Ok(signing_pk)
     }
 
-    pub fn keypair_sign(&self) -> Result<(), SelfError> {
-        Ok(())
-    }
-
+    /// opens a new messaging inbox and subscribes to it
     pub fn inbox_open(&self, key: Option<&PublicKey>) -> Result<PublicKey, SelfError> {
         let rpc = match &self.rpc {
             Some(rpc) => rpc,
@@ -107,7 +107,7 @@ impl Account {
             match key {
                 Some(key) => {
                     signing_kp = query::keypair_lookup(txn, key.address())?;
-                },
+                }
                 None => {
                     signing_kp = Some(KeyPair::new());
                     query::keypair_create(txn, signing_kp.clone().unwrap(), 0, time::unix())?;
@@ -139,7 +139,7 @@ impl Account {
 
         // open & subscribe...
         websocket.open(&signing_kp)?;
-        websocket.subscribe(&[Subscription{
+        websocket.subscribe(&[Subscription {
             to_address: signing_kp.public().to_owned(),
             as_address: signing_kp.to_owned(),
             from: time::unix(),
@@ -149,15 +149,18 @@ impl Account {
         Ok(signing_kp.public().to_owned())
     }
 
+    /// permanently close an inbox
     pub fn inbox_close(&self, key: &PublicKey) -> Result<(), SelfError> {
         Ok(())
     }
 
-    pub fn message_send(&self, message: &Message) -> Result<(), SelfError> {
-        Ok(())
-    }
-
-    pub fn group_create(&self, as_address: &PublicKey) -> Result<PublicKey, SelfError> {
+    // connect with another address
+    pub fn connection_connect(
+        &self,
+        as_address: &KeyPair,
+        with_address: &PublicKey,
+        key_package: Option<&[u8]>,
+    ) -> Result<(), SelfError> {
         let storage = match &self.storage {
             Some(storage) => storage,
             None => return Err(SelfError::AccountNotConfigured),
@@ -168,32 +171,222 @@ impl Account {
             None => return Err(SelfError::AccountNotConfigured),
         };
 
-        let signing_kp = KeyPair::new();
-        let signing_pk = signing_kp.public().to_owned();
+        let mut payload: Vec<u8> = Vec::new();
+
+        if let Some(key_package) = key_package {
+            let group_kp = KeyPair::new();
+
+            let mut commit_payload: Vec<u8> = Vec::new();
+
+            storage.transaction(|txn| {
+                // TODO think about how what roles actually means here...
+                query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+                e2e::mls_group_create(txn, group_kp.address(), as_address)?;
+                let (commit_message, welcome_message) =
+                    e2e::mls_group_add_members(txn, as_address, &[key_package])?;
+
+                // generate send token
+
+                // generate subscription token
+
+                // generate push token
+
+                payload = websocket::assemble_payload_welcome(
+                    as_address,
+                    with_address,
+                    0,
+                    &welcome_message,
+                    None,
+                    None,
+                )?;
+
+                commit_payload = websocket::assemble_payload_commit(
+                    as_address,
+                    group_kp.public(),
+                    0,
+                    &commit_message,
+                )?;
+
+                // queue commit message
+
+                // queue welcome message
+
+                // queue notification message
+
+                txn.commit()
+            })?;
+
+            // open the group inbox and subscribe
+            websocket.open(&group_kp)?;
+            websocket.subscribe(&[Subscription {
+                to_address: group_kp.public().to_owned(),
+                as_address: as_address.to_owned(),
+                from: time::unix(),
+                token: None,
+            }])?;
+
+            let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+            // send the commit message to the group inbox
+            websocket.send(
+                as_address,
+                &commit_payload,
+                None,
+                Arc::new(move |resp| {
+                    resp_tx.send(resp).unwrap();
+                }),
+            );
+
+            resp_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+            // deque send
+        } else {
+            storage.transaction(|txn| {
+                // generate a key package
+                let key_package = e2e::mls_key_package_create(txn, as_address)?;
+
+                // generate a send token
+
+                // generate a temporary push token
+
+                // load metrics to get sequence...
+
+                // assemble key package message
+                payload = websocket::assemble_payload_key_package(
+                    as_address,
+                    with_address,
+                    0,
+                    &key_package,
+                    None,
+                    None,
+                )?;
+
+                // queue message in inbox
+
+                txn.commit()
+            })?;
+        }
+
+        // TODO send with any tokens we may have...
+
+        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+        // websocket send
+        websocket.send(
+            as_address,
+            &payload,
+            None,
+            Arc::new(move |resp| {
+                resp_tx.send(resp).unwrap();
+            }),
+        );
+
+        resp_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+        // notify...
+
+        // deqeue sent...
+
+        Ok(())
+    }
+
+    /// send a message to an address
+    pub fn message_send_from(
+        &self,
+        from_address: &PublicKey,
+        to_address: &PublicKey,
+        content: &[u8],
+    ) -> Result<(), SelfError> {
+        let storage = match &self.storage {
+            Some(storage) => storage,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let websocket = match &self.websocket {
+            Some(websocket) => websocket,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let mut as_address: Option<KeyPair> = None;
+        let mut ciphertext = Vec::new();
+
+        storage.transaction(|txn| {
+            as_address = query::keypair_lookup(txn, from_address.address())?;
+            if let Some(as_address) = &as_address {
+                ciphertext =
+                    e2e::mls_group_encrypt(txn, to_address.address(), as_address, content)?;
+            }
+            txn.commit()
+        })?;
+
+        let as_address = match &as_address {
+            Some(as_address) => as_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        let payload = websocket::assemble_payload_message(as_address, to_address, 0, &ciphertext)?;
+
+        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+        websocket.send(
+            as_address,
+            &payload,
+            None,
+            Arc::new(move |resp| {
+                resp_tx.send(resp).unwrap();
+            }),
+        );
+
+        resp_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+
+        // TODO de-queue message from outbox
+    }
+
+    pub fn group_create(&self, as_address: &KeyPair) -> Result<PublicKey, SelfError> {
+        let storage = match &self.storage {
+            Some(storage) => storage,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let websocket = match &self.websocket {
+            Some(websocket) => websocket,
+            None => return Err(SelfError::AccountNotConfigured),
+        };
+
+        let group_kp = KeyPair::new();
+        let group_pk = group_kp.public().to_owned();
 
         storage.transaction(|txn| {
             // TODO think about how what roles actually means here...
-            query::keypair_create(txn, signing_kp.clone(), 0, crate::time::unix())?;
-            e2e::mls_group_create(txn, &signing_kp)?;
-            e2e::mls_group_add_self(txn, &signing_kp)?;
-
-
+            query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+            e2e::mls_group_create(txn, group_kp.address(), as_address)?;
 
             txn.commit()
         })?;
 
-        websocket.open(&signing_kp)?;
-        websocket.subscribe(&[Subscription{
-            to_address: signing_kp.public().to_owned(),
-            as_address: signing_kp,
+        websocket.open(&group_kp)?;
+        websocket.subscribe(&[Subscription {
+            to_address: group_kp.public().to_owned(),
+            as_address: as_address.to_owned(),
             from: time::unix(),
             token: None,
         }])?;
 
-        Ok(signing_pk)
+        Ok(group_pk)
     }
 
-    pub fn group_invite(&self, group: &PublicKey, as_address: &PublicKey, members: &[&PublicKey]) -> Result<(), SelfError> {
+    pub fn group_invite(
+        &self,
+        group: &PublicKey,
+        as_address: &PublicKey,
+        members: &[&PublicKey],
+    ) -> Result<(), SelfError> {
         let rpc = match &self.rpc {
             Some(rpc) => rpc,
             None => return Err(SelfError::AccountNotConfigured),
@@ -215,7 +408,7 @@ impl Account {
         let mut key_packages = Vec::new();
 
         // load our keypairs in a separate txn so we don't block
-        // other operations when making our network calls 
+        // other operations when making our network calls
         storage.transaction(|txn| {
             as_kp = query::keypair_lookup(txn, as_address.address())?;
             group_kp = query::keypair_lookup(txn, group.address())?;
@@ -233,19 +426,23 @@ impl Account {
         };
 
         for member in members {
-            key_packages.push(rpc.acquire(member.address(), as_kp.address())?); 
+            key_packages.push(rpc.acquire(member.address(), as_kp.address())?);
         }
+
+        /*
 
         // TODO we assume the simple case here of members not needing to negotiate a
         // different address to use for joining the group
         storage.transaction(|txn| {
-            (commit_message, welcome_message) = e2e::mls_group_add_members(txn, &group_kp, key_packages)?.into();
+            let () = e2e::mls_group_add_members(txn, &group_kp, key_packages)?;
             txn.commit()
         })
 
 
 
+        */
 
+        Ok(())
     }
 }
 

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crate::crypto::pow;
 use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
-use crate::protocol::messaging::{self, ContentType};
+use crate::protocol::messaging::{self, ContentType, EventType};
 use crate::token::Token;
 
 pub struct Response {
@@ -244,20 +244,10 @@ impl Websocket {
     pub fn send(
         &self,
         from: &KeyPair,
-        to: &PublicKey,
-        sequence: u64,
-        content: &[u8],
+        payload: &[u8],
         tokens: Option<Vec<Token>>,
         callback: SendCallback,
     ) {
-        let payload = match assemble_payload(from, to, sequence, content) {
-            Ok(payload) => payload,
-            Err(err) => {
-                callback(Err(err));
-                return;
-            }
-        };
-
         let (event_id, event_message) = match assemble_message(from, &payload, tokens) {
             Ok(event) => event,
             Err(err) => {
@@ -330,9 +320,9 @@ async fn handle_event_binary(
     };
 
     match event.type_() {
-        ContentType::ACKNOWLEDGEMENT => invoke_acknowledgement_callback(requests, event.id()).await,
-        ContentType::ERROR => invoke_error_callback(requests, event.id(), event.content()).await,
-        ContentType::MESSAGE => {
+        EventType::ACKNOWLEDGEMENT => invoke_acknowledgement_callback(requests, event.id()).await,
+        EventType::ERROR => invoke_error_callback(requests, event.id(), event.content()).await,
+        EventType::MESSAGE => {
             invoke_message_callback(subscriptions, write_tx, on_message, event.content()).await
         }
         _ => Err(SelfError::WebsocketProtocolErrorUnknown),
@@ -450,7 +440,7 @@ async fn invoke_message_callback(
         content,
         sequence: payload.sequence(),
     }) {
-        let payload = assemble_payload(
+        let payload = assemble_payload_message(
             &subscriber,
             &response.to,
             response.sequence,
@@ -474,7 +464,7 @@ async fn invoke_message_callback(
     Ok(())
 }
 
-pub fn assemble_payload(
+pub fn assemble_payload_message(
     from: &KeyPair,
     to: &PublicKey,
     sequence: u64,
@@ -483,13 +473,168 @@ pub fn assemble_payload(
     // TODO pool/reuse these builders
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
+    let content = builder.create_vector(content);
+
+    let mls_message = messaging::MlsMessage::create(
+        &mut builder,
+        &messaging::MlsMessageArgs {
+            message: Some(content),
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
     let sender = builder.create_vector(from.address());
     let recipient = builder.create_vector(to.address());
-    let content = builder.create_vector(content);
+    let content = builder.create_vector(&mls_message);
 
     let payload = messaging::Payload::create(
         &mut builder,
         &messaging::PayloadArgs {
+            type_: ContentType::MLS_MESSAGE,
+            sender: Some(sender),
+            recipient: Some(recipient),
+            content: Some(content),
+            sequence,
+            timestamp: crate::time::unix(),
+        },
+    );
+
+    builder.finish(payload, None);
+
+    return Ok(builder.finished_data().to_vec());
+}
+
+pub fn assemble_payload_key_package(
+    from: &KeyPair,
+    to: &PublicKey,
+    sequence: u64,
+    key_package: &[u8],
+    send_token: Option<&[u8]>,
+    push_token: Option<&[u8]>,
+) -> Result<Vec<u8>, SelfError> {
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let key_package = builder.create_vector(key_package);
+    let send_token = send_token.map(|token| builder.create_vector(token));
+    let push_token = push_token.map(|token| builder.create_vector(token));
+
+    let mls_message = messaging::MlsKeyPackage::create(
+        &mut builder,
+        &messaging::MlsKeyPackageArgs {
+            package: Some(key_package),
+            send: send_token,
+            push_: push_token,
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
+    let sender = builder.create_vector(from.address());
+    let recipient = builder.create_vector(to.address());
+    let content = builder.create_vector(&mls_message);
+
+    let payload = messaging::Payload::create(
+        &mut builder,
+        &messaging::PayloadArgs {
+            type_: ContentType::MLS_KEY_PACKAGE,
+            sender: Some(sender),
+            recipient: Some(recipient),
+            content: Some(content),
+            sequence,
+            timestamp: crate::time::unix(),
+        },
+    );
+
+    builder.finish(payload, None);
+
+    return Ok(builder.finished_data().to_vec());
+}
+
+pub fn assemble_payload_welcome(
+    from: &KeyPair,
+    to: &PublicKey,
+    sequence: u64,
+    welcome_message: &[u8],
+    send_token: Option<&[u8]>,
+    subscription_token: Option<&[u8]>,
+) -> Result<Vec<u8>, SelfError> {
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let welcome_message = builder.create_vector(welcome_message);
+    let send_token = send_token.map(|token| builder.create_vector(token));
+    let subscription_token = subscription_token.map(|token| builder.create_vector(token));
+
+    let mls_message = messaging::MlsWelcome::create(
+        &mut builder,
+        &messaging::MlsWelcomeArgs {
+            welcome: Some(welcome_message),
+            send: send_token,
+            subscription: subscription_token,
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
+    let sender = builder.create_vector(from.address());
+    let recipient = builder.create_vector(to.address());
+    let content = builder.create_vector(&mls_message);
+
+    let payload = messaging::Payload::create(
+        &mut builder,
+        &messaging::PayloadArgs {
+            type_: ContentType::MLS_WELCOME,
+            sender: Some(sender),
+            recipient: Some(recipient),
+            content: Some(content),
+            sequence,
+            timestamp: crate::time::unix(),
+        },
+    );
+
+    builder.finish(payload, None);
+
+    return Ok(builder.finished_data().to_vec());
+}
+
+pub fn assemble_payload_commit(
+    from: &KeyPair,
+    to: &PublicKey,
+    sequence: u64,
+    commit_message: &[u8],
+) -> Result<Vec<u8>, SelfError> {
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let commit_message = builder.create_vector(commit_message);
+
+    let mls_message = messaging::MlsCommit::create(
+        &mut builder,
+        &messaging::MlsCommitArgs {
+            commit: Some(commit_message),
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
+    let sender = builder.create_vector(from.address());
+    let recipient = builder.create_vector(to.address());
+    let content = builder.create_vector(&mls_message);
+
+    let payload = messaging::Payload::create(
+        &mut builder,
+        &messaging::PayloadArgs {
+            type_: ContentType::MLS_COMMIT,
             sender: Some(sender),
             recipient: Some(recipient),
             content: Some(content),
@@ -591,7 +736,7 @@ pub fn assemble_message(
         &messaging::EventArgs {
             version: messaging::Version::V1,
             id: Some(eid),
-            type_: messaging::ContentType::MESSAGE,
+            type_: messaging::EventType::MESSAGE,
             content: Some(cnt),
         },
     );
@@ -700,7 +845,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
         &messaging::EventArgs {
             version: messaging::Version::V1,
             id: Some(eid),
-            type_: messaging::ContentType::SUBSCRIBE,
+            type_: messaging::EventType::SUBSCRIBE,
             content: Some(cnt),
         },
     );
@@ -774,7 +919,7 @@ fn assemble_open(inbox: &KeyPair) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
         &messaging::EventArgs {
             version: messaging::Version::V1,
             id: Some(eid),
-            type_: messaging::ContentType::SUBSCRIBE,
+            type_: messaging::EventType::SUBSCRIBE,
             content: Some(cnt),
         },
     );
@@ -813,7 +958,7 @@ mod tests {
             &messaging::EventArgs {
                 version: messaging::Version::V1,
                 id: Some(id),
-                type_: messaging::ContentType::ACKNOWLEDGEMENT,
+                type_: messaging::EventType::ACKNOWLEDGEMENT,
                 content: None,
             },
         );
@@ -857,7 +1002,7 @@ mod tests {
             &messaging::EventArgs {
                 version: messaging::Version::V1,
                 id: Some(id),
-                type_: messaging::ContentType::ACKNOWLEDGEMENT,
+                type_: messaging::EventType::ACKNOWLEDGEMENT,
                 content: Some(content),
             },
         );
@@ -882,13 +1027,27 @@ mod tests {
         // TODO pool/reuse these builders
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
+        let content = builder.create_vector(content);
+
+        let mls_message = messaging::MlsMessage::create(
+            &mut builder,
+            &messaging::MlsMessageArgs {
+                message: Some(content),
+            },
+        );
+
+        builder.finish(mls_message, None);
+        let mls_message = builder.finished_data().to_vec();
+        builder.reset();
+
         let sender = builder.create_vector(from.address());
         let recipient = builder.create_vector(to.address());
-        let content = builder.create_vector(content);
+        let content = builder.create_vector(&mls_message);
 
         let payload = messaging::Payload::create(
             &mut builder,
             &messaging::PayloadArgs {
+                type_: ContentType::MLS_MESSAGE,
                 sender: Some(sender),
                 recipient: Some(recipient),
                 content: Some(content),
@@ -943,7 +1102,7 @@ mod tests {
             &messaging::EventArgs {
                 version: messaging::Version::V1,
                 id: Some(eid),
-                type_: messaging::ContentType::MESSAGE,
+                type_: messaging::EventType::MESSAGE,
                 content: Some(cnt),
             },
         );
@@ -1222,11 +1381,12 @@ mod tests {
 
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
 
+        let payload = assemble_payload_message(&alice_kp, bob_id, 0, b"test message")
+            .expect("failed to create payload");
+
         ws.send(
             &alice_kp,
-            bob_id,
-            0,
-            b"test message",
+            &payload,
             None,
             Arc::new(move |result: Result<(), SelfError>| {
                 response_tx.send(result).expect("Failed to send result");
