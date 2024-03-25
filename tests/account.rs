@@ -1,31 +1,10 @@
 use std::{
-    any::Any,
     sync::{Arc, Once},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use crossbeam::channel::Sender;
-use openmls::prelude::{config::CryptoConfig, *};
-use openmls::treesync::RatchetTree;
-use openmls_basic_credential::SignatureKeyPair;
-use openmls_rust_crypto::RustCrypto;
-use openmls_traits::OpenMlsCryptoProvider;
+use self_sdk::account::{Account, MessagingCallbacks};
 use self_test_mock::Server;
-
-use self_sdk::{
-    crypto,
-    error::SelfError,
-    keypair::signing::{KeyPair, PublicKey},
-    protocol::hashgraph::Role,
-    storage::{query, Connection, Transaction},
-    time::{self, unix},
-    transport::{
-        rpc::Rpc,
-        websocket::{Callbacks, Message, Response, Websocket},
-    },
-};
-
-type TestMsg = (PublicKey, PublicKey, Vec<u8>);
 
 static INIT: Once = Once::new();
 static mut SERVER: Option<Server> = None;
@@ -38,6 +17,110 @@ pub fn test_server() {
         });
     }
 }
+
+#[test]
+fn encrypted_messaging() {
+    test_server();
+
+    let ws_url = "ws://127.0.0.1:3001/";
+    let rpc_url = "http://127.0.0.1:3000/";
+
+    let (alice_welcome_tx, alice_welcome_rx) = crossbeam::channel::bounded::<bool>(1);
+
+    // setup alices account
+    let mut alice = Account::new();
+    let alice_kpc = alice.clone();
+
+    let alice_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|_| {}),
+        on_disconnect: Arc::new(|_, _| {}),
+        on_message: Arc::new(|_, _| None),
+        on_commit: Arc::new(|_, _| {}),
+        on_key_package: Arc::new(move |_, key_package| {
+            alice_kpc
+                .connection_connect(
+                    key_package.recipient,
+                    key_package.sender,
+                    Some(key_package.package),
+                )
+                .expect("failed to connect using key package");
+        }),
+        on_welcome: Arc::new(move |_, _| {
+            println!("alice received welcome");
+            alice_welcome_tx
+                .send(true)
+                .expect("failed to channel send welcome");
+        }),
+    };
+
+    alice
+        .configure(
+            rpc_url,
+            ws_url,
+            ":memory:",
+            b"",
+            alice_callbacks,
+            Arc::new(1),
+        )
+        .expect("failed to configure account");
+
+    // setup bob's account
+    let mut bobby = Account::new();
+    let bobby_kpc = bobby.clone();
+
+    let bobby_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|_| {}),
+        on_disconnect: Arc::new(|_, _| {}),
+        on_message: Arc::new(|_, _| None),
+        on_commit: Arc::new(|_, _| {}),
+        on_key_package: Arc::new(move |_, key_package| {
+            bobby_kpc
+                .connection_connect(
+                    key_package.recipient,
+                    key_package.sender,
+                    Some(key_package.package),
+                )
+                .expect("failed to connect using key package");
+        }),
+        on_welcome: Arc::new(|_, _| {
+            println!("bobby received welcome");
+        }),
+    };
+
+    bobby
+        .configure(
+            rpc_url,
+            ws_url,
+            ":memory:",
+            b"",
+            bobby_callbacks,
+            Arc::new(1),
+        )
+        .expect("failed to configure account");
+
+    // create an inbox for alice and bob
+    let alice_inbox = alice.inbox_open(None).expect("failed to open inbox");
+    let bobby_inbox = bobby.inbox_open(None).expect("failed to open inbox");
+
+    // initiate a connection from alice to bob
+    alice
+        .connection_connect(&alice_inbox, &bobby_inbox, None)
+        .expect("failed to send connection request");
+
+    // accept the connection from alice
+    alice_welcome_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("welcome message timeout");
+}
+
+/*
+use crossbeam::channel::Sender;
+use openmls::prelude::{config::CryptoConfig, *};
+use openmls::treesync::RatchetTree;
+use openmls_basic_credential::SignatureKeyPair;
+use openmls_rust_crypto::RustCrypto;
+use openmls_traits::OpenMlsCryptoProvider;
+
 
 pub struct OpenMlsBackend<'t> {
     crypto: RustCrypto,
@@ -1082,4 +1165,5 @@ fn default_on_response() -> OnResponseCB {
         );
     })
 }
+*/
 */
