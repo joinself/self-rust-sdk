@@ -1,3 +1,5 @@
+use crossbeam::epoch::Atomic;
+
 use crate::account::{Commit, KeyPackage, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
@@ -8,6 +10,8 @@ use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
 
 use std::any::Any;
+use std::ptr;
+use std::sync::atomic::AtomicPtr;
 use std::sync::Arc;
 
 pub type OnConnectCB = Arc<dyn Fn(Arc<dyn Any + Send>) + Sync + Send>;
@@ -28,17 +32,17 @@ pub struct MessagingCallbacks {
 
 #[derive(Default)]
 pub struct Account {
-    rpc: Option<Arc<Rpc>>,
-    storage: Option<Arc<Connection>>,
-    websocket: Option<Arc<Websocket>>,
+    rpc: Arc<AtomicPtr<Rpc>>,
+    storage: Arc<AtomicPtr<Connection>>,
+    websocket: Arc<AtomicPtr<Websocket>>,
 }
 
 impl Account {
     pub fn new() -> Account {
         Account {
-            rpc: None,
-            storage: None,
-            websocket: None,
+            rpc: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            storage: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            websocket: Arc::new(AtomicPtr::new(ptr::null_mut())),
         }
     }
 
@@ -53,9 +57,8 @@ impl Account {
         callbacks: MessagingCallbacks,
         user_data: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), SelfError> {
-        let rpc = Arc::new(Rpc::new(rpc_endpoint)?);
-        let storage = Arc::new(Connection::new(storage_path)?);
-
+        let rpc = Rpc::new(rpc_endpoint)?;
+        let storage = Connection::new(storage_path)?;
         let mut websocket = Websocket::new(
             messaging_endpoint,
             Callbacks {
@@ -70,80 +73,96 @@ impl Account {
 
         websocket.connect()?;
 
-        let websocket = Arc::new(websocket);
+        // using raw pointers here is regrettable,
+        // but we are forced to as we both need to
+        // split the account alloc and configuration
+        // in two to allow the account being used in
+        // our messaging callbacks, while avoiding
+        // wrapping each of our (already thread safe)
+        // components in a mutex, which will cause
+        // deadlocking by under some circumstances.
+        let rpc = Box::into_raw(Box::new(rpc));
+        let storage = Box::into_raw(Box::new(storage));
+        let websocket = Box::into_raw(Box::new(websocket));
 
-        self.rpc = Some(rpc);
-        self.storage = Some(storage);
-        self.websocket = Some(websocket);
+        self.rpc.swap(rpc, std::sync::atomic::Ordering::SeqCst);
+        self.storage
+            .swap(storage, std::sync::atomic::Ordering::SeqCst);
+        self.websocket
+            .swap(websocket, std::sync::atomic::Ordering::SeqCst);
 
         Ok(())
     }
 
     /// generates and stores a new signing keypair
     pub fn keypair_create(&self) -> Result<PublicKey, SelfError> {
-        let storage = match &self.storage {
-            Some(storage) => storage,
-            None => return Err(SelfError::AccountNotConfigured),
+        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
         let signing_kp = KeyPair::new();
         let signing_pk = signing_kp.public().to_owned();
 
-        storage.transaction(|txn| {
-            // TODO think about how what roles actually means here...
-            query::keypair_create(txn, signing_kp, 0, crate::time::unix())?;
+        unsafe {
+            (*storage).transaction(|txn| {
+                // TODO think about how what roles actually means here...
+                query::keypair_create(txn, signing_kp, 0, crate::time::unix())?;
 
-            txn.commit()
-        })?;
+                txn.commit()
+            })?;
+        }
 
         Ok(signing_pk)
     }
 
     /// opens a new messaging inbox and subscribes to it
     pub fn inbox_open(&self, key: Option<&PublicKey>) -> Result<PublicKey, SelfError> {
-        let rpc = match &self.rpc {
-            Some(rpc) => rpc,
-            None => return Err(SelfError::AccountNotConfigured),
+        let rpc = self.rpc.load(std::sync::atomic::Ordering::SeqCst);
+        if rpc.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
-        let storage = match &self.storage {
-            Some(storage) => storage,
-            None => return Err(SelfError::AccountNotConfigured),
+        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = match &self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
+        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
         let mut signing_kp: Option<KeyPair> = None;
         let mut key_packages: Vec<Vec<u8>> = Vec::new();
 
-        storage.transaction(|txn| {
-            match key {
-                Some(key) => {
-                    signing_kp = query::keypair_lookup(txn, key.address())?;
+        unsafe {
+            (*storage).transaction(|txn| {
+                match key {
+                    Some(key) => {
+                        signing_kp = query::keypair_lookup(txn, key.address())?;
+                    }
+                    None => {
+                        signing_kp = Some(KeyPair::new());
+                        query::keypair_create(txn, signing_kp.clone().unwrap(), 0, time::unix())?;
+                    }
                 }
-                None => {
-                    signing_kp = Some(KeyPair::new());
-                    query::keypair_create(txn, signing_kp.clone().unwrap(), 0, time::unix())?;
-                }
-            }
 
-            if let Some(signing_kp) = &signing_kp {
-                // setup the mls credentials and generate some key packages
-                key_packages = e2e::mls_inbox_setup(txn, signing_kp, 4)?;
+                if let Some(signing_kp) = &signing_kp {
+                    // setup the mls credentials and generate some key packages
+                    key_packages = e2e::mls_inbox_setup(txn, signing_kp, 4)?;
 
-                // TODO mark this keypair as used as a messaging inbox
-                // TODO validate this keypair is not:
-                // 1. already used as an inbox
-                // 2. if attached to an did, it must have an authentication role
+                    // TODO mark this keypair as used as a messaging inbox
+                    // TODO validate this keypair is not:
+                    // 1. already used as an inbox
+                    // 2. if attached to an did, it must have an authentication role
 
-                // TODO update metrics on inbox subscription time
-            };
+                    // TODO update metrics on inbox subscription time
+                };
 
-            txn.commit()
-        })?;
+                txn.commit()
+            })?;
+        }
 
         let signing_kp = match signing_kp {
             Some(signing_kp) => signing_kp,
@@ -151,16 +170,18 @@ impl Account {
         };
 
         // publish the key packages
-        rpc.publish(signing_kp.address(), &key_packages)?;
+        unsafe {
+            (*rpc).publish(signing_kp.address(), &key_packages)?;
 
-        // open & subscribe...
-        websocket.open(&signing_kp)?;
-        websocket.subscribe(&[Subscription {
-            to_address: signing_kp.public().to_owned(),
-            as_address: signing_kp.to_owned(),
-            from: time::unix(),
-            token: None,
-        }])?;
+            // open & subscribe...
+            (*websocket).open(&signing_kp)?;
+            (*websocket).subscribe(&[Subscription {
+                to_address: signing_kp.public().to_owned(),
+                as_address: signing_kp.to_owned(),
+                from: time::unix(),
+                token: None,
+            }])?;
+        }
 
         Ok(signing_kp.public().to_owned())
     }
@@ -177,23 +198,31 @@ impl Account {
         with_address: &PublicKey,
         key_package: Option<&[u8]>,
     ) -> Result<(), SelfError> {
-        let storage = match &self.storage {
-            Some(storage) => storage,
-            None => return Err(SelfError::AccountNotConfigured),
+        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = match &self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
+        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
         let mut payload: Vec<u8> = Vec::new();
         let mut as_keypair: Option<KeyPair> = None;
 
-        if let Some(key_package) = key_package {
-            connection_establish(&storage, &websocket, as_address, with_address, key_package)
-        } else {
-            connection_initialize(&storage, &websocket, as_address, with_address)
+        unsafe {
+            if let Some(key_package) = key_package {
+                connection_establish(
+                    &(*storage),
+                    &(*websocket),
+                    as_address,
+                    with_address,
+                    key_package,
+                )
+            } else {
+                connection_initialize(&(*storage), &(*websocket), as_address, with_address)
+            }
         }
     }
 
@@ -204,27 +233,29 @@ impl Account {
         to_address: &PublicKey,
         content: &[u8],
     ) -> Result<(), SelfError> {
-        let storage = match &self.storage {
-            Some(storage) => storage,
-            None => return Err(SelfError::AccountNotConfigured),
+        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = match &self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
+        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
         let mut as_address: Option<KeyPair> = None;
         let mut ciphertext = Vec::new();
 
-        storage.transaction(|txn| {
-            as_address = query::keypair_lookup(txn, from_address.address())?;
-            if let Some(as_address) = &as_address {
-                ciphertext =
-                    e2e::mls_group_encrypt(txn, to_address.address(), as_address, content)?;
-            }
-            txn.commit()
-        })?;
+        unsafe {
+            (*storage).transaction(|txn| {
+                as_address = query::keypair_lookup(txn, from_address.address())?;
+                if let Some(as_address) = &as_address {
+                    ciphertext =
+                        e2e::mls_group_encrypt(txn, to_address.address(), as_address, content)?;
+                }
+                txn.commit()
+            })?;
+        }
 
         let as_address = match &as_address {
             Some(as_address) => as_address,
@@ -235,14 +266,16 @@ impl Account {
 
         let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
 
-        websocket.send(
-            as_address,
-            &payload,
-            None,
-            Arc::new(move |resp| {
-                resp_tx.send(resp).unwrap();
-            }),
-        );
+        unsafe {
+            (*websocket).send(
+                as_address,
+                &payload,
+                None,
+                Arc::new(move |resp| {
+                    resp_tx.send(resp).unwrap();
+                }),
+            );
+        }
 
         resp_rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -252,34 +285,35 @@ impl Account {
     }
 
     pub fn group_create(&self, as_address: &KeyPair) -> Result<PublicKey, SelfError> {
-        let storage = match &self.storage {
-            Some(storage) => storage,
-            None => return Err(SelfError::AccountNotConfigured),
+        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = match &self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
+        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
-
         let group_kp = KeyPair::new();
         let group_pk = group_kp.public().to_owned();
 
-        storage.transaction(|txn| {
-            // TODO think about how what roles actually means here...
-            query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
-            e2e::mls_group_create(txn, group_kp.address(), as_address)?;
+        unsafe {
+            (*storage).transaction(|txn| {
+                // TODO think about how what roles actually means here...
+                query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+                e2e::mls_group_create(txn, group_kp.address(), as_address)?;
 
-            txn.commit()
-        })?;
+                txn.commit()
+            })?;
 
-        websocket.open(&group_kp)?;
-        websocket.subscribe(&[Subscription {
-            to_address: group_kp.public().to_owned(),
-            as_address: as_address.to_owned(),
-            from: time::unix(),
-            token: None,
-        }])?;
+            (*websocket).open(&group_kp)?;
+            (*websocket).subscribe(&[Subscription {
+                to_address: group_kp.public().to_owned(),
+                as_address: as_address.to_owned(),
+                from: time::unix(),
+                token: None,
+            }])?;
+        }
 
         Ok(group_pk)
     }
