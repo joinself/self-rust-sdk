@@ -2,8 +2,7 @@ use crossbeam::channel;
 use crossbeam::channel::{Receiver, Sender};
 use flatbuffers::{Vector, WIPOffset};
 use futures_util::{SinkExt, StreamExt};
-use rand::seq;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol;
@@ -42,17 +41,17 @@ pub struct Commit<'m> {
     pub sequence: u64,
 }
 
-pub struct KeyPackage<'m> {
-    pub sender: &'m PublicKey,
-    pub recipient: &'m PublicKey,
-    pub package: &'m [u8],
+pub struct KeyPackage {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub package: Vec<u8>,
     pub sequence: u64,
 }
 
-pub struct Welcome<'m> {
-    pub sender: &'m PublicKey,
-    pub recipient: &'m PublicKey,
-    pub welcome: &'m [u8],
+pub struct Welcome {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub welcome: Vec<u8>,
     pub sequence: u64,
 }
 
@@ -97,7 +96,8 @@ pub struct Websocket {
     callbacks: Callbacks,
     write_tx: Sender<Event>,
     write_rx: Receiver<Event>,
-    runtime: Runtime,
+    socket_runtime: Arc<Runtime>,
+    callback_runtime: Arc<Runtime>,
     subscriptions: SubscriptionCache,
 }
 
@@ -109,7 +109,8 @@ impl Websocket {
     pub fn new(endpoint: &str, callbacks: Callbacks) -> Result<Websocket, SelfError> {
         let (write_tx, write_rx) = channel::bounded(256);
 
-        let runtime = Runtime::new().unwrap();
+        let socket_runtime = Arc::new(Runtime::new().unwrap());
+        let callback_runtime = Arc::new(Runtime::new().unwrap());
 
         let endpoint = match Url::parse(endpoint) {
             Ok(endpoint) => endpoint,
@@ -121,22 +122,21 @@ impl Websocket {
             callbacks,
             write_tx,
             write_rx,
-            runtime,
+            socket_runtime,
+            callback_runtime,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     /// connects to the websocket server
     pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
-        let handle = self.runtime.handle();
+        let socket_runtime = self.socket_runtime.clone();
+        let callback_runtime = self.callback_runtime.clone();
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
+        let callbacks = self.callbacks.clone();
         let on_connect = self.callbacks.on_connect.clone();
-        let on_message = self.callbacks.on_message.clone();
-        let on_commit = self.callbacks.on_commit.clone();
-        let on_key_package = self.callbacks.on_key_package.clone();
-        let on_welcome = self.callbacks.on_welcome.clone();
         let subscriptions = self.subscriptions.clone();
 
         // TODO cleanup old sockets!
@@ -145,7 +145,7 @@ impl Websocket {
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
 
-        handle.spawn(async move {
+        socket_runtime.spawn(async move {
             let result = match connect_async(&endpoint).await {
                 Ok((socket, _)) => Ok(socket),
                 Err(err) => {
@@ -162,7 +162,7 @@ impl Websocket {
             .map_err(|_| SelfError::RestRequestConnectionFailed)??
             .split();
 
-        handle.spawn(async move {
+        socket_runtime.spawn(async move {
             while let Some(event) = socket_rx.next().await {
                 let event = match event {
                     Ok(event) => event,
@@ -187,13 +187,11 @@ impl Websocket {
 
                 if event.is_binary() {
                     let result = handle_event_binary(
+                        &callback_runtime,
                         &requests_rx,
                         &subscriptions,
                         &write_tx,
-                        &on_message,
-                        &on_commit,
-                        &on_key_package,
-                        &on_welcome,
+                        &callbacks,
                         &event.into_data(),
                     )
                     .await;
@@ -205,7 +203,7 @@ impl Websocket {
         });
 
         // TODO replace RestRequestConnectionFailed with better errors
-        handle.spawn(async move {
+        socket_runtime.spawn(async move {
             for m in write_rx.iter() {
                 match m {
                     Event::Message(id, msg, callback) => {
@@ -231,7 +229,7 @@ impl Websocket {
             socket_tx.close().await.expect("Failed to close socket");
         });
 
-        handle.spawn(async move {
+        socket_runtime.spawn(async move {
             on_connect();
         });
 
@@ -260,9 +258,10 @@ impl Websocket {
         rx.recv_deadline(deadline)
             .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
 
+        let subscriptions = subscriptions.to_vec();
         let existing_subscriptions = self.subscriptions.clone();
 
-        self.runtime.block_on(async move {
+        self.callback_runtime.spawn(async move {
             let mut existing_subscriptions = existing_subscriptions.lock().await;
 
             for sub in subscriptions {
@@ -281,7 +280,7 @@ impl Websocket {
         tokens: Option<Vec<Token>>,
         callback: SendCallback,
     ) {
-        let (event_id, event_message) = match assemble_message(from, &payload, tokens) {
+        let (event_id, event_message) = match assemble_message(from, payload, tokens) {
             Ok(event) => event,
             Err(err) => {
                 callback(Err(err));
@@ -341,13 +340,11 @@ impl Websocket {
 }
 
 async fn handle_event_binary(
+    runtime: &Arc<Runtime>,
     requests: &RequestCache,
     subscriptions: &SubscriptionCache,
     write_tx: &Sender<Event>,
-    on_message: &OnMessageCB,
-    on_commit: &OnCommitCB,
-    on_key_package: &OnKeyPackageCB,
-    on_welcome: &OnWelcomeCB,
+    callbacks: &Callbacks,
     data: &[u8],
 ) -> Result<(), SelfError> {
     let event = match messaging::root_as_event(data) {
@@ -356,33 +353,32 @@ async fn handle_event_binary(
     };
 
     match event.type_() {
-        EventType::ACKNOWLEDGEMENT => invoke_acknowledgement_callback(requests, event.id()).await,
-        EventType::ERROR => invoke_error_callback(requests, event.id(), event.content()).await,
+        EventType::ACKNOWLEDGEMENT => {
+            invoke_acknowledgement_callback(runtime, requests, event.id()).await
+        }
+        EventType::ERROR => {
+            invoke_error_callback(runtime, requests, event.id(), event.content()).await
+        }
         EventType::MESSAGE => {
-            invoke_message_callback(
-                subscriptions,
-                write_tx,
-                on_message,
-                on_commit,
-                on_key_package,
-                on_welcome,
-                event.content(),
-            )
-            .await
+            invoke_message_callback(runtime, subscriptions, write_tx, callbacks, event.content())
+                .await
         }
         _ => Err(SelfError::WebsocketProtocolErrorUnknown),
     }
 }
 
 async fn invoke_acknowledgement_callback(
+    runtime: &Arc<Runtime>,
     requests: &RequestCache,
     id: Option<&[u8]>,
 ) -> Result<(), SelfError> {
     if let Some(id) = id {
-        let lock = requests.lock().await;
+        let mut lock = requests.lock().await;
 
-        if let Some(callback) = lock.get(id) {
-            callback(Ok(()));
+        if let Some(callback) = lock.remove(id) {
+            runtime.spawn(async move {
+                callback(Ok(()));
+            });
         }
     }
 
@@ -390,6 +386,7 @@ async fn invoke_acknowledgement_callback(
 }
 
 async fn invoke_error_callback(
+    runtime: &Arc<Runtime>,
     requests: &RequestCache,
     id: Option<&[u8]>,
     content: Option<&[u8]>,
@@ -403,11 +400,12 @@ async fn invoke_error_callback(
     println!("code: {} message: {:?}", error.code().0, error.error());
 
     if let Some(id) = id {
-        let lock = requests.lock().await;
+        let mut lock = requests.lock().await;
 
-        if let Some(callback) = lock.get(id) {
-            // TODO replace this with a proper error
-            callback(Err(SelfError::WebsocketProtocolErrorUnknown));
+        if let Some(callback) = lock.remove(id) {
+            runtime.spawn(async move {
+                callback(Err(SelfError::WebsocketProtocolErrorUnknown));
+            });
         }
     }
 
@@ -415,12 +413,10 @@ async fn invoke_error_callback(
 }
 
 async fn invoke_message_callback(
+    runtime: &Arc<Runtime>,
     subscriptions: &SubscriptionCache,
     write_tx: &Sender<Event>,
-    on_message: &OnMessageCB,
-    on_commit: &OnCommitCB,
-    on_key_package: &OnKeyPackageCB,
-    on_welcome: &OnWelcomeCB,
+    callbacks: &Callbacks,
     content: Option<&[u8]>,
 ) -> Result<(), SelfError> {
     let content = match content {
@@ -468,7 +464,7 @@ async fn invoke_message_callback(
     match payload.type_() {
         ContentType::MLS_COMMIT => {
             invoke_mls_commit_callback(
-                on_commit,
+                &callbacks.on_commit,
                 &sender,
                 &recipient,
                 payload.sequence(),
@@ -479,7 +475,8 @@ async fn invoke_message_callback(
         }
         ContentType::MLS_KEY_PACKAGE => {
             invoke_mls_key_package_callback(
-                on_key_package,
+                runtime,
+                &callbacks.on_key_package,
                 &sender,
                 &recipient,
                 payload.sequence(),
@@ -492,7 +489,7 @@ async fn invoke_message_callback(
             invoke_mls_message_callback(
                 subscriptions,
                 write_tx,
-                on_message,
+                &callbacks.on_message,
                 &sender,
                 &recipient,
                 payload.sequence(),
@@ -507,7 +504,8 @@ async fn invoke_message_callback(
         }
         ContentType::MLS_WELCOME => {
             invoke_mls_welcome_callback(
-                on_welcome,
+                runtime,
+                &callbacks.on_welcome,
                 &sender,
                 &recipient,
                 payload.sequence(),
@@ -549,6 +547,7 @@ async fn invoke_mls_commit_callback(
 }
 
 async fn invoke_mls_key_package_callback(
+    runtime: &Arc<Runtime>,
     on_key_package: &OnKeyPackageCB,
     sender: &PublicKey,
     recipient: &PublicKey,
@@ -562,15 +561,21 @@ async fn invoke_mls_key_package_callback(
     };
 
     let package = match content.package() {
-        Some(package) => package,
+        Some(package) => package.to_vec(),
         None => return Ok(()),
     };
 
-    on_key_package(&KeyPackage {
-        sender,
-        recipient,
-        package,
-        sequence,
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_key_package = on_key_package.clone();
+
+    runtime.spawn(async move {
+        on_key_package(&KeyPackage {
+            sender,
+            recipient,
+            package,
+            sequence,
+        });
     });
 
     Ok(())
@@ -644,6 +649,7 @@ async fn invoke_mls_message_callback(
 }
 
 async fn invoke_mls_welcome_callback(
+    runtime: &Arc<Runtime>,
     on_welcome: &OnWelcomeCB,
     sender: &PublicKey,
     recipient: &PublicKey,
@@ -657,15 +663,21 @@ async fn invoke_mls_welcome_callback(
     };
 
     let welcome = match content.welcome() {
-        Some(welcome) => welcome,
+        Some(welcome) => welcome.to_vec(),
         None => return Ok(()),
     };
 
-    on_welcome(&Welcome {
-        sender,
-        recipient,
-        welcome,
-        sequence,
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_welcome = on_welcome.clone();
+
+    runtime.spawn(async move {
+        on_welcome(&Welcome {
+            sender,
+            recipient,
+            welcome,
+            sequence,
+        });
     });
 
     Ok(())

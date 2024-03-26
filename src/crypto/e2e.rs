@@ -113,21 +113,87 @@ pub fn mls_group_create(
     Ok(())
 }
 
-pub fn mls_group_add_members(
+pub fn mls_group_create_with_members(
     txn: &Transaction,
+    group_address: &[u8],
     signature_key: &KeyPair,
     key_packages: &[&[u8]],
 ) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
     let backend = &MlsProvider::new(txn);
 
-    let mut group = match MlsGroup::load(&GroupId::from_slice(signature_key.address()), backend) {
+    let credential =
+        Credential::new(signature_key.address().to_owned(), CredentialType::Basic).unwrap();
+
+    let group_cfg = &MlsGroupConfig::builder()
+        .use_ratchet_tree_extension(true)
+        .build();
+
+    let mut group = MlsGroup::new_with_group_id(
+        backend,
+        signature_key,
+        group_cfg,
+        GroupId::from_slice(group_address),
+        CredentialWithKey {
+            credential,
+            signature_key: signature_key.public().public_key_bytes().into(),
+        },
+    )
+    .map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    let key_packages: Vec<KeyPackage> = key_packages
+        .iter()
+        .map(|kp| ciborium::de::from_reader(*kp).expect("failed to deserialize key package"))
+        .collect();
+
+    let (commit_out, welcome_out, _) = group
+        .add_members(backend, signature_key, &key_packages)
+        .map_err(|err| {
+            println!("mls error: {}", err);
+            SelfError::StorageUnknown
+        })?;
+
+    group.merge_pending_commit(backend).map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    let commit = commit_out.tls_serialize_detached().map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    let welcome = welcome_out.tls_serialize_detached().map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    Ok((commit, welcome))
+}
+
+pub fn mls_group_add_members(
+    txn: &Transaction,
+    group_address: &[u8],
+    signature_key: &KeyPair,
+    key_packages: &[&[u8]],
+) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+    let backend = &MlsProvider::new(txn);
+
+    let mut group = match MlsGroup::load(&GroupId::from_slice(group_address), backend) {
         Some(group) => group,
-        None => return Err(SelfError::KeyPairNotFound),
+        None => {
+            return {
+                println!("group is none");
+                Err(SelfError::KeyPairNotFound)
+            }
+        }
     };
 
     let key_packages: Vec<KeyPackage> = key_packages
         .iter()
-        .map({ |kp| ciborium::de::from_reader(*kp).expect("failed to deserialize key package") })
+        .map(|kp| ciborium::de::from_reader(*kp).expect("failed to deserialize key package"))
         .collect();
 
     let (commit_out, welcome_out, _) = group

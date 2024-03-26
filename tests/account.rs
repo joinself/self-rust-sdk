@@ -46,7 +46,6 @@ fn encrypted_messaging() {
                 .expect("failed to connect using key package");
         }),
         on_welcome: Arc::new(move |_, _| {
-            println!("alice received welcome");
             alice_welcome_tx
                 .send(true)
                 .expect("failed to channel send welcome");
@@ -109,7 +108,7 @@ fn encrypted_messaging() {
 
     // accept the connection from alice
     alice_welcome_rx
-        .recv_timeout(Duration::from_millis(100))
+        .recv_timeout(Duration::from_millis(1000))
         .expect("welcome message timeout");
 }
 

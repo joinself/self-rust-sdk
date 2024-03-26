@@ -1,5 +1,3 @@
-use crossbeam::epoch::Atomic;
-
 use crate::account::{Commit, KeyPackage, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
@@ -11,7 +9,7 @@ use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
 
 use std::any::Any;
 use std::ptr;
-use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 
 pub type OnConnectCB = Arc<dyn Fn(Arc<dyn Any + Send>) + Sync + Send>;
@@ -85,18 +83,16 @@ impl Account {
         let storage = Box::into_raw(Box::new(storage));
         let websocket = Box::into_raw(Box::new(websocket));
 
-        self.rpc.swap(rpc, std::sync::atomic::Ordering::SeqCst);
-        self.storage
-            .swap(storage, std::sync::atomic::Ordering::SeqCst);
-        self.websocket
-            .swap(websocket, std::sync::atomic::Ordering::SeqCst);
+        self.rpc.swap(rpc, Ordering::SeqCst);
+        self.storage.swap(storage, Ordering::SeqCst);
+        self.websocket.swap(websocket, Ordering::SeqCst);
 
         Ok(())
     }
 
     /// generates and stores a new signing keypair
     pub fn keypair_create(&self) -> Result<PublicKey, SelfError> {
-        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
@@ -118,17 +114,17 @@ impl Account {
 
     /// opens a new messaging inbox and subscribes to it
     pub fn inbox_open(&self, key: Option<&PublicKey>) -> Result<PublicKey, SelfError> {
-        let rpc = self.rpc.load(std::sync::atomic::Ordering::SeqCst);
+        let rpc = self.rpc.load(Ordering::SeqCst);
         if rpc.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        let websocket = self.websocket.load(Ordering::SeqCst);
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
@@ -198,18 +194,15 @@ impl Account {
         with_address: &PublicKey,
         key_package: Option<&[u8]>,
     ) -> Result<(), SelfError> {
-        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        let websocket = self.websocket.load(Ordering::SeqCst);
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
-
-        let mut payload: Vec<u8> = Vec::new();
-        let mut as_keypair: Option<KeyPair> = None;
 
         unsafe {
             if let Some(key_package) = key_package {
@@ -233,12 +226,12 @@ impl Account {
         to_address: &PublicKey,
         content: &[u8],
     ) -> Result<(), SelfError> {
-        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        let websocket = self.websocket.load(Ordering::SeqCst);
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
@@ -285,12 +278,12 @@ impl Account {
     }
 
     pub fn group_create(&self, as_address: &KeyPair) -> Result<PublicKey, SelfError> {
-        let storage = self.storage.load(std::sync::atomic::Ordering::SeqCst);
+        let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = self.websocket.load(std::sync::atomic::Ordering::SeqCst);
+        let websocket = self.websocket.load(Ordering::SeqCst);
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
@@ -428,9 +421,12 @@ fn connection_establish(
 
         // TODO think about how what roles actually means here...
         query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
-        e2e::mls_group_create(txn, group_kp.address(), &as_address)?;
-        let (commit_message, welcome_message) =
-            e2e::mls_group_add_members(txn, &as_address, &[key_package])?;
+        let (commit_message, welcome_message) = e2e::mls_group_create_with_members(
+            txn,
+            group_kp.address(),
+            as_address,
+            &[key_package],
+        )?;
 
         // generate send token
 
@@ -439,7 +435,7 @@ fn connection_establish(
         // generate push token
 
         welcome_payload = Some(websocket::assemble_payload_welcome(
-            &as_address,
+            as_address,
             with_address,
             0,
             &welcome_message,
@@ -448,7 +444,7 @@ fn connection_establish(
         )?);
 
         commit_payload = Some(websocket::assemble_payload_commit(
-            &as_address,
+            as_address,
             group_kp.public(),
             0,
             &commit_message,
@@ -492,7 +488,7 @@ fn connection_establish(
     // send the commit message to the group inbox
     websocket.send(
         as_keypair,
-        &commit_payload,
+        commit_payload,
         None,
         Arc::new(move |resp| {
             resp_tx.send(resp).unwrap();
@@ -512,7 +508,7 @@ fn connection_establish(
     // websocket send
     websocket.send(
         as_keypair,
-        &welcome_payload,
+        welcome_payload,
         None,
         Arc::new(move |resp| {
             resp_tx.send(resp).unwrap();
@@ -582,9 +578,9 @@ fn on_key_package_cb(
         callback(
             user_data.clone(),
             &KeyPackage {
-                sender: package.sender,
-                recipient: package.recipient,
-                package: package.package,
+                sender: &package.sender,
+                recipient: &package.recipient,
+                package: &package.package,
             },
         );
     })
@@ -598,9 +594,9 @@ fn on_welcome_cb(
         callback(
             user_data.clone(),
             &Welcome {
-                sender: welcome.sender,
-                recipient: welcome.recipient,
-                welcome: welcome.welcome,
+                sender: &welcome.sender,
+                recipient: &welcome.recipient,
+                welcome: &welcome.welcome,
             },
         );
     })
