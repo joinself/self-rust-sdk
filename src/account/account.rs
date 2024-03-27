@@ -1,5 +1,3 @@
-use libc::group;
-
 use crate::account::{Commit, KeyPackage, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
@@ -53,7 +51,7 @@ impl Account {
         rpc_endpoint: &str,
         messaging_endpoint: &str,
         storage_path: &str,
-        storage_key: &[u8],
+        _storage_key: &[u8],
         callbacks: MessagingCallbacks,
         user_data: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), SelfError> {
@@ -194,7 +192,7 @@ impl Account {
     }
 
     /// permanently close an inbox
-    pub fn inbox_close(&self, key: &PublicKey) -> Result<(), SelfError> {
+    pub fn inbox_close(&self, _key: &PublicKey) -> Result<(), SelfError> {
         Ok(())
     }
 

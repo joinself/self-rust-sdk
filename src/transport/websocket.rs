@@ -326,7 +326,7 @@ impl Websocket {
     }
 
     /// close an inbox
-    pub fn close(&self, address: &KeyPair) -> Result<(), SelfError> {
+    pub fn close(&self, _address: &KeyPair) -> Result<(), SelfError> {
         Ok(())
     }
 

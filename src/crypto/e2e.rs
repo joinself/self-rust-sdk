@@ -1,4 +1,4 @@
-use openmls::prelude::{config::CryptoConfig, Ciphersuite, Welcome, *};
+use openmls::prelude::{config::CryptoConfig, Ciphersuite, *};
 use openmls_rust_crypto::RustCrypto;
 use openmls_traits::OpenMlsCryptoProvider;
 
