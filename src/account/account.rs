@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 pub type OnConnectCB = Arc<dyn Fn(Arc<dyn Any + Send>) + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Arc<dyn Any + Send>, Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Message) -> Option<Message> + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Message) + Sync + Send>;
 pub type OnCommitCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Commit) + Sync + Send>;
 pub type OnKeyPackageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &KeyPackage) + Sync + Send>;
 pub type OnWelcomeCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Welcome) + Sync + Send>;
@@ -549,8 +549,14 @@ fn on_message_cb(
     callback: OnMessageCB,
 ) -> websocket::OnMessageCB {
     Arc::new(move |message| {
-        callback(user_data.clone(), &Message::Custom);
-        None
+        callback(
+            user_data.clone(),
+            &Message {
+                sender: &message.sender,
+                recipient: &message.recipient,
+                message: &message.message,
+            },
+        );
     })
 }
 
@@ -562,9 +568,9 @@ fn on_commit_cb(
         callback(
             user_data.clone(),
             &Commit {
-                sender: commit.sender,
-                recipient: commit.recipient,
-                commit: commit.commit,
+                sender: &commit.sender,
+                recipient: &commit.recipient,
+                commit: &commit.commit,
             },
         );
     })

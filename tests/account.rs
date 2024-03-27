@@ -34,7 +34,12 @@ fn encrypted_messaging() {
     let alice_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|_| {}),
         on_disconnect: Arc::new(|_, _| {}),
-        on_message: Arc::new(|_, _| None),
+        on_message: Arc::new(|_, message| {
+            println!(
+                "alice received from sender: {}",
+                message.sender.to_did_key()
+            );
+        }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, key_package| {
             alice_kpc
@@ -70,7 +75,12 @@ fn encrypted_messaging() {
     let bobby_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|_| {}),
         on_disconnect: Arc::new(|_, _| {}),
-        on_message: Arc::new(|_, _| None),
+        on_message: Arc::new(|_, message| {
+            println!(
+                "bobby received from sender: {}",
+                message.sender.to_did_key()
+            );
+        }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, key_package| {
             bobby_kpc
@@ -81,9 +91,7 @@ fn encrypted_messaging() {
                 )
                 .expect("failed to connect using key package");
         }),
-        on_welcome: Arc::new(|_, _| {
-            println!("bobby received welcome");
-        }),
+        on_welcome: Arc::new(|_, _| {}),
     };
 
     bobby
@@ -110,6 +118,8 @@ fn encrypted_messaging() {
     alice_welcome_rx
         .recv_timeout(Duration::from_millis(1000))
         .expect("welcome message timeout");
+
+    // alice send an encrypted message to the group
 }
 
 /*

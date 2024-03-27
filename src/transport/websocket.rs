@@ -2,7 +2,7 @@ use crossbeam::channel;
 use crossbeam::channel::{Receiver, Sender};
 use flatbuffers::{Vector, WIPOffset};
 use futures_util::{SinkExt, StreamExt};
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol;
@@ -18,26 +18,19 @@ use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::protocol::messaging::{self, ContentType, EventType};
 use crate::token::Token;
 
-pub struct Response {
-    pub from: PublicKey,
-    pub to: PublicKey,
-    pub sequence: u64,
-    pub content: Vec<u8>,
-    pub tokens: Option<Vec<Token>>,
-    pub callback: SendCallback,
-}
-
-pub struct Message<'m> {
-    pub sender: &'m PublicKey,
-    pub recipient: &'m PublicKey,
-    pub message: &'m [u8],
+pub struct Message {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub message: Vec<u8>,
+    pub timestamp: i64,
     pub sequence: u64,
 }
 
-pub struct Commit<'m> {
-    pub sender: &'m PublicKey,
-    pub recipient: &'m PublicKey,
-    pub commit: &'m [u8],
+pub struct Commit {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub commit: Vec<u8>,
+    pub timestamp: i64,
     pub sequence: u64,
 }
 
@@ -45,6 +38,7 @@ pub struct KeyPackage {
     pub sender: PublicKey,
     pub recipient: PublicKey,
     pub package: Vec<u8>,
+    pub timestamp: i64,
     pub sequence: u64,
 }
 
@@ -52,12 +46,13 @@ pub struct Welcome {
     pub sender: PublicKey,
     pub recipient: PublicKey,
     pub welcome: Vec<u8>,
+    pub timestamp: i64,
     pub sequence: u64,
 }
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(&Message) -> Option<Response> + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(&Message) + Sync + Send>;
 pub type OnCommitCB = Arc<dyn Fn(&Commit) + Sync + Send>;
 pub type OnKeyPackageCB = Arc<dyn Fn(&KeyPackage) + Sync + Send>;
 pub type OnWelcomeCB = Arc<dyn Fn(&Welcome) + Sync + Send>;
@@ -190,7 +185,6 @@ impl Websocket {
                         &callback_runtime,
                         &requests_rx,
                         &subscriptions,
-                        &write_tx,
                         &callbacks,
                         &event.into_data(),
                     )
@@ -343,7 +337,6 @@ async fn handle_event_binary(
     runtime: &Arc<Runtime>,
     requests: &RequestCache,
     subscriptions: &SubscriptionCache,
-    write_tx: &Sender<Event>,
     callbacks: &Callbacks,
     data: &[u8],
 ) -> Result<(), SelfError> {
@@ -360,8 +353,7 @@ async fn handle_event_binary(
             invoke_error_callback(runtime, requests, event.id(), event.content()).await
         }
         EventType::MESSAGE => {
-            invoke_message_callback(runtime, subscriptions, write_tx, callbacks, event.content())
-                .await
+            invoke_message_callback(runtime, subscriptions, callbacks, event.content()).await
         }
         _ => Err(SelfError::WebsocketProtocolErrorUnknown),
     }
@@ -415,7 +407,6 @@ async fn invoke_error_callback(
 async fn invoke_message_callback(
     runtime: &Arc<Runtime>,
     subscriptions: &SubscriptionCache,
-    write_tx: &Sender<Event>,
     callbacks: &Callbacks,
     content: Option<&[u8]>,
 ) -> Result<(), SelfError> {
@@ -464,6 +455,7 @@ async fn invoke_message_callback(
     match payload.type_() {
         ContentType::MLS_COMMIT => {
             invoke_mls_commit_callback(
+                runtime,
                 &callbacks.on_commit,
                 &sender,
                 &recipient,
@@ -487,8 +479,8 @@ async fn invoke_message_callback(
         }
         ContentType::MLS_MESSAGE => {
             invoke_mls_message_callback(
+                runtime,
                 subscriptions,
-                write_tx,
                 &callbacks.on_message,
                 &sender,
                 &recipient,
@@ -519,6 +511,7 @@ async fn invoke_message_callback(
 }
 
 async fn invoke_mls_commit_callback(
+    runtime: &Arc<Runtime>,
     on_commit: &OnCommitCB,
     sender: &PublicKey,
     recipient: &PublicKey,
@@ -532,15 +525,22 @@ async fn invoke_mls_commit_callback(
     };
 
     let commit = match content.commit() {
-        Some(commit) => commit,
+        Some(commit) => commit.to_vec(),
         None => return Ok(()),
     };
 
-    on_commit(&Commit {
-        sender,
-        recipient,
-        commit,
-        sequence,
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_commit = on_commit.clone();
+
+    runtime.spawn(async move {
+        on_commit(&Commit {
+            sender,
+            recipient,
+            commit,
+            timestamp,
+            sequence,
+        });
     });
 
     Ok(())
@@ -574,6 +574,7 @@ async fn invoke_mls_key_package_callback(
             sender,
             recipient,
             package,
+            timestamp,
             sequence,
         });
     });
@@ -582,8 +583,8 @@ async fn invoke_mls_key_package_callback(
 }
 
 async fn invoke_mls_message_callback(
+    runtime: &Arc<Runtime>,
     subscriptions: &SubscriptionCache,
-    write_tx: &Sender<Event>,
     on_message: &OnMessageCB,
     sender: &PublicKey,
     recipient: &PublicKey,
@@ -613,37 +614,23 @@ async fn invoke_mls_message_callback(
     };
 
     let message = match content.message() {
-        Some(message) => message,
+        Some(message) => message.to_vec(),
         None => return Ok(()),
     };
 
-    // invoke the user defined event and send a response
-    if let Some(response) = on_message(&Message {
-        sender,
-        recipient,
-        message,
-        sequence,
-    }) {
-        let payload = assemble_payload_message(
-            &subscriber,
-            &response.to,
-            response.sequence,
-            &response.content,
-        )?;
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_message = on_message.clone();
 
-        let (event_id, event_message) = assemble_message(&subscriber, &payload, response.tokens)?;
-
-        let event = Event::Message(
-            event_id,
-            protocol::Message::Binary(event_message),
-            Some(Arc::clone(&response.callback)),
-        );
-
-        if write_tx.send(event).is_err() {
-            // TODO handle this error properly
-            (response.callback)(Err(SelfError::RestRequestConnectionTimeout));
-        }
-    };
+    runtime.spawn(async move {
+        on_message(&Message {
+            sender,
+            recipient,
+            message,
+            timestamp,
+            sequence,
+        });
+    });
 
     Ok(())
 }
@@ -676,6 +663,7 @@ async fn invoke_mls_welcome_callback(
             sender,
             recipient,
             welcome,
+            timestamp,
             sequence,
         });
     });
@@ -1590,7 +1578,7 @@ mod tests {
         let callbacks = Callbacks {
             on_connect: Arc::new(|| {}),
             on_disconnect: Arc::new(|_| {}),
-            on_message: Arc::new(|_| None),
+            on_message: Arc::new(|_| {}),
             on_commit: Arc::new(|_| {}),
             on_key_package: Arc::new(|_| {}),
             on_welcome: Arc::new(|_| {}),

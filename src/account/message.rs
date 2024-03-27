@@ -1,15 +1,15 @@
 use crate::keypair::signing::PublicKey;
 
-pub enum Message {
-    Custom,
-    ConnectionRequest,
-    ConnectionResponse,
+pub struct Message<'m> {
+    pub sender: &'m PublicKey,
+    pub recipient: &'m PublicKey,
+    pub message: &'m [u8],
 }
 
-pub struct Commit<'w> {
-    pub sender: &'w PublicKey,
-    pub recipient: &'w PublicKey,
-    pub commit: &'w [u8],
+pub struct Commit<'c> {
+    pub sender: &'c PublicKey,
+    pub recipient: &'c PublicKey,
+    pub commit: &'c [u8],
 }
 
 pub struct Welcome<'w> {
