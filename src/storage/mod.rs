@@ -13,11 +13,6 @@ pub use self::transaction::Transaction;
 #[cfg(test)]
 mod tests {
     use crate::storage::connection::Connection;
-    use crate::storage::schema::{
-        schema_create_encryption_key_pairs, schema_create_group_states,
-        schema_create_hpke_private_keys, schema_create_key_packages, schema_create_psk_bundles,
-        schema_create_signature_key_pairs,
-    };
     use crate::storage::transaction::Transaction;
     use openmls::prelude::{config::CryptoConfig, *};
     use openmls::treesync::RatchetTree;

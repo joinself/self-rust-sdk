@@ -1,9 +1,12 @@
-use openmls::prelude::{config::CryptoConfig, Ciphersuite, *};
+use openmls::prelude::{config::CryptoConfig, Ciphersuite, Welcome, *};
 use openmls_rust_crypto::RustCrypto;
 use openmls_traits::OpenMlsCryptoProvider;
 
 use crate::error::SelfError;
-use crate::{keypair::signing::KeyPair, storage::Transaction};
+use crate::{
+    keypair::signing::{KeyPair, PublicKey},
+    storage::Transaction,
+};
 
 pub const DEFAULT_CIPHER_SUITE: Ciphersuite =
     Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -53,12 +56,11 @@ pub fn mls_inbox_setup(
     for _ in 0..key_packages {
         // generate a key package for asynchronous handshake
         let key_package = mls_key_package_generate(backend, signature_key, credential.clone())?;
-
-        let mut encoded_key_package = Vec::new();
-        ciborium::ser::into_writer(&key_package, &mut encoded_key_package)
+        let key_package_encoded = key_package
+            .tls_serialize_detached()
             .expect("failed to encode key package");
 
-        packages.push(encoded_key_package);
+        packages.push(key_package_encoded);
     }
 
     Ok(packages)
@@ -73,12 +75,11 @@ pub fn mls_key_package_create(
 
     // generate a key package for asynchronous handshake
     let key_package = mls_key_package_generate(backend, signature_key, credential.clone())?;
-
-    let mut encoded_key_package = Vec::new();
-    ciborium::ser::into_writer(&key_package, &mut encoded_key_package)
+    let key_package_encoded = key_package
+        .tls_serialize_detached()
         .expect("failed to encode key package");
 
-    Ok(encoded_key_package)
+    Ok(key_package_encoded)
 }
 
 pub fn mls_group_create(
@@ -95,7 +96,7 @@ pub fn mls_group_create(
         .use_ratchet_tree_extension(true)
         .build();
 
-    MlsGroup::new_with_group_id(
+    let mut group = MlsGroup::new_with_group_id(
         backend,
         signature_key,
         group_cfg,
@@ -110,7 +111,53 @@ pub fn mls_group_create(
         SelfError::StorageUnknown
     })?;
 
+    group.save(backend).map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
     Ok(())
+}
+
+pub fn mls_group_create_from_welcome(
+    txn: &Transaction,
+    welcome: &[u8],
+) -> Result<(PublicKey, Vec<PublicKey>), SelfError> {
+    let backend = &MlsProvider::new(txn);
+
+    let group_cfg = &MlsGroupConfig::builder()
+        .use_ratchet_tree_extension(true)
+        .build();
+
+    let message_in = MlsMessageIn::tls_deserialize_bytes(welcome).map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    let welcome = match message_in.extract() {
+        MlsMessageInBody::Welcome(welcome) => welcome,
+        _ => return Err(SelfError::StorageUnknown),
+    };
+
+    let mut group =
+        MlsGroup::new_from_welcome(backend, group_cfg, welcome, None).map_err(|err| {
+            println!("mls error: {}", err);
+            SelfError::StorageUnknown
+        })?;
+
+    group.save(backend).map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    let mut members = Vec::new();
+    let group_address = PublicKey::from_bytes(group.group_id().as_slice())?;
+
+    for member in group.members() {
+        members.push(PublicKey::from_bytes(member.credential.identity())?)
+    }
+
+    Ok((group_address, members))
 }
 
 pub fn mls_group_create_with_members(
@@ -143,19 +190,37 @@ pub fn mls_group_create_with_members(
         SelfError::StorageUnknown
     })?;
 
-    let key_packages: Vec<KeyPackage> = key_packages
-        .iter()
-        .map(|kp| ciborium::de::from_reader(*kp).expect("failed to deserialize key package"))
-        .collect();
+    let mut key_packages_decoded = Vec::new();
+
+    for kp in key_packages {
+        let key_package_in = KeyPackageIn::tls_deserialize_bytes(kp).map_err(|err| {
+            println!("mls error: {}", err);
+            SelfError::StorageUnknown
+        })?;
+
+        let key_package = key_package_in
+            .validate(backend.crypto(), ProtocolVersion::default())
+            .map_err(|err| {
+                println!("mls error: {}", err);
+                SelfError::StorageUnknown
+            })?;
+
+        key_packages_decoded.push(key_package);
+    }
 
     let (commit_out, welcome_out, _) = group
-        .add_members(backend, signature_key, &key_packages)
+        .add_members(backend, signature_key, &key_packages_decoded)
         .map_err(|err| {
             println!("mls error: {}", err);
             SelfError::StorageUnknown
         })?;
 
     group.merge_pending_commit(backend).map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    group.save(backend).map_err(|err| {
         println!("mls error: {}", err);
         SelfError::StorageUnknown
     })?;
@@ -191,19 +256,37 @@ pub fn mls_group_add_members(
         }
     };
 
-    let key_packages: Vec<KeyPackage> = key_packages
-        .iter()
-        .map(|kp| ciborium::de::from_reader(*kp).expect("failed to deserialize key package"))
-        .collect();
+    let mut key_packages_decoded = Vec::new();
+
+    for kp in key_packages {
+        let key_package_in = KeyPackageIn::tls_deserialize_bytes(*kp).map_err(|err| {
+            println!("mls error: {}", err);
+            SelfError::StorageUnknown
+        })?;
+
+        let key_package = key_package_in
+            .validate(backend.crypto(), ProtocolVersion::default())
+            .map_err(|err| {
+                println!("mls error: {}", err);
+                SelfError::StorageUnknown
+            })?;
+
+        key_packages_decoded.push(key_package);
+    }
 
     let (commit_out, welcome_out, _) = group
-        .add_members(backend, signature_key, &key_packages)
+        .add_members(backend, signature_key, &key_packages_decoded)
         .map_err(|err| {
             println!("mls error: {}", err);
             SelfError::StorageUnknown
         })?;
 
     group.merge_pending_commit(backend).map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    group.save(backend).map_err(|err| {
         println!("mls error: {}", err);
         SelfError::StorageUnknown
     })?;

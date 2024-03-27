@@ -60,6 +60,106 @@ where
     stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))
 }
 
+pub fn group_create(
+    txn: &Transaction,
+    group_address: &[u8],
+    purpose: u64,
+) -> Result<(), SelfError> {
+    address_create(txn, group_address)?;
+
+    txn.prepare(
+        "INSERT INTO groups (address, purpose)
+        VALUES(
+            (SELECT id FROM addresses WHERE address=?1),
+            ?2
+        );",
+    )?
+    .bind_blob(1, group_address)?
+    .bind_integer(2, purpose as i64)?
+    .execute()
+}
+
+pub fn group_with(
+    txn: &Transaction,
+    member_address: &[u8],
+    purpose: u64,
+) -> Result<Option<Vec<u8>>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT a1.address FROM groups
+        JOIN members m1 ON
+            m1.group_id = groups.id
+        JOIN addresses a1 ON
+            a1.id = groups.address
+        JOIN addresses a2 ON
+            a2.id = m1.member_address
+        WHERE a2.address = ?1 AND groups.purpose = ?2;",
+    )?;
+
+    stmt.bind_blob(1, member_address)?;
+    stmt.bind_integer(2, purpose as i64)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    stmt.column_blob(0)
+}
+
+pub fn group_as(
+    txn: &Transaction,
+    group_address: &[u8],
+    purpose: u64,
+) -> Result<Option<Vec<u8>>, SelfError> {
+    // these two queries are suboptimal
+    // as we could just return these in one
+    // however, this is more composable
+    // for other usecases
+    let stmt = txn.prepare(
+        "SELECT a2.address FROM groups
+        JOIN members m1 ON
+            m1.group_id = groups.id
+        JOIN keypairs k1 ON
+            k1.address = a2.id
+        JOIN addresses a1 ON
+            a1.id = groups.address
+        JOIN addresses a2 ON
+            a2.id = m1.member_address
+        WHERE a1.address = ?1 AND groups.purpose = ?2;",
+    )?;
+
+    stmt.bind_blob(1, group_address)?;
+    stmt.bind_integer(2, purpose as i64)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    stmt.column_blob(0)
+}
+
+pub fn group_member_add(
+    txn: &Transaction,
+    group_address: &[u8],
+    member_address: &[u8],
+) -> Result<(), SelfError> {
+    address_create(txn, member_address)?;
+
+    let stmt = txn.prepare(
+        "INSERT INTO members (group_id, member_address)
+        VALUES(
+            (SELECT groups.id FROM groups
+                JOIN addresses a1 ON
+                    a1.id = groups.address 
+                WHERE a1.address=?1),
+            (SELECT id FROM addresses WHERE address=?2)
+        );",
+    )?;
+
+    stmt.bind_blob(1, group_address)?
+        .bind_blob(2, member_address)?
+        .execute()
+}
+
 pub fn token_create(
     txn: &Transaction,
     from_address: &[u8],
@@ -87,75 +187,3 @@ pub fn token_create(
 
     Ok(())
 }
-
-/*
-pub fn metrics_create(
-    txn: &mut Transaction,
-    as_address: &signing::PublicKey,
-    with_address: &signing::PublicKey,
-) -> Result<(), SelfError> {
-    txn.execute(
-        "INSERT INTO metrics (as_address, with_address, sequence)
-            VALUES(
-                (SELECT id FROM addresses WHERE address = ?1),
-                (SELECT id FROM addresses WHERE address = ?2),
-                0
-            );",
-        (as_address.address(), with_address.address()),
-    )
-    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-    Ok(())
-}
-
-pub fn metrics_sequence_get(
-    txn: &mut Transaction,
-    as_address: &signing::PublicKey,
-    with_address: &signing::PublicKey,
-) -> Result<u64, SelfError> {
-    // get the metrcis (transmission sequence) for the recipient group
-    let mut statement = txn
-        .prepare(
-            "SELECT sequence FROM metrics
-            JOIN addresses i1 ON
-                i1.id = metrics.as_address
-            JOIN addresses i2 ON
-                i2.id = metrics.with_address
-            WHERE i1.address = ?1 AND i2.address = ?2;",
-        )
-        .expect("failed to prepare statement");
-
-    let mut rows = match statement.query([as_address.address(), with_address.address()]) {
-        Ok(rows) => rows,
-        Err(_) => return Err(SelfError::MessagingDestinationUnknown),
-    };
-
-    match rows.next() {
-        Ok(row) => match row {
-            Some(row) => row
-                .get(0)
-                .map_err(|_| SelfError::StorageTransactionCommitFailed),
-            None => Err(SelfError::MessagingDestinationUnknown),
-        },
-        Err(_) => Err(SelfError::StorageTransactionCommitFailed),
-    }
-}
-
-pub fn metrics_sequence_update(
-    txn: &mut Transaction,
-    as_address: &signing::PublicKey,
-    with_address: &signing::PublicKey,
-    sequence: u64,
-) -> Result<(), SelfError> {
-    txn.execute(
-        "UPDATE metrics
-        SET sequence = ?3
-        WHERE as_address = (SELECT id FROM addresses WHERE address=?1)
-        AND with_address = (SELECT id FROM addresses WHERE address=?2);",
-        (as_address.address(), with_address.address(), sequence),
-    )
-    .map_err(|_| SelfError::StorageTransactionCommitFailed)?;
-
-    Ok(())
-}
- */

@@ -29,7 +29,7 @@ fn encrypted_messaging() {
 
     // setup alices account
     let mut alice = Account::new();
-    let alice_kpc = alice.clone();
+    let alice_wm_cb = alice.clone();
 
     let alice_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|_| {}),
@@ -41,16 +41,15 @@ fn encrypted_messaging() {
             );
         }),
         on_commit: Arc::new(|_, _| {}),
-        on_key_package: Arc::new(move |_, key_package| {
-            alice_kpc
-                .connection_connect(
-                    key_package.recipient,
-                    key_package.sender,
-                    Some(key_package.package),
-                )
-                .expect("failed to connect using key package");
+        on_key_package: Arc::new(move |_, _| {
+            println!("alice received key package");
         }),
-        on_welcome: Arc::new(move |_, _| {
+        on_welcome: Arc::new(move |_, welcome| {
+            println!("alice received welcome");
+            alice_wm_cb
+                .connection_accept(welcome.recipient, welcome.welcome)
+                .expect("failed to connect using welcome mesage");
+
             alice_welcome_tx
                 .send(true)
                 .expect("failed to channel send welcome");
@@ -70,7 +69,7 @@ fn encrypted_messaging() {
 
     // setup bob's account
     let mut bobby = Account::new();
-    let bobby_kpc = bobby.clone();
+    let bobby_kp_cb = bobby.clone();
 
     let bobby_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|_| {}),
@@ -83,7 +82,7 @@ fn encrypted_messaging() {
         }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, key_package| {
-            bobby_kpc
+            bobby_kp_cb
                 .connection_connect(
                     key_package.recipient,
                     key_package.sender,
@@ -109,6 +108,8 @@ fn encrypted_messaging() {
     let alice_inbox = alice.inbox_open(None).expect("failed to open inbox");
     let bobby_inbox = bobby.inbox_open(None).expect("failed to open inbox");
 
+    println!("bobby inbox: {}", hex::encode(bobby_inbox.address()));
+
     // initiate a connection from alice to bob
     alice
         .connection_connect(&alice_inbox, &bobby_inbox, None)
@@ -119,7 +120,12 @@ fn encrypted_messaging() {
         .recv_timeout(Duration::from_millis(1000))
         .expect("welcome message timeout");
 
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
     // alice send an encrypted message to the group
+    alice
+        .message_send(&bobby_inbox, b"hey bobby")
+        .expect("failed to send message");
 }
 
 /*

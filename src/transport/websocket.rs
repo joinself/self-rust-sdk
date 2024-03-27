@@ -232,6 +232,7 @@ impl Websocket {
 
     /// subscribe to some inboxes
     pub fn subscribe(&self, subscriptions: &[Subscription]) -> Result<(), SelfError> {
+        println!("subscribing");
         let (tx, rx) = channel::bounded(1);
         let (event_id, event_subscribe) = assemble_subscription(subscriptions)?;
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -256,9 +257,14 @@ impl Websocket {
         let existing_subscriptions = self.subscriptions.clone();
 
         self.callback_runtime.spawn(async move {
+            println!("subscription callback invoked...");
             let mut existing_subscriptions = existing_subscriptions.lock().await;
 
             for sub in subscriptions {
+                println!(
+                    "adding subscriptions for: {}",
+                    hex::encode(sub.to_address.address())
+                );
                 existing_subscriptions.insert(sub.to_address.address().to_owned(), sub.clone());
             }
         });
@@ -595,15 +601,14 @@ async fn invoke_mls_message_callback(
     // validate the message we have received is for a valid subscription we have
     let active_subs = subscriptions.lock().await;
 
-    let subscriber = match active_subs.get(recipient.address()) {
-        Some(sub) => sub.as_address.clone(),
-        None => {
-            println!(
-                "message received for an unknown recipient: {}",
-                hex::encode(recipient.address())
-            );
-            return Ok(());
-        }
+    println!("active subs: {:?}", active_subs.len());
+
+    if !active_subs.contains_key(recipient.address()) {
+        println!(
+            "message received for an unknown recipient: {}",
+            hex::encode(recipient.address())
+        );
+        return Ok(());
     };
 
     drop(active_subs);

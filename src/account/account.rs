@@ -1,3 +1,5 @@
+use libc::group;
+
 use crate::account::{Commit, KeyPackage, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
@@ -55,6 +57,10 @@ impl Account {
         callbacks: MessagingCallbacks,
         user_data: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), SelfError> {
+        if !self.rpc.load(Ordering::SeqCst).is_null() {
+            return Err(SelfError::AccountAlreadyConfigured);
+        }
+
         let rpc = Rpc::new(rpc_endpoint)?;
         let storage = Connection::new(storage_path)?;
         let mut websocket = Websocket::new(
@@ -83,9 +89,14 @@ impl Account {
         let storage = Box::into_raw(Box::new(storage));
         let websocket = Box::into_raw(Box::new(websocket));
 
+        // TODO compare/exchange this to prevent multiple
+        // from succeeding
         self.rpc.swap(rpc, Ordering::SeqCst);
         self.storage.swap(storage, Ordering::SeqCst);
         self.websocket.swap(websocket, Ordering::SeqCst);
+
+        // TODO - resume subscriptions
+        // TODO - (re-)send messages in outbox
 
         Ok(())
     }
@@ -205,26 +216,24 @@ impl Account {
         };
 
         unsafe {
-            if let Some(key_package) = key_package {
-                connection_establish(
+            match key_package {
+                Some(key_package) => connection_establish(
                     &(*storage),
                     &(*websocket),
                     as_address,
                     with_address,
                     key_package,
-                )
-            } else {
-                connection_initialize(&(*storage), &(*websocket), as_address, with_address)
+                ),
+                None => connection_negotiate(&(*storage), &(*websocket), as_address, with_address),
             }
         }
     }
 
-    /// send a message to an address
-    pub fn message_send_from(
+    // accept a group connection
+    pub fn connection_accept(
         &self,
-        from_address: &PublicKey,
-        to_address: &PublicKey,
-        content: &[u8],
+        as_address: &PublicKey,
+        welcome: &[u8],
     ) -> Result<(), SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
@@ -236,16 +245,51 @@ impl Account {
             return Err(SelfError::AccountNotConfigured);
         };
 
+        unsafe { connection_accept(&(*storage), &(*websocket), as_address, welcome) }
+    }
+
+    /// send a message to an address
+    pub fn message_send(&self, to_address: &PublicKey, content: &[u8]) -> Result<(), SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
         let mut as_address: Option<KeyPair> = None;
+        let mut from_address: Option<PublicKey> = None;
+        let mut group_address: Option<PublicKey> = None;
         let mut ciphertext = Vec::new();
 
         unsafe {
             (*storage).transaction(|txn| {
+                // TODO determine is this is a group, did or inbox address
+                group_address = query::group_with(txn, to_address.address(), 1)?
+                    .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
+
+                let group_address = match &group_address {
+                    Some(group_address) => group_address,
+                    None => return Err(SelfError::KeyPairNotFound),
+                };
+
+                from_address = query::group_as(txn, group_address.address(), 1)?
+                    .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
+
+                let from_address = match &from_address {
+                    Some(from_address) => from_address,
+                    None => return Err(SelfError::KeyPairNotFound),
+                };
+
                 as_address = query::keypair_lookup(txn, from_address.address())?;
                 if let Some(as_address) = &as_address {
                     ciphertext =
-                        e2e::mls_group_encrypt(txn, to_address.address(), as_address, content)?;
+                        e2e::mls_group_encrypt(txn, group_address.address(), as_address, content)?;
                 }
+
                 txn.commit()
             })?;
         }
@@ -255,7 +299,13 @@ impl Account {
             None => return Err(SelfError::KeyPairNotFound),
         };
 
-        let payload = websocket::assemble_payload_message(as_address, to_address, 0, &ciphertext)?;
+        let group_address = match &group_address {
+            Some(group_address) => group_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        let payload =
+            websocket::assemble_payload_message(as_address, group_address, 0, &ciphertext)?;
 
         let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
 
@@ -277,6 +327,7 @@ impl Account {
         // TODO de-queue message from outbox
     }
 
+    /// creates a new group
     pub fn group_create(&self, as_address: &KeyPair) -> Result<PublicKey, SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
@@ -294,6 +345,8 @@ impl Account {
             (*storage).transaction(|txn| {
                 // TODO think about how what roles actually means here...
                 query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+                query::group_create(txn, group_kp.address(), 2)?;
+                query::group_member_add(txn, group_kp.address(), as_address.address())?;
                 e2e::mls_group_create(txn, group_kp.address(), as_address)?;
 
                 txn.commit()
@@ -310,6 +363,11 @@ impl Account {
 
         Ok(group_pk)
     }
+
+    /// list all groups
+    pub fn group_list(&self) -> Result<Vec<PublicKey>, SelfError> {
+        Ok(Vec::new())
+    }
 }
 
 impl Clone for Account {
@@ -322,7 +380,7 @@ impl Clone for Account {
     }
 }
 
-fn connection_initialize(
+fn connection_negotiate(
     storage: &Connection,
     websocket: &Websocket,
     as_address: &PublicKey,
@@ -342,7 +400,7 @@ fn connection_initialize(
         // generate a key package
         let key_package = e2e::mls_key_package_create(txn, as_address)?;
 
-        // generate a send token
+        // generate a temporary send token
 
         // generate a temporary push token
 
@@ -421,6 +479,12 @@ fn connection_establish(
 
         // TODO think about how what roles actually means here...
         query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+        query::group_create(txn, group_kp.address(), 1)?;
+        query::group_member_add(txn, group_kp.address(), as_address.address())?;
+        query::group_member_add(txn, group_kp.address(), with_address.address())?;
+
+        println!("creating group: {}", hex::encode(group_kp.address()));
+
         let (commit_message, welcome_message) = e2e::mls_group_create_with_members(
             txn,
             group_kp.address(),
@@ -518,6 +582,66 @@ fn connection_establish(
     resp_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+    // notify...
+
+    // deqeue sent...
+
+    Ok(())
+}
+
+fn connection_accept(
+    storage: &Connection,
+    websocket: &Websocket,
+    as_address: &PublicKey,
+    welcome: &[u8],
+) -> Result<(), SelfError> {
+    let mut group_address: Option<PublicKey> = None;
+    let mut as_keypair: Option<KeyPair> = None;
+
+    storage.transaction(|txn| {
+        as_keypair = query::keypair_lookup(txn, as_address.address())?;
+        if as_keypair.is_none() {
+            return Err(SelfError::KeyPairNotFound);
+        }
+
+        let (group, members) = e2e::mls_group_create_from_welcome(txn, welcome)?;
+        query::group_create(txn, group.address(), 1)?;
+
+        for member in members {
+            query::group_member_add(txn, group.address(), member.address())?;
+        }
+
+        group_address = Some(group);
+
+        // generate send token
+
+        // generate subscription token
+
+        // generate push token
+
+        // queue notification message
+
+        txn.commit()
+    })?;
+
+    let as_keypair = match &as_keypair {
+        Some(as_keypair) => as_keypair,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let group_address = match &group_address {
+        Some(group_address) => group_address,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    // subscribe
+    websocket.subscribe(&[Subscription {
+        to_address: group_address.to_owned(),
+        as_address: as_keypair.to_owned(),
+        from: time::unix(),
+        token: None,
+    }])?;
 
     // notify...
 

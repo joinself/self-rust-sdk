@@ -9,9 +9,10 @@ use std::ptr;
 
 use crate::error::SelfError;
 use crate::storage::schema::{
-    schema_create_addresses, schema_create_encryption_key_pairs, schema_create_group_states,
-    schema_create_hpke_private_keys, schema_create_key_packages, schema_create_keypairs,
-    schema_create_psk_bundles, schema_create_signature_key_pairs,
+    schema_create_addresses, schema_create_groups, schema_create_keypairs, schema_create_members,
+    schema_create_mls_encryption_key_pairs, schema_create_mls_group_states,
+    schema_create_mls_hpke_private_keys, schema_create_mls_key_packages,
+    schema_create_mls_psk_bundles, schema_create_mls_signature_key_pairs,
 };
 use crate::storage::statement::Statement;
 use crate::storage::transaction::Transaction;
@@ -44,12 +45,14 @@ impl Connection {
             // schema migrations
             schema_create_addresses(txn);
             schema_create_keypairs(txn);
-            schema_create_signature_key_pairs(txn);
-            schema_create_hpke_private_keys(txn);
-            schema_create_key_packages(txn);
-            schema_create_psk_bundles(txn);
-            schema_create_encryption_key_pairs(txn);
-            schema_create_group_states(txn);
+            schema_create_groups(txn);
+            schema_create_members(txn);
+            schema_create_mls_signature_key_pairs(txn);
+            schema_create_mls_hpke_private_keys(txn);
+            schema_create_mls_key_packages(txn);
+            schema_create_mls_psk_bundles(txn);
+            schema_create_mls_encryption_key_pairs(txn);
+            schema_create_mls_group_states(txn);
 
             txn.commit()
         })?;
@@ -66,13 +69,12 @@ impl Connection {
             sqlite3_mutex_enter(mutex);
 
             let mut txn = Transaction::new(self.conn)?;
-
-            execute(&mut txn)?;
+            let result = execute(&mut txn);
 
             sqlite3_mutex_leave(mutex);
-        }
 
-        Ok(())
+            result
+        }
     }
 
     fn pragma(&self, pragma: &str) -> Result<(), SelfError> {
@@ -123,7 +125,6 @@ pub fn sqlite_check_result_debug(conn: *mut sqlite3, result: i32) -> Result<(), 
 #[cfg(test)]
 mod tests {
     // use rand::Rng;
-
     use super::Connection;
 
     #[test]
