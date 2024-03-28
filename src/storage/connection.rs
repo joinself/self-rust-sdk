@@ -17,6 +17,8 @@ use crate::storage::schema::{
 use crate::storage::statement::Statement;
 use crate::storage::transaction::Transaction;
 
+use super::schema::{schema_create_inbox, schema_create_outbox};
+
 pub struct Connection {
     conn: *mut sqlite3,
 }
@@ -47,6 +49,8 @@ impl Connection {
             schema_create_keypairs(txn);
             schema_create_groups(txn);
             schema_create_members(txn);
+            schema_create_inbox(txn);
+            schema_create_outbox(txn);
             schema_create_mls_signature_key_pairs(txn);
             schema_create_mls_hpke_private_keys(txn);
             schema_create_mls_key_packages(txn);
