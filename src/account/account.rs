@@ -55,18 +55,25 @@ impl Account {
         callbacks: MessagingCallbacks,
         user_data: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), SelfError> {
-        if !self.rpc.load(Ordering::SeqCst).is_null() {
-            return Err(SelfError::AccountAlreadyConfigured);
-        }
-
         let rpc = Rpc::new(rpc_endpoint)?;
+        let rpc = Box::into_raw(Box::new(rpc));
+        let result =
+            self.rpc
+                .compare_exchange(ptr::null_mut(), rpc, Ordering::SeqCst, Ordering::SeqCst);
+        if result.is_err() {
+            return Err(SelfError::AccountAlreadyConfigured);
+        };
+
         let storage = Connection::new(storage_path)?;
+        let storage = Box::into_raw(Box::new(storage));
+        self.storage.swap(storage, Ordering::SeqCst);
+
         let mut websocket = Websocket::new(
             messaging_endpoint,
             Callbacks {
                 on_connect: on_connect_cb(user_data.clone(), callbacks.on_connect),
                 on_disconnect: on_disconnect_cb(user_data.clone(), callbacks.on_disconnect),
-                on_message: on_message_cb(user_data.clone(), callbacks.on_message),
+                on_message: on_message_cb(&self.storage, user_data.clone(), callbacks.on_message),
                 on_commit: on_commit_cb(user_data.clone(), callbacks.on_commit),
                 on_key_package: on_key_package_cb(user_data.clone(), callbacks.on_key_package),
                 on_welcome: on_welcome_cb(user_data.clone(), callbacks.on_welcome),
@@ -75,26 +82,12 @@ impl Account {
 
         websocket.connect()?;
 
-        // using raw pointers here is regrettable,
-        // but we are forced to as we both need to
-        // split the account alloc and configuration
-        // in two to allow the account being used in
-        // our messaging callbacks, while avoiding
-        // wrapping each of our (already thread safe)
-        // components in a mutex, which will cause
-        // deadlocking by under some circumstances.
-        let rpc = Box::into_raw(Box::new(rpc));
-        let storage = Box::into_raw(Box::new(storage));
         let websocket = Box::into_raw(Box::new(websocket));
-
-        // TODO compare/exchange this to prevent multiple
-        // from succeeding
-        self.rpc.swap(rpc, Ordering::SeqCst);
-        self.storage.swap(storage, Ordering::SeqCst);
         self.websocket.swap(websocket, Ordering::SeqCst);
 
         // TODO - resume subscriptions
         // TODO - (re-)send messages in outbox
+        // TODO - (re-)handle messages in inbox
 
         Ok(())
     }
@@ -114,7 +107,7 @@ impl Account {
                 // TODO think about how what roles actually means here...
                 query::keypair_create(txn, signing_kp, 0, crate::time::unix())?;
 
-                txn.commit()
+                Ok(())
             })?;
         }
 
@@ -165,7 +158,7 @@ impl Account {
                     // TODO update metrics on inbox subscription time
                 };
 
-                txn.commit()
+                Ok(())
             })?;
         }
 
@@ -288,7 +281,7 @@ impl Account {
                         e2e::mls_group_encrypt(txn, group_address.address(), as_address, content)?;
                 }
 
-                txn.commit()
+                Ok(())
             })?;
         }
 
@@ -347,7 +340,7 @@ impl Account {
                 query::group_member_add(txn, group_kp.address(), as_address.address())?;
                 e2e::mls_group_create(txn, group_kp.address(), as_address)?;
 
-                txn.commit()
+                Ok(())
             })?;
 
             (*websocket).open(&group_kp)?;
@@ -416,7 +409,7 @@ fn connection_negotiate(
 
         // queue message in inbox
 
-        txn.commit()
+        Ok(())
     })?;
 
     // TODO send with any tokens we may have...
@@ -481,8 +474,6 @@ fn connection_establish(
         query::group_member_add(txn, group_kp.address(), as_address.address())?;
         query::group_member_add(txn, group_kp.address(), with_address.address())?;
 
-        println!("creating group: {}", hex::encode(group_kp.address()));
-
         let (commit_message, welcome_message) = e2e::mls_group_create_with_members(
             txn,
             group_kp.address(),
@@ -518,7 +509,7 @@ fn connection_establish(
 
         // queue notification message
 
-        txn.commit()
+        Ok(())
     })?;
 
     let as_keypair = match &as_keypair {
@@ -620,7 +611,7 @@ fn connection_accept(
 
         // queue notification message
 
-        txn.commit()
+        Ok(())
     })?;
 
     let as_keypair = match &as_keypair {
@@ -667,16 +658,43 @@ fn on_disconnect_cb(
 }
 
 fn on_message_cb(
+    storage: &Arc<AtomicPtr<Connection>>,
     user_data: Arc<dyn Any + Send + Sync>,
     callback: OnMessageCB,
 ) -> websocket::OnMessageCB {
+    let storage = storage.clone();
+
     Arc::new(move |message| {
+        let storage = storage.load(Ordering::SeqCst);
+        let mut plaintext: Option<Vec<u8>> = None;
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                plaintext = Some(e2e::mls_group_decrypt(
+                    txn,
+                    message.recipient.address(),
+                    &message.message,
+                )?);
+                Ok(())
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+                return;
+            }
+        }
+
+        let plaintext = match plaintext {
+            Some(plaintext) => plaintext,
+            None => return,
+        };
+
         callback(
             user_data.clone(),
             &Message {
                 sender: &message.sender,
                 recipient: &message.recipient,
-                message: &message.message,
+                message: &plaintext,
             },
         );
     })

@@ -26,6 +26,8 @@ fn encrypted_messaging() {
     let rpc_url = "http://127.0.0.1:3000/";
 
     let (alice_welcome_tx, alice_welcome_rx) = crossbeam::channel::bounded::<bool>(1);
+    let (alice_message_tx, alice_message_rx) = crossbeam::channel::bounded::<Vec<u8>>(1);
+    let (bobby_message_tx, bobby_message_rx) = crossbeam::channel::bounded::<Vec<u8>>(1);
 
     // setup alices account
     let mut alice = Account::new();
@@ -34,18 +36,14 @@ fn encrypted_messaging() {
     let alice_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|_| {}),
         on_disconnect: Arc::new(|_, _| {}),
-        on_message: Arc::new(|_, message| {
-            println!(
-                "alice received from sender: {}",
-                message.sender.to_did_key()
-            );
+        on_message: Arc::new(move |_, message| {
+            alice_message_tx
+                .send(message.message.to_vec())
+                .expect("failed to send received message for alice");
         }),
         on_commit: Arc::new(|_, _| {}),
-        on_key_package: Arc::new(move |_, _| {
-            println!("alice received key package");
-        }),
+        on_key_package: Arc::new(move |_, _| {}),
         on_welcome: Arc::new(move |_, welcome| {
-            println!("alice received welcome");
             alice_wm_cb
                 .connection_accept(welcome.recipient, welcome.welcome)
                 .expect("failed to connect using welcome mesage");
@@ -70,15 +68,18 @@ fn encrypted_messaging() {
     // setup bob's account
     let mut bobby = Account::new();
     let bobby_kp_cb = bobby.clone();
+    let bobby_ms_cb = bobby.clone();
 
     let bobby_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|_| {}),
         on_disconnect: Arc::new(|_, _| {}),
-        on_message: Arc::new(|_, message| {
-            println!(
-                "bobby received from sender: {}",
-                message.sender.to_did_key()
-            );
+        on_message: Arc::new(move |_, message| {
+            bobby_ms_cb
+                .message_send(message.sender, b"hey alice")
+                .expect("failed to send response message from bobby");
+            bobby_message_tx
+                .send(message.message.to_vec())
+                .expect("failed to send received message for bobby");
         }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, key_package| {
@@ -117,370 +118,26 @@ fn encrypted_messaging() {
 
     // accept the connection from alice
     alice_welcome_rx
-        .recv_timeout(Duration::from_millis(1000))
+        .recv_timeout(DEFAULT_TIMEOUT)
         .expect("welcome message timeout");
-
-    std::thread::sleep(std::time::Duration::from_secs(1));
 
     // alice send an encrypted message to the group
     alice
         .message_send(&bobby_inbox, b"hey bobby")
         .expect("failed to send message");
+
+    let message_from_alice = bobby_message_rx
+        .recv_timeout(DEFAULT_TIMEOUT)
+        .expect("failed to receive message");
+    assert_eq!(message_from_alice, b"hey bobby");
+
+    let message_from_bobby = alice_message_rx
+        .recv_timeout(DEFAULT_TIMEOUT)
+        .expect("failed to receive message");
+    assert_eq!(message_from_bobby, b"hey alice");
 }
 
 /*
-use crossbeam::channel::Sender;
-use openmls::prelude::{config::CryptoConfig, *};
-use openmls::treesync::RatchetTree;
-use openmls_basic_credential::SignatureKeyPair;
-use openmls_rust_crypto::RustCrypto;
-use openmls_traits::OpenMlsCryptoProvider;
-
-
-pub struct OpenMlsBackend<'t> {
-    crypto: RustCrypto,
-    key_store: &'t Transaction,
-}
-
-impl OpenMlsBackend<'_> {
-    pub fn new(txn: &Transaction) -> OpenMlsBackend {
-        OpenMlsBackend {
-            crypto: RustCrypto::default(),
-            key_store: txn,
-        }
-    }
-}
-
-impl OpenMlsCryptoProvider for OpenMlsBackend<'_> {
-    type CryptoProvider = RustCrypto;
-    type RandProvider = RustCrypto;
-    type KeyStoreProvider = Transaction;
-
-    fn crypto(&self) -> &Self::CryptoProvider {
-        &self.crypto
-    }
-
-    fn rand(&self) -> &Self::RandProvider {
-        &self.crypto
-    }
-
-    fn key_store(&self) -> &Self::KeyStoreProvider {
-        self.key_store
-    }
-}
-
-fn mls_generate_credential_with_key(
-    signature_key: &KeyPair,
-    backend: &impl OpenMlsCryptoProvider,
-) -> CredentialWithKey {
-    let credential =
-        Credential::new(signature_key.address().to_owned(), CredentialType::Basic).unwrap();
-
-    // Store the signature key into the key store so OpenMLS has access
-    // to it.
-    backend
-        .key_store()
-        .store(&signature_key.id(), signature_key)
-        .expect("failed to store signature key");
-
-    CredentialWithKey {
-        credential,
-        signature_key: signature_key.public().public_key_bytes().into(),
-    }
-}
-
-// A helper to create key package bundles.
-fn mls_generate_key_package(
-    backend: &impl OpenMlsCryptoProvider,
-    signer: &KeyPair,
-    credential_with_key: CredentialWithKey,
-) -> KeyPackage {
-    // Create the key package
-    KeyPackage::builder()
-        .build(
-            CryptoConfig {
-                ciphersuite: crate::crypto::e2e::DEFAULT_CIPHER_SUITE,
-                version: ProtocolVersion::default(),
-            },
-            backend,
-            signer,
-            credential_with_key,
-        )
-        .unwrap()
-}
-
-#[test]
-fn encrypted_message_exchange() {
-    test_server();
-
-    let (alice_msg_tx, alice_msg_rx) = crossbeam::channel::bounded::<TestMsg>(64);
-    let (bobby_msg_tx, bobby_msg_rx) = crossbeam::channel::bounded::<TestMsg>(64);
-    let (carol_msg_tx, carol_msg_rx) = crossbeam::channel::bounded::<TestMsg>(64);
-
-    let alice_callbacks = Callbacks {
-        on_connect: Arc::new(|| {}),
-        on_disconnect: Arc::new(|_| {}),
-        on_message: Arc::new(move |message| -> Option<Response> {
-            alice_msg_tx
-                .send((
-                    message.sender.to_owned(),
-                    message.recipient.to_owned(),
-                    message.content.to_owned(),
-                ))
-                .expect("failed to channel send msg");
-            None
-        }),
-    };
-
-    let bobby_callbacks = Callbacks {
-        on_connect: Arc::new(|| {}),
-        on_disconnect: Arc::new(|_| {}),
-        on_message: Arc::new(move |message| -> Option<Response> {
-            bobby_msg_tx
-                .send((
-                    message.sender.to_owned(),
-                    message.recipient.to_owned(),
-                    message.content.to_owned(),
-                ))
-                .expect("failed to channel send msg");
-            None
-        }),
-    };
-
-    let carol_callbacks = Callbacks {
-        on_connect: Arc::new(|| {}),
-        on_disconnect: Arc::new(|_| {}),
-        on_message: Arc::new(move |message| -> Option<Response> {
-            carol_msg_tx
-                .send((
-                    message.sender.to_owned(),
-                    message.recipient.to_owned(),
-                    message.content.to_owned(),
-                ))
-                .expect("failed to channel send msg");
-            None
-        }),
-    };
-
-    let ws_url = "ws://127.0.0.1:3001/";
-    let rpc_url = "http://127.0.0.1:3000/";
-
-    let alice_storage = Connection::new(":memory:").expect("alice storage failed");
-    let bobby_storage = Connection::new(":memory:").expect("bobby storage failed");
-    let carol_storage = Connection::new(":memory:").expect("carol storage failed");
-
-    let alice_websocket = Websocket::new(ws_url, alice_callbacks).expect("alice websocket failed");
-    let bobby_websocket = Websocket::new(ws_url, bobby_callbacks).expect("bobby websocket failed");
-    let carol_websocket = Websocket::new(ws_url, carol_callbacks).expect("carol websocket failed");
-
-    let alice_rpc = Rpc::new(rpc_url).expect("alice rpc failed");
-    let bobby_rpc = Rpc::new(rpc_url).expect("bobby rpc failed");
-    let carol_rpc = Rpc::new(rpc_url).expect("carol rpc failed");
-
-    let alice_kp = KeyPair::new();
-    let bobby_kp = KeyPair::new();
-    let carol_kp = KeyPair::new();
-
-    let now = time::unix();
-
-    alice_storage
-        .transaction(|txn| {
-            query::keypair_create(txn, alice_kp.clone(), Role::Authentication.bits(), now)
-                .expect("failed to create keypair");
-            txn.commit()
-        })
-        .expect("alice txn failed");
-
-    bobby_storage
-        .transaction(|txn| {
-            query::keypair_create(txn, bobby_kp.clone(), Role::Authentication.bits(), now)
-                .expect("failed to create keypair");
-            txn.commit()
-        })
-        .expect("alice txn failed");
-
-    carol_storage
-        .transaction(|txn| {
-            query::keypair_create(txn, carol_kp.clone(), Role::Authentication.bits(), now)
-                .expect("failed to create keypair");
-            txn.commit()
-        })
-        .expect("alice txn failed");
-
-    // mls credential setup setup
-    alice_storage
-        .transaction(|txn| {
-            let alice_mls_backend = &OpenMlsBackend::new(txn);
-
-            mls_generate_credential_with_key(&alice_kp, alice_mls_backend);
-
-            txn.commit()
-        })
-        .expect("alice transaction failed");
-
-    bobby_storage
-        .transaction(|txn| {
-            let bobby_backend = &OpenMlsBackend::new(txn);
-
-            let bobby_credential_with_key =
-                mls_generate_credential_with_key(&bobby_kp, bobby_backend);
-
-            // generate a key package for asynchronous handshake
-            let bobby_key_package =
-                mls_generate_key_package(bobby_backend, &bobby_kp, bobby_credential_with_key);
-
-            // publish key to server
-            let mut bobby_encoded_key_package = Vec::new();
-            ciborium::ser::into_writer(&bobby_key_package, &mut bobby_encoded_key_package)
-                .expect("failed to encode key package");
-
-            bobby_rpc.publish(bobby_kp.address(), &[bobby_encoded_key_package])?;
-
-            txn.commit()
-        })
-        .expect("bobby transaction failed");
-
-    carol_storage
-        .transaction(|txn| {
-            let carol_backend = &OpenMlsBackend::new(txn);
-
-            let carol_credential_with_key =
-                mls_generate_credential_with_key(&carol_kp, carol_backend);
-
-            // generate a key package for asynchronous handshake
-            let carol_key_package =
-                mls_generate_key_package(carol_backend, &carol_kp, carol_credential_with_key);
-
-            // publish key to server
-            let mut carol_encoded_key_package = Vec::new();
-            ciborium::ser::into_writer(&carol_key_package, &mut carol_encoded_key_package)
-                .expect("failed to encode key package");
-
-            carol_rpc.publish(carol_kp.address(), &[carol_encoded_key_package])?;
-
-            txn.commit()
-        })
-        .expect("carol transaction failed");
-
-    // get the key bundles for bobby and carol
-    let bobby_key_package = alice_rpc
-        .acquire(bobby_kp.address(), alice_kp.address())
-        .expect("failed to acquire key package");
-    let bobby_key_package: KeyPackage = ciborium::de::from_reader(bobby_key_package.as_slice())
-        .expect("failed to decode key package");
-
-    let carol_key_package = alice_rpc
-        .acquire(carol_kp.address(), alice_kp.address())
-        .expect("failed to acquire key package");
-    let carol_key_package: KeyPackage = ciborium::de::from_reader(carol_key_package.as_slice())
-        .expect("failed to decode key package");
-
-    let mut serialized_welcome = Vec::new();
-
-    // create a group
-    alice_storage
-        .transaction(|txn| {
-            let alice_mls_backend = &OpenMlsBackend::new(txn);
-
-            let alice_credential =
-                Credential::new(alice_kp.address().to_owned(), CredentialType::Basic).unwrap();
-
-            let alice_group_cfg = &MlsGroupConfig::builder()
-                .use_ratchet_tree_extension(true)
-                .build();
-
-            // Now Sasha starts a new group ...
-            let mut alice_group = MlsGroup::new(
-                alice_mls_backend,
-                &alice_kp,
-                alice_group_cfg,
-                CredentialWithKey {
-                    credential: alice_credential,
-                    signature_key: alice_kp.public().public_key_bytes().into(),
-                },
-            )
-            .expect("An unexpected error occurred.");
-
-            // ... and invites Maxim.
-            // The key package has to be retrieved from Maxim in some way. Most likely
-            // via a server storing key packages for users.
-            let (mls_message_out, welcome_out, group_info) = alice_group
-                .add_members(
-                    alice_mls_backend,
-                    &alice_kp,
-                    &[bobby_key_package, carol_key_package],
-                )
-                .expect("Could not add members.");
-
-            // Sasha merges the pending commit that adds Maxim.
-            alice_group
-                .merge_pending_commit(alice_mls_backend)
-                .expect("error merging pending commit");
-
-            // Sascha serializes the [`MlsMessageOut`] containing the [`Welcome`].
-            serialized_welcome = welcome_out
-                .tls_serialize_detached()
-                .expect("Error serializing welcome");
-
-            txn.commit()
-        })
-        .expect("alice transaction failed");
-
-    // bobby and carol join the group
-    bobby_storage
-        .transaction(|txn| {
-            let bobby_backend = &OpenMlsBackend::new(txn);
-
-            let mls_message_in = MlsMessageIn::tls_deserialize(&mut serialized_welcome.as_slice())
-                .expect("An unexpected error occurred.");
-
-            let welcome = match mls_message_in.extract() {
-                MlsMessageInBody::Welcome(welcome) => Some(welcome),
-                // We know it's a welcome message, so we ignore all other cases.
-                _ => unreachable!("Unexpected message type."),
-            };
-
-            MlsGroup::new_from_welcome(
-                bobby_backend,
-                &MlsGroupConfig::default(),
-                welcome.unwrap(),
-                // The public tree is need and transferred out of band.
-                // It is also possible to use the [`RatchetTreeExtension`]
-                None,
-            )
-            .expect("Error joining group from Welcome");
-
-            txn.commit()
-        })
-        .expect("bobby transaction failed");
-
-    carol_storage
-        .transaction(|txn| {
-            let carol_backend = &OpenMlsBackend::new(txn);
-
-            let mls_message_in = MlsMessageIn::tls_deserialize(&mut serialized_welcome.as_slice())
-                .expect("An unexpected error occurred.");
-
-            let welcome = match mls_message_in.extract() {
-                MlsMessageInBody::Welcome(welcome) => Some(welcome),
-                // We know it's a welcome message, so we ignore all other cases.
-                _ => unreachable!("Unexpected message type."),
-            };
-
-            MlsGroup::new_from_welcome(
-                carol_backend,
-                &MlsGroupConfig::default(),
-                welcome.unwrap(),
-                // The public tree is need and transferred out of band.
-                // It is also possible to use the [`RatchetTreeExtension`]
-                None,
-            )
-            .expect("Error joining group from Welcome");
-
-            txn.commit()
-        })
-        .expect("carol transaction failed");
-}
 
 // account_create
 // account_list

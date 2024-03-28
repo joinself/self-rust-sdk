@@ -1,6 +1,5 @@
-use openmls::prelude::{config::CryptoConfig, Ciphersuite, *};
+use openmls::prelude::*;
 use openmls_rust_crypto::RustCrypto;
-use openmls_traits::OpenMlsCryptoProvider;
 
 use crate::error::SelfError;
 use crate::{
@@ -328,6 +327,42 @@ pub fn mls_group_encrypt(
         println!("mls error: {}", err);
         SelfError::StorageUnknown
     })
+}
+
+pub fn mls_group_decrypt(
+    txn: &Transaction,
+    group_address: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, SelfError> {
+    let backend = &MlsProvider::new(txn);
+
+    let message_in = MlsMessageIn::tls_deserialize_exact(ciphertext).map_err(|err| {
+        println!("mls error: {}", err);
+        SelfError::StorageUnknown
+    })?;
+
+    let message = match message_in.extract() {
+        MlsMessageInBody::PrivateMessage(message) => message,
+        _ => return Err(SelfError::StorageUnknown),
+    };
+
+    let mut group = match MlsGroup::load(&GroupId::from_slice(group_address), backend) {
+        Some(group) => group,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let application_message = match group.process_message(backend, message) {
+        Ok(application_message) => application_message,
+        Err(err) => {
+            println!("mls error: {}", err);
+            return Err(SelfError::StorageUnknown);
+        }
+    };
+
+    match application_message.into_content() {
+        ProcessedMessageContent::ApplicationMessage(message) => Ok(message.into_bytes()),
+        _ => Err(SelfError::StorageUnknown),
+    }
 }
 
 fn mls_credential_create(

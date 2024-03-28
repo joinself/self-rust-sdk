@@ -92,6 +92,7 @@ pub struct Websocket {
     write_tx: Sender<Event>,
     write_rx: Receiver<Event>,
     socket_runtime: Arc<Runtime>,
+    command_runtime: Arc<Runtime>,
     callback_runtime: Arc<Runtime>,
     subscriptions: SubscriptionCache,
 }
@@ -105,6 +106,7 @@ impl Websocket {
         let (write_tx, write_rx) = channel::bounded(256);
 
         let socket_runtime = Arc::new(Runtime::new().unwrap());
+        let command_runtime = Arc::new(Runtime::new().unwrap());
         let callback_runtime = Arc::new(Runtime::new().unwrap());
 
         let endpoint = match Url::parse(endpoint) {
@@ -118,6 +120,7 @@ impl Websocket {
             write_tx,
             write_rx,
             socket_runtime,
+            command_runtime,
             callback_runtime,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -232,13 +235,33 @@ impl Websocket {
 
     /// subscribe to some inboxes
     pub fn subscribe(&self, subscriptions: &[Subscription]) -> Result<(), SelfError> {
-        println!("subscribing");
-        let (tx, rx) = channel::bounded(1);
-        let (event_id, event_subscribe) = assemble_subscription(subscriptions)?;
+        let (subs_tx, subs_rx) = channel::bounded(1);
+        let (send_tx, send_rx) = channel::bounded(1);
         let deadline = Instant::now() + Duration::from_secs(5);
+        let (event_id, event_subscribe) = assemble_subscription(subscriptions)?;
+
+        let subscriptions = subscriptions.to_vec();
+        let existing_subscriptions = self.subscriptions.clone();
+
+        self.command_runtime.spawn(async move {
+            let mut existing_subscriptions = existing_subscriptions.lock().await;
+
+            for sub in subscriptions {
+                existing_subscriptions.insert(sub.to_address.address().to_owned(), sub.clone());
+            }
+
+            subs_tx
+                .send(())
+                .expect("failed to send subscription update response");
+        });
+
+        subs_rx
+            .recv_deadline(deadline)
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {
-            tx.send(result)
+            send_tx
+                .send(result)
                 .expect("Failed to send subscription response");
         });
 
@@ -250,24 +273,9 @@ impl Websocket {
             ))
             .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
 
-        rx.recv_deadline(deadline)
+        send_rx
+            .recv_deadline(deadline)
             .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
-
-        let subscriptions = subscriptions.to_vec();
-        let existing_subscriptions = self.subscriptions.clone();
-
-        self.callback_runtime.spawn(async move {
-            println!("subscription callback invoked...");
-            let mut existing_subscriptions = existing_subscriptions.lock().await;
-
-            for sub in subscriptions {
-                println!(
-                    "adding subscriptions for: {}",
-                    hex::encode(sub.to_address.address())
-                );
-                existing_subscriptions.insert(sub.to_address.address().to_owned(), sub.clone());
-            }
-        });
 
         Ok(())
     }
@@ -588,6 +596,7 @@ async fn invoke_mls_key_package_callback(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn invoke_mls_message_callback(
     runtime: &Arc<Runtime>,
     subscriptions: &SubscriptionCache,
@@ -600,8 +609,6 @@ async fn invoke_mls_message_callback(
 ) -> Result<(), SelfError> {
     // validate the message we have received is for a valid subscription we have
     let active_subs = subscriptions.lock().await;
-
-    println!("active subs: {:?}", active_subs.len());
 
     if !active_subs.contains_key(recipient.address()) {
         println!(
@@ -1144,14 +1151,8 @@ fn assemble_open(inbox: &KeyPair) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        keypair::signing::{KeyPair, PublicKey},
-        protocol::messaging,
-    };
-
     use super::*;
     use futures_util::stream::SplitSink;
-    use futures_util::{SinkExt, StreamExt};
     use tokio::{
         io::{AsyncRead, AsyncWrite},
         net::TcpListener,

@@ -41,8 +41,8 @@ impl Connection {
         connection.pragma("PRAGMA journal_mode = wal2;")?;
         connection.pragma("PRAGMA temp_store = memory;")?;
 
+        // schema migrations
         connection.transaction(|txn| {
-            // schema migrations
             schema_create_addresses(txn);
             schema_create_keypairs(txn);
             schema_create_groups(txn);
@@ -54,7 +54,7 @@ impl Connection {
             schema_create_mls_encryption_key_pairs(txn);
             schema_create_mls_group_states(txn);
 
-            txn.commit()
+            Ok(())
         })?;
 
         Ok(connection)
@@ -69,7 +69,14 @@ impl Connection {
             sqlite3_mutex_enter(mutex);
 
             let mut txn = Transaction::new(self.conn)?;
-            let result = execute(&mut txn);
+
+            let result = match execute(&mut txn) {
+                Ok(()) => txn.commit(),
+                Err(err) => match txn.rollback() {
+                    Ok(_) => Err(err),
+                    Err(txn_err) => Err(txn_err),
+                },
+            };
 
             sqlite3_mutex_leave(mutex);
 
@@ -144,9 +151,7 @@ mod tests {
                 )
                 .expect("failed to prepare statement");
 
-            stmt.execute().expect("failed to execute statement");
-
-            txn.commit()
+            stmt.execute()
         })
         .expect("failed to execute transaction");
 
@@ -168,12 +173,12 @@ mod tests {
                 .expect("failed to prepare statement");
 
             while stmt.step().expect("failed to step statement") {
-                let id = stmt.column_integer(0);
-                let address = stmt.column_blob(1);
+                // let id = stmt.column_integer(0);
+                // let address = stmt.column_blob(1);
                 // println!("row id: {:?} address: {:?}", id, address);
             }
 
-            txn.commit()
+            Ok(())
         })
         .expect("failed to execute transaction");
 
@@ -195,7 +200,7 @@ mod tests {
                         .expect("failed to bind blob");
                 }
 
-                txn.commit().expect("failed to commit transaction");
+                Ok(())
             })
             .expect("failed to run transaction");
 
