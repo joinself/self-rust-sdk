@@ -1,4 +1,3 @@
-use crate::account::Message;
 use crate::error::SelfError;
 use crate::storage::Transaction;
 
@@ -7,6 +6,7 @@ pub trait KeyPair {
     fn encode(&self) -> Vec<u8>;
     fn decode(d: &[u8]) -> Self;
 }
+
 pub struct QueuedMessage {
     pub sender: Vec<u8>,
     pub recipient: Vec<u8>,

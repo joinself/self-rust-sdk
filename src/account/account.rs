@@ -255,6 +255,7 @@ impl Account {
         let mut from_address: Option<PublicKey> = None;
         let mut group_address: Option<PublicKey> = None;
         let mut ciphertext = Vec::new();
+        let sequence: u64 = 0;
 
         unsafe {
             (*storage).transaction(|txn| {
@@ -279,6 +280,16 @@ impl Account {
                 if let Some(as_address) = &as_address {
                     ciphertext =
                         e2e::mls_group_encrypt(txn, group_address.address(), as_address, content)?;
+
+                    // TODO load sequence...
+
+                    query::outbox_queue(
+                        txn,
+                        as_address.address(),
+                        group_address.address(),
+                        &ciphertext,
+                        sequence,
+                    )?;
                 }
 
                 Ok(())
@@ -313,9 +324,13 @@ impl Account {
 
         resp_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
 
-        // TODO de-queue message from outbox
+        unsafe {
+            (*storage).transaction(|txn| {
+                query::outbox_dequeue(txn, as_address.address(), group_address.address(), sequence)
+            })
+        }
     }
 
     /// creates a new group
@@ -670,11 +685,19 @@ fn on_message_cb(
 
         unsafe {
             let result = (*storage).transaction(|txn| {
-                plaintext = Some(e2e::mls_group_decrypt(
+                let decrypted_message =
+                    e2e::mls_group_decrypt(txn, message.recipient.address(), &message.message)?;
+
+                query::inbox_queue(
                     txn,
+                    message.sender.address(),
                     message.recipient.address(),
-                    &message.message,
-                )?);
+                    &decrypted_message,
+                    message.sequence,
+                )?;
+
+                plaintext = Some(decrypted_message);
+
                 Ok(())
             });
 
@@ -697,6 +720,21 @@ fn on_message_cb(
                 message: &plaintext,
             },
         );
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                query::inbox_dequeue(
+                    txn,
+                    message.sender.address(),
+                    message.recipient.address(),
+                    message.sequence,
+                )
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+            }
+        }
     })
 }
 

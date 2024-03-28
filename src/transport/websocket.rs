@@ -171,7 +171,7 @@ impl Websocket {
                 };
 
                 if event.is_close() {
-                    write_tx.send(Event::Done).unwrap();
+                    let _ = write_tx.send(Event::Done);
                     return;
                 }
 
