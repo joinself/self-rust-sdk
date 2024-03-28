@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-pub mod api;
+pub mod rpc;
 
 #[allow(clippy::module_inception)]
 #[allow(clippy::needless_lifetimes)]

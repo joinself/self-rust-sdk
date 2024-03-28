@@ -12,36 +12,59 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::crypto::pow;
 use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
-use crate::protocol::messaging::{self, ContentType};
+use crate::protocol::messaging::{self, ContentType, EventType};
 use crate::token::Token;
 
-pub struct Response {
-    pub from: PublicKey,
-    pub to: PublicKey,
+pub struct Message {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub message: Vec<u8>,
+    pub timestamp: i64,
     pub sequence: u64,
-    pub content: Vec<u8>,
-    pub tokens: Option<Vec<Token>>,
-    pub callback: SendCallback,
 }
 
-pub struct Message<'m> {
-    pub sender: &'m PublicKey,
-    pub recipient: &'m PublicKey,
-    pub content: &'m [u8],
+pub struct Commit {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub commit: Vec<u8>,
+    pub timestamp: i64,
+    pub sequence: u64,
+}
+
+pub struct KeyPackage {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub package: Vec<u8>,
+    pub timestamp: i64,
+    pub sequence: u64,
+}
+
+pub struct Welcome {
+    pub sender: PublicKey,
+    pub recipient: PublicKey,
+    pub welcome: Vec<u8>,
+    pub timestamp: i64,
     pub sequence: u64,
 }
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(&Message) -> Option<Response> + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(&Message) + Sync + Send>;
+pub type OnCommitCB = Arc<dyn Fn(&Commit) + Sync + Send>;
+pub type OnKeyPackageCB = Arc<dyn Fn(&KeyPackage) + Sync + Send>;
+pub type OnWelcomeCB = Arc<dyn Fn(&Welcome) + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
-    pub on_connect: Option<OnConnectCB>,
-    pub on_disconnect: Option<OnDisconnectCB>,
-    pub on_message: Option<OnMessageCB>,
+    pub on_connect: OnConnectCB,
+    pub on_disconnect: OnDisconnectCB,
+    pub on_message: OnMessageCB,
+    pub on_commit: OnCommitCB,
+    pub on_key_package: OnKeyPackageCB,
+    pub on_welcome: OnWelcomeCB,
 }
 
 pub type SendCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
@@ -68,7 +91,9 @@ pub struct Websocket {
     callbacks: Callbacks,
     write_tx: Sender<Event>,
     write_rx: Receiver<Event>,
-    runtime: Runtime,
+    socket_runtime: Arc<Runtime>,
+    command_runtime: Arc<Runtime>,
+    callback_runtime: Arc<Runtime>,
     subscriptions: SubscriptionCache,
 }
 
@@ -80,7 +105,9 @@ impl Websocket {
     pub fn new(endpoint: &str, callbacks: Callbacks) -> Result<Websocket, SelfError> {
         let (write_tx, write_rx) = channel::bounded(256);
 
-        let runtime = Runtime::new().unwrap();
+        let socket_runtime = Arc::new(Runtime::new().unwrap());
+        let command_runtime = Arc::new(Runtime::new().unwrap());
+        let callback_runtime = Arc::new(Runtime::new().unwrap());
 
         let endpoint = match Url::parse(endpoint) {
             Ok(endpoint) => endpoint,
@@ -92,18 +119,22 @@ impl Websocket {
             callbacks,
             write_tx,
             write_rx,
-            runtime,
+            socket_runtime,
+            command_runtime,
+            callback_runtime,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
+    /// connects to the websocket server
     pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
-        let handle = self.runtime.handle();
+        let socket_runtime = self.socket_runtime.clone();
+        let callback_runtime = self.callback_runtime.clone();
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
+        let callbacks = self.callbacks.clone();
         let on_connect = self.callbacks.on_connect.clone();
-        let on_message = self.callbacks.on_message.clone();
         let subscriptions = self.subscriptions.clone();
 
         // TODO cleanup old sockets!
@@ -112,7 +143,7 @@ impl Websocket {
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
 
-        handle.spawn(async move {
+        socket_runtime.spawn(async move {
             let result = match connect_async(&endpoint).await {
                 Ok((socket, _)) => Ok(socket),
                 Err(err) => {
@@ -129,7 +160,7 @@ impl Websocket {
             .map_err(|_| SelfError::RestRequestConnectionFailed)??
             .split();
 
-        handle.spawn(async move {
+        socket_runtime.spawn(async move {
             while let Some(event) = socket_rx.next().await {
                 let event = match event {
                     Ok(event) => event,
@@ -154,10 +185,10 @@ impl Websocket {
 
                 if event.is_binary() {
                     let result = handle_event_binary(
+                        &callback_runtime,
                         &requests_rx,
                         &subscriptions,
-                        &write_tx,
-                        &on_message,
+                        &callbacks,
                         &event.into_data(),
                     )
                     .await;
@@ -169,7 +200,7 @@ impl Websocket {
         });
 
         // TODO replace RestRequestConnectionFailed with better errors
-        handle.spawn(async move {
+        socket_runtime.spawn(async move {
             for m in write_rx.iter() {
                 match m {
                     Event::Message(id, msg, callback) => {
@@ -195,22 +226,42 @@ impl Websocket {
             socket_tx.close().await.expect("Failed to close socket");
         });
 
-        handle.spawn(async move {
-            if let Some(on_connect) = on_connect {
-                on_connect();
-            }
+        socket_runtime.spawn(async move {
+            on_connect();
         });
 
         Ok(())
     }
 
+    /// subscribe to some inboxes
     pub fn subscribe(&self, subscriptions: &[Subscription]) -> Result<(), SelfError> {
-        let (tx, rx) = channel::bounded(1);
-        let (event_id, event_subscribe) = assemble_subscription(subscriptions)?;
+        let (subs_tx, subs_rx) = channel::bounded(1);
+        let (send_tx, send_rx) = channel::bounded(1);
         let deadline = Instant::now() + Duration::from_secs(5);
+        let (event_id, event_subscribe) = assemble_subscription(subscriptions)?;
+
+        let subscriptions = subscriptions.to_vec();
+        let existing_subscriptions = self.subscriptions.clone();
+
+        self.command_runtime.spawn(async move {
+            let mut existing_subscriptions = existing_subscriptions.lock().await;
+
+            for sub in subscriptions {
+                existing_subscriptions.insert(sub.to_address.address().to_owned(), sub.clone());
+            }
+
+            subs_tx
+                .send(())
+                .expect("failed to send subscription update response");
+        });
+
+        subs_rx
+            .recv_deadline(deadline)
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {
-            tx.send(result)
+            send_tx
+                .send(result)
                 .expect("Failed to send subscription response");
         });
 
@@ -222,40 +273,22 @@ impl Websocket {
             ))
             .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
 
-        rx.recv_deadline(deadline)
+        send_rx
+            .recv_deadline(deadline)
             .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
-
-        let existing_subscriptions = self.subscriptions.clone();
-
-        self.runtime.block_on(async move {
-            let mut existing_subscriptions = existing_subscriptions.lock().await;
-
-            for sub in subscriptions {
-                existing_subscriptions.insert(sub.to_address.address().to_owned(), sub.clone());
-            }
-        });
 
         Ok(())
     }
 
+    /// send a message
     pub fn send(
         &self,
         from: &KeyPair,
-        to: &PublicKey,
-        sequence: u64,
-        content: &[u8],
+        payload: &[u8],
         tokens: Option<Vec<Token>>,
         callback: SendCallback,
     ) {
-        let payload = match assemble_payload(from, to, sequence, content) {
-            Ok(payload) => payload,
-            Err(err) => {
-                callback(Err(err));
-                return;
-            }
-        };
-
-        let (event_id, event_message) = match assemble_message(from, &payload, tokens) {
+        let (event_id, event_message) = match assemble_message(from, payload, tokens) {
             Ok(event) => event,
             Err(err) => {
                 callback(Err(err));
@@ -275,11 +308,39 @@ impl Websocket {
         }
     }
 
-    pub fn disconnect(&mut self) -> Result<(), SelfError> {
-        if let Some(on_disconnect) = &self.callbacks.on_disconnect {
-            on_disconnect(Ok(()));
-        }
+    /// open an inbox
+    pub fn open(&self, address: &KeyPair) -> Result<(), SelfError> {
+        let (tx, rx) = channel::bounded(1);
+        let (event_id, event_open) = assemble_open(address)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
 
+        let callback = Arc::new(move |result: Result<(), SelfError>| {
+            tx.send(result)
+                .expect("Failed to send subscription response");
+        });
+
+        self.write_tx
+            .send(Event::Message(
+                event_id,
+                protocol::Message::Binary(event_open),
+                Some(callback),
+            ))
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
+
+        rx.recv_deadline(deadline)
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+        Ok(())
+    }
+
+    /// close an inbox
+    pub fn close(&self, _address: &KeyPair) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    /// disconnect the websocket
+    pub fn disconnect(&mut self) -> Result<(), SelfError> {
+        (self.callbacks.on_disconnect)(Ok(()));
         self.write_tx
             .send(Event::Done)
             .map_err(|_| SelfError::RestRequestConnectionFailed)
@@ -287,10 +348,10 @@ impl Websocket {
 }
 
 async fn handle_event_binary(
+    runtime: &Arc<Runtime>,
     requests: &RequestCache,
     subscriptions: &SubscriptionCache,
-    write_tx: &Sender<Event>,
-    on_message: &Option<OnMessageCB>,
+    callbacks: &Callbacks,
     data: &[u8],
 ) -> Result<(), SelfError> {
     let event = match messaging::root_as_event(data) {
@@ -299,24 +360,31 @@ async fn handle_event_binary(
     };
 
     match event.type_() {
-        ContentType::ACKNOWLEDGEMENT => invoke_acknowledgement_callback(requests, event.id()).await,
-        ContentType::ERROR => invoke_error_callback(requests, event.id(), event.content()).await,
-        ContentType::MESSAGE => {
-            invoke_message_callback(subscriptions, write_tx, on_message, event.content()).await
+        EventType::ACKNOWLEDGEMENT => {
+            invoke_acknowledgement_callback(runtime, requests, event.id()).await
+        }
+        EventType::ERROR => {
+            invoke_error_callback(runtime, requests, event.id(), event.content()).await
+        }
+        EventType::MESSAGE => {
+            invoke_message_callback(runtime, subscriptions, callbacks, event.content()).await
         }
         _ => Err(SelfError::WebsocketProtocolErrorUnknown),
     }
 }
 
 async fn invoke_acknowledgement_callback(
+    runtime: &Arc<Runtime>,
     requests: &RequestCache,
     id: Option<&[u8]>,
 ) -> Result<(), SelfError> {
     if let Some(id) = id {
-        let lock = requests.lock().await;
+        let mut lock = requests.lock().await;
 
-        if let Some(callback) = lock.get(id) {
-            callback(Ok(()));
+        if let Some(callback) = lock.remove(id) {
+            runtime.spawn(async move {
+                callback(Ok(()));
+            });
         }
     }
 
@@ -324,6 +392,7 @@ async fn invoke_acknowledgement_callback(
 }
 
 async fn invoke_error_callback(
+    runtime: &Arc<Runtime>,
     requests: &RequestCache,
     id: Option<&[u8]>,
     content: Option<&[u8]>,
@@ -337,11 +406,12 @@ async fn invoke_error_callback(
     println!("code: {} message: {:?}", error.code().0, error.error());
 
     if let Some(id) = id {
-        let lock = requests.lock().await;
+        let mut lock = requests.lock().await;
 
-        if let Some(callback) = lock.get(id) {
-            // TODO replace this with a proper error
-            callback(Err(SelfError::WebsocketProtocolErrorUnknown));
+        if let Some(callback) = lock.remove(id) {
+            runtime.spawn(async move {
+                callback(Err(SelfError::WebsocketProtocolErrorUnknown));
+            });
         }
     }
 
@@ -349,9 +419,9 @@ async fn invoke_error_callback(
 }
 
 async fn invoke_message_callback(
+    runtime: &Arc<Runtime>,
     subscriptions: &SubscriptionCache,
-    write_tx: &Sender<Event>,
-    on_message: &Option<OnMessageCB>,
+    callbacks: &Callbacks,
     content: Option<&[u8]>,
 ) -> Result<(), SelfError> {
     let content = match content {
@@ -391,64 +461,229 @@ async fn invoke_message_callback(
     let sender = PublicKey::from_bytes(sender)?;
     let recipient = PublicKey::from_bytes(recipient)?;
 
-    // validate the message we have received is for a valid subscription we have
-    let active_subs = subscriptions.lock().await;
-
-    let subscriber = match active_subs.get(recipient.address()) {
-        Some(sub) => sub.as_address.clone(),
-        None => {
-            println!(
-                "message received for an unknown recipient: {}",
-                hex::encode(recipient.address())
-            );
-            return Ok(());
-        }
-    };
-
-    drop(active_subs);
-
     let content = match payload.content() {
         Some(content) => content,
         None => return Err(SelfError::WebsocketProtocolEmptyContent),
     };
 
-    let on_message = match on_message {
-        Some(on_message) => on_message,
+    match payload.type_() {
+        ContentType::MLS_COMMIT => {
+            invoke_mls_commit_callback(
+                runtime,
+                &callbacks.on_commit,
+                &sender,
+                &recipient,
+                payload.sequence(),
+                payload.timestamp(),
+                content,
+            )
+            .await
+        }
+        ContentType::MLS_KEY_PACKAGE => {
+            invoke_mls_key_package_callback(
+                runtime,
+                &callbacks.on_key_package,
+                &sender,
+                &recipient,
+                payload.sequence(),
+                payload.timestamp(),
+                content,
+            )
+            .await
+        }
+        ContentType::MLS_MESSAGE => {
+            invoke_mls_message_callback(
+                runtime,
+                subscriptions,
+                &callbacks.on_message,
+                &sender,
+                &recipient,
+                payload.sequence(),
+                payload.timestamp(),
+                content,
+            )
+            .await
+        }
+        ContentType::MLS_PROPOSAL => {
+            // TODO handle proposals
+            Ok(())
+        }
+        ContentType::MLS_WELCOME => {
+            invoke_mls_welcome_callback(
+                runtime,
+                &callbacks.on_welcome,
+                &sender,
+                &recipient,
+                payload.sequence(),
+                payload.timestamp(),
+                content,
+            )
+            .await
+        }
+        _ => Err(SelfError::MessageContentMissing),
+    }
+}
+
+async fn invoke_mls_commit_callback(
+    runtime: &Arc<Runtime>,
+    on_commit: &OnCommitCB,
+    sender: &PublicKey,
+    recipient: &PublicKey,
+    sequence: u64,
+    timestamp: i64,
+    content: &[u8],
+) -> Result<(), SelfError> {
+    let content = match flatbuffers::root::<messaging::MlsCommit>(content) {
+        Ok(content) => content,
+        Err(_) => return Err(SelfError::WebsocketProtocolEncodingInvalid),
+    };
+
+    let commit = match content.commit() {
+        Some(commit) => commit.to_vec(),
         None => return Ok(()),
     };
 
-    // invoke the user defined event and send a response
-    if let Some(response) = on_message(&Message {
-        sender: &sender,
-        recipient: &recipient,
-        content,
-        sequence: payload.sequence(),
-    }) {
-        let payload = assemble_payload(
-            &subscriber,
-            &response.to,
-            response.sequence,
-            &response.content,
-        )?;
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_commit = on_commit.clone();
 
-        let (event_id, event_message) = assemble_message(&subscriber, &payload, response.tokens)?;
-
-        let event = Event::Message(
-            event_id,
-            protocol::Message::Binary(event_message),
-            Some(Arc::clone(&response.callback)),
-        );
-
-        if write_tx.send(event).is_err() {
-            // TODO handle this error properly
-            (response.callback)(Err(SelfError::RestRequestConnectionTimeout));
-        }
-    };
+    runtime.spawn(async move {
+        on_commit(&Commit {
+            sender,
+            recipient,
+            commit,
+            timestamp,
+            sequence,
+        });
+    });
 
     Ok(())
 }
 
-pub fn assemble_payload(
+async fn invoke_mls_key_package_callback(
+    runtime: &Arc<Runtime>,
+    on_key_package: &OnKeyPackageCB,
+    sender: &PublicKey,
+    recipient: &PublicKey,
+    sequence: u64,
+    timestamp: i64,
+    content: &[u8],
+) -> Result<(), SelfError> {
+    let content = match flatbuffers::root::<messaging::MlsKeyPackage>(content) {
+        Ok(content) => content,
+        Err(_) => return Err(SelfError::WebsocketProtocolEncodingInvalid),
+    };
+
+    let package = match content.package() {
+        Some(package) => package.to_vec(),
+        None => return Ok(()),
+    };
+
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_key_package = on_key_package.clone();
+
+    runtime.spawn(async move {
+        on_key_package(&KeyPackage {
+            sender,
+            recipient,
+            package,
+            timestamp,
+            sequence,
+        });
+    });
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn invoke_mls_message_callback(
+    runtime: &Arc<Runtime>,
+    subscriptions: &SubscriptionCache,
+    on_message: &OnMessageCB,
+    sender: &PublicKey,
+    recipient: &PublicKey,
+    sequence: u64,
+    timestamp: i64,
+    content: &[u8],
+) -> Result<(), SelfError> {
+    // validate the message we have received is for a valid subscription we have
+    let active_subs = subscriptions.lock().await;
+
+    if !active_subs.contains_key(recipient.address()) {
+        println!(
+            "message received for an unknown recipient: {}",
+            hex::encode(recipient.address())
+        );
+        return Ok(());
+    };
+
+    drop(active_subs);
+
+    let content = match flatbuffers::root::<messaging::MlsMessage>(content) {
+        Ok(content) => content,
+        Err(_) => return Err(SelfError::WebsocketProtocolEncodingInvalid),
+    };
+
+    let message = match content.message() {
+        Some(message) => message.to_vec(),
+        None => return Ok(()),
+    };
+
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_message = on_message.clone();
+
+    runtime.spawn(async move {
+        on_message(&Message {
+            sender,
+            recipient,
+            message,
+            timestamp,
+            sequence,
+        });
+    });
+
+    Ok(())
+}
+
+async fn invoke_mls_welcome_callback(
+    runtime: &Arc<Runtime>,
+    on_welcome: &OnWelcomeCB,
+    sender: &PublicKey,
+    recipient: &PublicKey,
+    sequence: u64,
+    timestamp: i64,
+    content: &[u8],
+) -> Result<(), SelfError> {
+    let content = match flatbuffers::root::<messaging::MlsWelcome>(content) {
+        Ok(content) => content,
+        Err(_) => return Err(SelfError::WebsocketProtocolEncodingInvalid),
+    };
+
+    let welcome = match content.welcome() {
+        Some(welcome) => welcome.to_vec(),
+        None => return Ok(()),
+    };
+
+    let sender = sender.to_owned();
+    let recipient = recipient.to_owned();
+    let on_welcome = on_welcome.clone();
+
+    runtime.spawn(async move {
+        on_welcome(&Welcome {
+            sender,
+            recipient,
+            welcome,
+            timestamp,
+            sequence,
+        });
+    });
+
+    Ok(())
+}
+
+pub fn assemble_payload_message(
     from: &KeyPair,
     to: &PublicKey,
     sequence: u64,
@@ -457,13 +692,168 @@ pub fn assemble_payload(
     // TODO pool/reuse these builders
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
+    let content = builder.create_vector(content);
+
+    let mls_message = messaging::MlsMessage::create(
+        &mut builder,
+        &messaging::MlsMessageArgs {
+            message: Some(content),
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
     let sender = builder.create_vector(from.address());
     let recipient = builder.create_vector(to.address());
-    let content = builder.create_vector(content);
+    let content = builder.create_vector(&mls_message);
 
     let payload = messaging::Payload::create(
         &mut builder,
         &messaging::PayloadArgs {
+            type_: ContentType::MLS_MESSAGE,
+            sender: Some(sender),
+            recipient: Some(recipient),
+            content: Some(content),
+            sequence,
+            timestamp: crate::time::unix(),
+        },
+    );
+
+    builder.finish(payload, None);
+
+    return Ok(builder.finished_data().to_vec());
+}
+
+pub fn assemble_payload_key_package(
+    from: &KeyPair,
+    to: &PublicKey,
+    sequence: u64,
+    key_package: &[u8],
+    send_token: Option<&[u8]>,
+    push_token: Option<&[u8]>,
+) -> Result<Vec<u8>, SelfError> {
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let key_package = builder.create_vector(key_package);
+    let send_token = send_token.map(|token| builder.create_vector(token));
+    let push_token = push_token.map(|token| builder.create_vector(token));
+
+    let mls_message = messaging::MlsKeyPackage::create(
+        &mut builder,
+        &messaging::MlsKeyPackageArgs {
+            package: Some(key_package),
+            send: send_token,
+            push_: push_token,
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
+    let sender = builder.create_vector(from.address());
+    let recipient = builder.create_vector(to.address());
+    let content = builder.create_vector(&mls_message);
+
+    let payload = messaging::Payload::create(
+        &mut builder,
+        &messaging::PayloadArgs {
+            type_: ContentType::MLS_KEY_PACKAGE,
+            sender: Some(sender),
+            recipient: Some(recipient),
+            content: Some(content),
+            sequence,
+            timestamp: crate::time::unix(),
+        },
+    );
+
+    builder.finish(payload, None);
+
+    return Ok(builder.finished_data().to_vec());
+}
+
+pub fn assemble_payload_welcome(
+    from: &KeyPair,
+    to: &PublicKey,
+    sequence: u64,
+    welcome_message: &[u8],
+    send_token: Option<&[u8]>,
+    subscription_token: Option<&[u8]>,
+) -> Result<Vec<u8>, SelfError> {
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let welcome_message = builder.create_vector(welcome_message);
+    let send_token = send_token.map(|token| builder.create_vector(token));
+    let subscription_token = subscription_token.map(|token| builder.create_vector(token));
+
+    let mls_message = messaging::MlsWelcome::create(
+        &mut builder,
+        &messaging::MlsWelcomeArgs {
+            welcome: Some(welcome_message),
+            send: send_token,
+            subscription: subscription_token,
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
+    let sender = builder.create_vector(from.address());
+    let recipient = builder.create_vector(to.address());
+    let content = builder.create_vector(&mls_message);
+
+    let payload = messaging::Payload::create(
+        &mut builder,
+        &messaging::PayloadArgs {
+            type_: ContentType::MLS_WELCOME,
+            sender: Some(sender),
+            recipient: Some(recipient),
+            content: Some(content),
+            sequence,
+            timestamp: crate::time::unix(),
+        },
+    );
+
+    builder.finish(payload, None);
+
+    return Ok(builder.finished_data().to_vec());
+}
+
+pub fn assemble_payload_commit(
+    from: &KeyPair,
+    to: &PublicKey,
+    sequence: u64,
+    commit_message: &[u8],
+) -> Result<Vec<u8>, SelfError> {
+    // TODO pool/reuse these builders
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let commit_message = builder.create_vector(commit_message);
+
+    let mls_message = messaging::MlsCommit::create(
+        &mut builder,
+        &messaging::MlsCommitArgs {
+            commit: Some(commit_message),
+        },
+    );
+
+    builder.finish(mls_message, None);
+    let mls_message = builder.finished_data().to_vec();
+    builder.reset();
+
+    let sender = builder.create_vector(from.address());
+    let recipient = builder.create_vector(to.address());
+    let content = builder.create_vector(&mls_message);
+
+    let payload = messaging::Payload::create(
+        &mut builder,
+        &messaging::PayloadArgs {
+            type_: ContentType::MLS_COMMIT,
             sender: Some(sender),
             recipient: Some(recipient),
             content: Some(content),
@@ -565,7 +955,7 @@ pub fn assemble_message(
         &messaging::EventArgs {
             version: messaging::Version::V1,
             id: Some(eid),
-            type_: messaging::ContentType::MESSAGE,
+            type_: messaging::EventType::MESSAGE,
             content: Some(cnt),
         },
     );
@@ -580,12 +970,13 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
     let now = crate::time::unix();
 
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+    let mut details_builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
     for subscription in subscriptions {
-        let inbox = builder.create_vector(subscription.to_address.address());
+        let inbox = details_builder.create_vector(subscription.to_address.address());
 
         let details = messaging::SubscriptionDetails::create(
-            &mut builder,
+            &mut details_builder,
             &messaging::SubscriptionDetailsArgs {
                 inbox: Some(inbox),
                 issued: now,
@@ -593,14 +984,14 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
             },
         );
 
-        builder.finish(details, None);
+        details_builder.finish(details, None);
 
-        let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
+        let mut details_sig_buf = vec![0; details_builder.finished_data().len() + 1];
         details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-        details_sig_buf[1..builder.finished_data().len() + 1]
-            .copy_from_slice(builder.finished_data());
+        details_sig_buf[1..details_builder.finished_data().len() + 1]
+            .copy_from_slice(details_builder.finished_data());
 
-        builder.reset();
+        details_builder.reset();
 
         let sig = builder.create_vector(&subscription.as_address.sign(&details_sig_buf));
 
@@ -674,7 +1065,81 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
         &messaging::EventArgs {
             version: messaging::Version::V1,
             id: Some(eid),
-            type_: messaging::ContentType::SUBSCRIBE,
+            type_: messaging::EventType::SUBSCRIBE,
+            content: Some(cnt),
+        },
+    );
+
+    builder.finish(event, None);
+
+    return Ok((event_id, builder.finished_data().to_vec()));
+}
+
+fn assemble_open(inbox: &KeyPair) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
+    let now = crate::time::unix();
+
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+
+    let address = builder.create_vector(inbox.address());
+
+    let details = messaging::OpenDetails::create(
+        &mut builder,
+        &messaging::OpenDetailsArgs {
+            inbox: Some(address),
+            issued: now,
+        },
+    );
+
+    builder.finish(details, None);
+
+    let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
+    details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
+    details_sig_buf[1..builder.finished_data().len() + 1].copy_from_slice(builder.finished_data());
+
+    let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(builder.finished_data());
+
+    builder.reset();
+
+    let details_sig = builder.create_vector(&inbox.sign(&details_sig_buf));
+
+    let signature = messaging::Signature::create(
+        &mut builder,
+        &messaging::SignatureArgs {
+            type_: messaging::SignatureType::PAYLOAD,
+            signer: None,
+            signature: Some(details_sig),
+        },
+    );
+
+    let details = builder.create_vector(&details_sig_buf[1..]);
+    let pow_hash = builder.create_vector(&pow_hash);
+
+    let open = messaging::Open::create(
+        &mut builder,
+        &messaging::OpenArgs {
+            details: Some(details),
+            signature: Some(signature),
+            pow: Some(pow_hash),
+            nonce: pow_nonce,
+        },
+    );
+
+    builder.finish(open, None);
+
+    let content = builder.finished_data().to_vec();
+    let event_id = crate::crypto::random_id();
+
+    builder.reset();
+
+    let eid = builder.create_vector(&event_id);
+    let cnt = builder.create_vector(&content);
+
+    let event = messaging::Event::create(
+        &mut builder,
+        &messaging::EventArgs {
+            version: messaging::Version::V1,
+            id: Some(eid),
+            type_: messaging::EventType::OPEN,
             content: Some(cnt),
         },
     );
@@ -686,14 +1151,8 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        keypair::signing::{KeyPair, PublicKey},
-        protocol::messaging,
-    };
-
     use super::*;
     use futures_util::stream::SplitSink;
-    use futures_util::{SinkExt, StreamExt};
     use tokio::{
         io::{AsyncRead, AsyncWrite},
         net::TcpListener,
@@ -713,7 +1172,7 @@ mod tests {
             &messaging::EventArgs {
                 version: messaging::Version::V1,
                 id: Some(id),
-                type_: messaging::ContentType::ACKNOWLEDGEMENT,
+                type_: messaging::EventType::ACKNOWLEDGEMENT,
                 content: None,
             },
         );
@@ -757,7 +1216,7 @@ mod tests {
             &messaging::EventArgs {
                 version: messaging::Version::V1,
                 id: Some(id),
-                type_: messaging::ContentType::ACKNOWLEDGEMENT,
+                type_: messaging::EventType::ACKNOWLEDGEMENT,
                 content: Some(content),
             },
         );
@@ -782,13 +1241,27 @@ mod tests {
         // TODO pool/reuse these builders
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
+        let content = builder.create_vector(content);
+
+        let mls_message = messaging::MlsMessage::create(
+            &mut builder,
+            &messaging::MlsMessageArgs {
+                message: Some(content),
+            },
+        );
+
+        builder.finish(mls_message, None);
+        let mls_message = builder.finished_data().to_vec();
+        builder.reset();
+
         let sender = builder.create_vector(from.address());
         let recipient = builder.create_vector(to.address());
-        let content = builder.create_vector(content);
+        let content = builder.create_vector(&mls_message);
 
         let payload = messaging::Payload::create(
             &mut builder,
             &messaging::PayloadArgs {
+                type_: ContentType::MLS_MESSAGE,
                 sender: Some(sender),
                 recipient: Some(recipient),
                 content: Some(content),
@@ -843,7 +1316,7 @@ mod tests {
             &messaging::EventArgs {
                 version: messaging::Version::V1,
                 id: Some(eid),
-                type_: messaging::ContentType::MESSAGE,
+                type_: messaging::EventType::MESSAGE,
                 content: Some(cnt),
             },
         );
@@ -1109,9 +1582,12 @@ mod tests {
         let bob_id = bob_kp.public();
 
         let callbacks = Callbacks {
-            on_connect: None,
-            on_disconnect: None,
-            on_message: None,
+            on_connect: Arc::new(|| {}),
+            on_disconnect: Arc::new(|_| {}),
+            on_message: Arc::new(|_| {}),
+            on_commit: Arc::new(|_| {}),
+            on_key_package: Arc::new(|_| {}),
+            on_welcome: Arc::new(|_| {}),
         };
 
         let mut ws =
@@ -1122,11 +1598,12 @@ mod tests {
 
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
 
+        let payload = assemble_payload_message(&alice_kp, bob_id, 0, b"test message")
+            .expect("failed to create payload");
+
         ws.send(
             &alice_kp,
-            bob_id,
-            0,
-            b"test message",
+            &payload,
             None,
             Arc::new(move |result: Result<(), SelfError>| {
                 response_tx.send(result).expect("Failed to send result");
@@ -1147,7 +1624,12 @@ mod tests {
         assert_eq!(msgs.len(), 1);
 
         let msg = msgs.first().unwrap().clone();
-        assert_eq!(msg, Vec::from("test message"));
+
+        let content =
+            flatbuffers::root::<messaging::MlsMessage>(&msg).expect("is not an mls message");
+        let message = content.message().expect("message is empty");
+
+        assert_eq!(message, Vec::from("test message"));
 
         /*
         let (_, ciphertext) = ws.receive().expect("Failed to receive message");

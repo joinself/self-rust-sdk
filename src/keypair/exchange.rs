@@ -108,16 +108,14 @@ impl KeyPair {
     }
 
     pub fn decode(encoded_keypair: &[u8]) -> Result<KeyPair, SelfError> {
-        match ciborium::de::from_reader(encoded_keypair) {
+        match postcard::from_bytes(encoded_keypair) {
             Ok(keypair) => Ok(keypair),
             Err(_) => Err(SelfError::KeyPairDecodeInvalidData),
         }
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut encoded = Vec::new();
-        ciborium::ser::into_writer(self, &mut encoded).unwrap();
-        encoded
+        postcard::to_allocvec(self).expect("failed to encode keypair")
     }
 
     pub fn import(&self, legacy_keypair: &str) -> Result<KeyPair, SelfError> {

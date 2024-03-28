@@ -9,9 +9,10 @@ use std::ptr;
 
 use crate::error::SelfError;
 use crate::storage::schema::{
-    schema_create_addresses, schema_create_encryption_key_pairs, schema_create_group_states,
-    schema_create_hpke_private_keys, schema_create_key_packages, schema_create_keypairs,
-    schema_create_psk_bundles, schema_create_signature_key_pairs,
+    schema_create_addresses, schema_create_groups, schema_create_keypairs, schema_create_members,
+    schema_create_mls_encryption_key_pairs, schema_create_mls_group_states,
+    schema_create_mls_hpke_private_keys, schema_create_mls_key_packages,
+    schema_create_mls_psk_bundles, schema_create_mls_signature_key_pairs,
 };
 use crate::storage::statement::Statement;
 use crate::storage::transaction::Transaction;
@@ -40,18 +41,20 @@ impl Connection {
         connection.pragma("PRAGMA journal_mode = wal2;")?;
         connection.pragma("PRAGMA temp_store = memory;")?;
 
+        // schema migrations
         connection.transaction(|txn| {
-            // schema migrations
             schema_create_addresses(txn);
             schema_create_keypairs(txn);
-            schema_create_signature_key_pairs(txn);
-            schema_create_hpke_private_keys(txn);
-            schema_create_key_packages(txn);
-            schema_create_psk_bundles(txn);
-            schema_create_encryption_key_pairs(txn);
-            schema_create_group_states(txn);
+            schema_create_groups(txn);
+            schema_create_members(txn);
+            schema_create_mls_signature_key_pairs(txn);
+            schema_create_mls_hpke_private_keys(txn);
+            schema_create_mls_key_packages(txn);
+            schema_create_mls_psk_bundles(txn);
+            schema_create_mls_encryption_key_pairs(txn);
+            schema_create_mls_group_states(txn);
 
-            txn.commit()
+            Ok(())
         })?;
 
         Ok(connection)
@@ -67,12 +70,18 @@ impl Connection {
 
             let mut txn = Transaction::new(self.conn)?;
 
-            execute(&mut txn)?;
+            let result = match execute(&mut txn) {
+                Ok(()) => txn.commit(),
+                Err(err) => match txn.rollback() {
+                    Ok(_) => Err(err),
+                    Err(txn_err) => Err(txn_err),
+                },
+            };
 
             sqlite3_mutex_leave(mutex);
-        }
 
-        Ok(())
+            result
+        }
     }
 
     fn pragma(&self, pragma: &str) -> Result<(), SelfError> {
@@ -89,6 +98,10 @@ impl Drop for Connection {
         }
     }
 }
+
+/// sychronization/locking happens inside of sqlite
+unsafe impl Send for Connection {}
+unsafe impl Sync for Connection {}
 
 pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
     match result {
@@ -119,7 +132,6 @@ pub fn sqlite_check_result_debug(conn: *mut sqlite3, result: i32) -> Result<(), 
 #[cfg(test)]
 mod tests {
     // use rand::Rng;
-
     use super::Connection;
 
     #[test]
@@ -139,9 +151,7 @@ mod tests {
                 )
                 .expect("failed to prepare statement");
 
-            stmt.execute().expect("failed to execute statement");
-
-            txn.commit()
+            stmt.execute()
         })
         .expect("failed to execute transaction");
 
@@ -163,12 +173,12 @@ mod tests {
                 .expect("failed to prepare statement");
 
             while stmt.step().expect("failed to step statement") {
-                let id = stmt.column_integer(0);
-                let address = stmt.column_blob(1);
+                // let id = stmt.column_integer(0);
+                // let address = stmt.column_blob(1);
                 // println!("row id: {:?} address: {:?}", id, address);
             }
 
-            txn.commit()
+            Ok(())
         })
         .expect("failed to execute transaction");
 
@@ -190,7 +200,7 @@ mod tests {
                         .expect("failed to bind blob");
                 }
 
-                txn.commit().expect("failed to commit transaction");
+                Ok(())
             })
             .expect("failed to run transaction");
 

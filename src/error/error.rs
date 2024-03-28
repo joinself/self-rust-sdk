@@ -2,6 +2,7 @@ use std::fmt;
 
 #[derive(Debug, PartialEq)]
 pub enum SelfError {
+    AccountAlreadyConfigured,
     AccountNotConfigured,
     CryptoBadAccountKey,
     CryptoBadLegacyAccountPickle,
@@ -71,6 +72,7 @@ pub enum SelfError {
     KeyPairConversionFailed,
     KeyPairDataIncorrectLength,
     KeyPairDecodeInvalidData,
+    KeyPairNotFound,
     KeyPairPublicKeyInvalidLength,
     KeyPairSignFailure,
     KeyPairSignMissingSingingKey,
@@ -152,6 +154,7 @@ impl std::error::Error for SelfError {}
 impl fmt::Display for SelfError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            SelfError::AccountAlreadyConfigured => write!(f, "Account has already been configured"),
             SelfError::AccountNotConfigured => write!(f, "Account has not been configured"),
             SelfError::CryptoBadAccountKey => write!(f, "Crypto supplied account key is invalid"),
             SelfError::CryptoBadLegacyAccountPickle => write!(f, "Crypto attempt to unpickle an account which uses pickle version 1"),
@@ -221,6 +224,7 @@ impl fmt::Display for SelfError {
             SelfError::KeyPairConversionFailed => write!(f, "Keypair conversion failed"),
             SelfError::KeyPairDataIncorrectLength => write!(f, "Keypair public or secret key data length is incorrect"),
             SelfError::KeyPairDecodeInvalidData => write!(f, "Keypair could not be decoded"),
+            SelfError::KeyPairNotFound => write!(f, "Keypair not found"),
             SelfError::KeyPairPublicKeyInvalidLength => write!(f, "Keypair public key is an incorrect length"),
             SelfError::KeyPairSignFailure => write!(f, "Keypair signing failed"),
             SelfError::KeyPairSignMissingSingingKey => write!(f, "Keypair cannot be used to sign as its missing it's secret key component"),

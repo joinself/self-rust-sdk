@@ -1,56 +1,46 @@
-use crate::account::responder::*;
-use crate::account::token::token_create_authorization;
-
+use crate::account::{Commit, KeyPackage, Message, Welcome};
+use crate::crypto::e2e;
 use crate::error::SelfError;
-use crate::hashgraph::Hashgraph;
-use crate::keypair::{
-    exchange,
-    signing::{self, KeyPair},
-};
-use crate::message::{
-    self, ConnectionRequest, Content, Envelope, GroupInviteRequest, ResponseStatus,
-    MESSAGE_TYPE_CHAT_MSG,
-};
-
-use crate::protocol::hashgraph::{self};
-use crate::storage::Storage;
+use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::storage::{query, Connection};
 use crate::time;
-use crate::token::Token;
 use crate::transport::rpc::Rpc;
-use crate::transport::websocket::{Callbacks, Subscription, Websocket};
+use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
 
-use std::sync::MutexGuard;
-use std::{
-    any::Any,
-    sync::{Arc, Mutex},
-};
+use std::any::Any;
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Arc;
 
 pub type OnConnectCB = Arc<dyn Fn(Arc<dyn Any + Send>) + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Arc<dyn Any + Send>, Result<(), SelfError>) + Sync + Send>;
-pub type OnRequestCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Envelope) -> ResponseStatus + Sync + Send>;
-pub type OnResponseCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Envelope) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Envelope) + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Message) + Sync + Send>;
+pub type OnCommitCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Commit) + Sync + Send>;
+pub type OnKeyPackageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &KeyPackage) + Sync + Send>;
+pub type OnWelcomeCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Welcome) + Sync + Send>;
 
 pub struct MessagingCallbacks {
-    pub on_connect: Option<OnConnectCB>,
-    pub on_disconnect: Option<OnDisconnectCB>,
-    pub on_request: OnRequestCB,
-    pub on_response: OnResponseCB,
+    pub on_connect: OnConnectCB,
+    pub on_disconnect: OnDisconnectCB,
     pub on_message: OnMessageCB,
+    pub on_commit: OnCommitCB,
+    pub on_key_package: OnKeyPackageCB,
+    pub on_welcome: OnWelcomeCB,
 }
 
+#[derive(Default)]
 pub struct Account {
-    rpc: Option<Rpc>,
-    storage: Option<Arc<Storage>>,
-    websocket: Option<Websocket>,
+    rpc: Arc<AtomicPtr<Rpc>>,
+    storage: Arc<AtomicPtr<Connection>>,
+    websocket: Arc<AtomicPtr<Websocket>>,
 }
 
 impl Account {
     pub fn new() -> Account {
         Account {
-            rpc: None,
-            storage: None,
-            websocket: None,
+            rpc: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            storage: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            websocket: Arc::new(AtomicPtr::new(ptr::null_mut())),
         }
     }
 
@@ -58,597 +48,388 @@ impl Account {
     /// be loaded and messaging subscriptions will be started
     pub fn configure(
         &mut self,
-        api_endpoint: &str,
+        rpc_endpoint: &str,
         messaging_endpoint: &str,
         storage_path: &str,
-        encryption_key: &[u8],
+        _storage_key: &[u8],
         callbacks: MessagingCallbacks,
         user_data: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), SelfError> {
-        let storage = Arc::new(Mutex::new(Storage::new(storage_path, encryption_key)?));
-        let account_storage = storage.clone();
+        let rpc = Rpc::new(rpc_endpoint)?;
+        let rpc = Box::into_raw(Box::new(rpc));
+        let result =
+            self.rpc
+                .compare_exchange(ptr::null_mut(), rpc, Ordering::SeqCst, Ordering::SeqCst);
+        if result.is_err() {
+            return Err(SelfError::AccountAlreadyConfigured);
+        };
 
-        let on_request_cb = callbacks.on_request;
-        let on_response_cb = callbacks.on_response;
-        let on_message_cb = callbacks.on_message;
+        let storage = Connection::new(storage_path)?;
+        let storage = Box::into_raw(Box::new(storage));
+        self.storage.swap(storage, Ordering::SeqCst);
 
-        let ws_callbacks = Callbacks {
-            on_connect: callbacks.on_connect.map(|on_connect| {
-                let on_connect_ud = user_data.clone();
+        let mut websocket = Websocket::new(
+            messaging_endpoint,
+            Callbacks {
+                on_connect: on_connect_cb(user_data.clone(), callbacks.on_connect),
+                on_disconnect: on_disconnect_cb(user_data.clone(), callbacks.on_disconnect),
+                on_message: on_message_cb(&self.storage, user_data.clone(), callbacks.on_message),
+                on_commit: on_commit_cb(user_data.clone(), callbacks.on_commit),
+                on_key_package: on_key_package_cb(user_data.clone(), callbacks.on_key_package),
+                on_welcome: on_welcome_cb(user_data.clone(), callbacks.on_welcome),
+            },
+        )?;
 
-                Arc::new(move || {
-                    on_connect(on_connect_ud.clone());
-                }) as Arc<dyn Fn() + Send + Sync>
-            }),
-            on_disconnect: callbacks.on_disconnect.map(|on_disconnect| {
-                let on_disconnect_ud = user_data.clone();
+        websocket.connect()?;
 
-                Arc::new(move |result| {
-                    on_disconnect(on_disconnect_ud.clone(), result);
-                }) as Arc<dyn Fn(Result<(), SelfError>) + Send + Sync>
-            }),
-            // TODO refactor out this handler
-            on_message: Some(Arc::new(
-                move |sender: &signing::PublicKey,
-                      recipient: &signing::PublicKey,
-                      subscriber: &signing::PublicKey,
-                      sequence: u64,
-                      ciphertext: &[u8]|
-                      -> Option<crate::transport::websocket::Response> {
-                    let on_message_ud = user_data.clone();
-                    let on_message_st = storage.clone();
-                    let mut storage = on_message_st.lock().unwrap();
+        let websocket = Box::into_raw(Box::new(websocket));
+        self.websocket.swap(websocket, Ordering::SeqCst);
 
-                    // TODO lookup exchange key as we can't convert them anymore
-                    // due to NIST compliance related restrictions
-                    let sender_exchange = exchange::KeyPair::new();
+        // TODO - resume subscriptions
+        // TODO - (re-)send messages in outbox
+        // TODO - (re-)handle messages in inbox
 
-                    let plaintext = storage.decrypt_and_queue(
-                        sender,
-                        sender_exchange.public(),
-                        recipient,
-                        Some(subscriber.to_owned()),
-                        sequence,
-                        ciphertext,
-                    );
-                    drop(storage);
+        Ok(())
+    }
 
-                    let mut response: Option<crate::transport::websocket::Response> = None;
+    /// generates and stores a new signing keypair
+    pub fn keypair_create(&self) -> Result<PublicKey, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
 
-                    match plaintext {
-                        Ok(plaintext) => {
-                            match Content::decode(&plaintext) {
-                                Ok(content) => {
-                                    // TODO validate standard fields
+        let signing_kp = KeyPair::new();
+        let signing_pk = signing_kp.public().to_owned();
 
-                                    // route message to the correct callbacks
-                                    if let Some(msg_type) = content.type_get() {
-                                        if msg_type.ends_with(".req") {
-                                            on_request_cb(
-                                                on_message_ud.clone(),
-                                                &Envelope {
-                                                    to: recipient.clone(),
-                                                    from: sender.clone(),
-                                                    sequence,
-                                                    content,
-                                                },
-                                            );
-                                        } else if msg_type.ends_with(".res") {
-                                            on_response_cb(
-                                                on_message_ud.clone(),
-                                                &Envelope {
-                                                    to: recipient.clone(),
-                                                    from: sender.clone(),
-                                                    sequence,
-                                                    content,
-                                                },
-                                            );
-                                        } else {
-                                            let message = Envelope {
-                                                to: recipient.clone(),
-                                                from: sender.clone(),
-                                                sequence,
-                                                content,
-                                            };
+        unsafe {
+            (*storage).transaction(|txn| {
+                // TODO think about how what roles actually means here...
+                query::keypair_create(txn, signing_kp, 0, crate::time::unix())?;
 
-                                            // TODO log error rather than panic
-                                            let resp = match msg_type.as_str() {
-                                                MESSAGE_TYPE_CHAT_MSG => Some(chat_message_delivered(&message).expect("failed to build chat message delivered response")),
-                                                _ => None,
-                                            };
+                Ok(())
+            })?;
+        }
 
-                                            // send message and setup callback
-                                            if let Some((recipient, plaintext)) = resp {
-                                                let mut storage = on_message_st.lock().unwrap();
+        Ok(signing_pk)
+    }
 
-                                                let (from, sequence, content) = storage
-                                                    .encrypt_and_queue(&recipient, &plaintext)
-                                                    .expect("failed to encrypt and queue response");
+    /// opens a new messaging inbox and subscribes to it
+    pub fn inbox_open(&self, key: Option<&PublicKey>) -> Result<PublicKey, SelfError> {
+        let rpc = self.rpc.load(Ordering::SeqCst);
+        if rpc.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
 
-                                                drop(storage);
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
 
-                                                let on_response_st = on_message_st.clone();
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
 
-                                                let from_clone = from.clone();
-                                                let sender_clone = sender.clone();
+        let mut signing_kp: Option<KeyPair> = None;
+        let mut key_packages: Vec<Vec<u8>> = Vec::new();
 
-                                                response =
-                                                    Some(crate::transport::websocket::Response {
-                                                        from: from.public().to_owned(),
-                                                        to: sender.clone(),
-                                                        sequence,
-                                                        content,
-                                                        tokens: None,
-                                                        callback: Arc::new(move |resp| {
-                                                            if resp.is_err() {
-                                                                // TODO log this
-                                                                return;
-                                                            }
-
-                                                            let mut storage =
-                                                                on_response_st.lock().unwrap();
-                                                            storage
-                                                                .outbox_dequeue(
-                                                                    from_clone.public(),
-                                                                    &sender_clone.clone(),
-                                                                    sequence,
-                                                                )
-                                                                .expect(
-                                                                    "failed to dequeue response",
-                                                                );
-                                                            drop(storage);
-                                                        }),
-                                                    });
-                                            }
-
-                                            on_message_cb(on_message_ud.clone(), &message);
-                                        }
-                                    }
-                                }
-                                Err(err) => println!("failed to decode content: {}", err),
-                            };
-                        }
-                        Err(err) => println!("failed to decrypt and queue message: {}", err),
+        unsafe {
+            (*storage).transaction(|txn| {
+                match key {
+                    Some(key) => {
+                        signing_kp = query::keypair_lookup(txn, key.address())?;
                     }
-
-                    response
-                },
-            )
-                as Arc<
-                    dyn Fn(
-                            &signing::PublicKey,
-                            &signing::PublicKey,
-                            &signing::PublicKey,
-                            u64,
-                            &[u8],
-                        ) -> Option<crate::transport::websocket::Response>
-                        + Send
-                        + Sync,
-                >),
-        };
-
-        let rpc = Rpc::new(api_endpoint)?;
-        let websocket = Websocket::new(messaging_endpoint, ws_callbacks)?;
-
-        self.rpc = Some(rpc);
-        self.storage = Some(account_storage);
-        self.websocket = Some(websocket);
-
-        Ok(())
-    }
-
-    /// register a persistent identifier
-    /// returns the persistent identifier created to group all other
-    /// public key identifiers
-    pub fn register(&mut self) -> Result<signing::PublicKey, SelfError> {
-        let rpc = match &mut self.rpc {
-            Some(rpc) => rpc,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let storage = match &self.storage {
-            Some(storage) => storage,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let websocket = match &mut self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        // generate keypairs for account identifier and device
-        let (identifier_kp, invocation_kp, authentication_kp, assertion_kp) = (
-            KeyPair::new(),
-            KeyPair::new(),
-            KeyPair::new(),
-            KeyPair::new(),
-        );
-        let exchange_kp = exchange::KeyPair::new();
-
-        // construct a public key operation to serve as
-        // the initial public state for the account
-        let graph = Hashgraph::new();
-
-        let operation = graph
-            .create()
-            .id(identifier_kp.address())
-            .grant_embedded(assertion_kp.address(), hashgraph::Role::Assertion)
-            .grant_embedded(authentication_kp.address(), hashgraph::Role::Authentication)
-            .grant_embedded(invocation_kp.address(), hashgraph::Role::Invocation)
-            .grant_embedded(exchange_kp.address(), hashgraph::Role::KeyAgreement)
-            .sign(&identifier_kp)
-            .sign(&assertion_kp)
-            .sign(&authentication_kp)
-            .sign(&invocation_kp)
-            .build()?;
-
-        // create an olm account for the device identifier
-        let mut olm_account =
-            crate::crypto::account::Account::new(&authentication_kp, &exchange_kp);
-        olm_account.generate_one_time_keys(100)?;
-
-        // submit public key operation to api
-        rpc.execute(identifier_kp.address(), &operation)?;
-
-        // upload prekeys for device key
-        rpc.publish(identifier_kp.address(), &olm_account.one_time_keys())?;
-
-        // persist account keys to keychain
-        let mut storage = storage.lock().unwrap();
-
-        storage.keypair_signing_create(
-            crate::keypair::Roles::Authentication as u64,
-            identifier_kp.clone(),
-            None,
-        )?;
-        storage.keypair_signing_create(
-            crate::keypair::Roles::Verification as u64
-                | crate::keypair::Roles::Invocation as u64
-                | crate::keypair::Roles::Authentication as u64,
-            authentication_kp,
-            Some(olm_account),
-        )?;
-
-        // TODO determine whether it makes sense from a security perspective to store the recover key
-        // storage.keypair_create(KeyRole::Recovery ,&recovery_kp, None)?;
-
-        let subscriptions = storage.subscription_list()?;
-        drop(storage);
-
-        websocket.connect(&subscriptions)?;
-
-        Ok(identifier_kp.public().to_owned())
-    }
-
-    /// connect to another identifier
-    pub fn connect(
-        &mut self,
-        as_address: &signing::PublicKey,
-        with_address: &signing::PublicKey,
-        authorization: Option<&Token>,
-        _notification: Option<&Token>,
-    ) -> Result<(), SelfError> {
-        // attempt to acquire a one time key for the identifier
-        // and create a connection and session with the identifier
-        self.connect_and_create_session(with_address, as_address, authorization)?;
-
-        // send a connection request to the identifier
-        let request_id = crate::crypto::random_id();
-        let now = crate::time::now();
-
-        let mut msg = Content::new();
-        msg.cti_set(&request_id);
-        msg.type_set(message::MESSAGE_TYPE_CONNECTION_REQ);
-        msg.issued_at_set(now.timestamp());
-        msg.expires_at_set((now + chrono::Duration::days(7)).timestamp());
-
-        let mut storage = match &mut self.storage {
-            Some(storage) => storage.lock().unwrap(),
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let content = ConnectionRequest {
-            ath: Some(
-                token_create_authorization(&mut storage, Some(with_address), as_address, None)?
-                    .encode()?,
-            ),
-            ntf: None,
-        }
-        .encode()?;
-
-        msg.content_set(&content);
-
-        drop(storage);
-
-        self.encrypt_and_send(with_address, &msg.encode()?)?;
-
-        // TODO if we have a notificaiton token, use it to notify the recipient
-
-        Ok(())
-    }
-
-    /// connect to another identifier using an identifier that is already assoicated with this account
-    pub fn connect_as(
-        &mut self,
-        _with: &signing::PublicKey,
-        _using: &signing::PublicKey,
-    ) -> Result<(), SelfError> {
-        Ok(())
-    }
-
-    /// connect to another identifier with a new, anonymous and ephemeral identifier
-    pub fn connect_anonymously(&mut self, _with: &signing::PublicKey) -> Result<(), SelfError> {
-        Ok(())
-    }
-
-    /// creates an authorization and notification token (if a notification secret has been set) for the primary messaging identifier that can be shared with other identifier(s)
-    pub fn token_generate(
-        &mut self,
-        as_address: &signing::PublicKey,
-        with_address: Option<&signing::PublicKey>,
-        expires: Option<i64>,
-    ) -> Result<(Token, Option<Token>), SelfError> {
-        let mut storage = match &mut self.storage {
-            Some(storage) => storage.lock().unwrap(),
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let authentication_token =
-            token_create_authorization(&mut storage, with_address, as_address, expires)?;
-
-        Ok((authentication_token, None))
-    }
-
-    /*
-        /// creates an authorization and notification token for a new anonymous identifier that can be shared with other identifier(s)
-        pub fn token_generate_anonymously(&mut self, with: Option<&signing::PublicKey>, expires: Option<i64>) -> Result<(Token, Token), SelfError> {
-
-        }
-    */
-
-    /// sends a message to a given identifier
-    pub fn send(&mut self, to: &signing::PublicKey, message: &Content) -> Result<(), SelfError> {
-        message.validate()?;
-        self.encrypt_and_send(to, &message.encode()?)
-    }
-
-    /// accepts and actions an incoming request or message
-    pub fn accept(&mut self, message: &Envelope) -> Result<(), SelfError> {
-        let mut storage = match &mut self.storage {
-            Some(storage) => storage.lock().unwrap(),
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let websocket = match &mut self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        if let Some(msg_type) = message.content.type_get() {
-            let response = match msg_type.as_str() {
-                message::MESSAGE_TYPE_CONNECTION_REQ => {
-                    Some(connection_request_accept(message, &mut storage)?)
+                    None => {
+                        signing_kp = Some(KeyPair::new());
+                        query::keypair_create(txn, signing_kp.clone().unwrap(), 0, time::unix())?;
+                    }
                 }
-                message::MESSAGE_TYPE_CHAT_MSG => Some(chat_message_read(message)?),
-                // message::MESSAGE_TYPE_GROUP_INVITE_REQ => Some(group_invite_accept(message, &mut storage, rest)?),
-                _ => None,
-            };
 
-            if let Some((recipient, plaintext)) = response {
-                encrypt_and_send(websocket, &mut storage, &recipient, &plaintext)?;
-            }
+                if let Some(signing_kp) = &signing_kp {
+                    // setup the mls credentials and generate some key packages
+                    key_packages = e2e::mls_inbox_setup(txn, signing_kp, 4)?;
 
-            return Ok(());
+                    // TODO mark this keypair as used as a messaging inbox
+                    // TODO validate this keypair is not:
+                    // 1. already used as an inbox
+                    // 2. if attached to an did, it must have an authentication role
+
+                    // TODO update metrics on inbox subscription time
+                };
+
+                Ok(())
+            })?;
+        }
+
+        let signing_kp = match signing_kp {
+            Some(signing_kp) => signing_kp,
+            None => return Err(SelfError::KeyPairNotFound),
         };
 
-        Err(SelfError::MessageContentMissing)
+        // publish the key packages
+        unsafe {
+            (*rpc).publish(signing_kp.address(), &key_packages)?;
+
+            // open & subscribe...
+            (*websocket).open(&signing_kp)?;
+            (*websocket).subscribe(&[Subscription {
+                to_address: signing_kp.public().to_owned(),
+                as_address: signing_kp.to_owned(),
+                from: time::unix(),
+                token: None,
+            }])?;
+        }
+
+        Ok(signing_kp.public().to_owned())
     }
 
-    /// rejects an incoming request
-    pub fn reject(&mut self, message: &Envelope) -> Result<(), SelfError> {
-        let mut storage = match &mut self.storage {
-            Some(storage) => storage.lock().unwrap(),
-            None => return Err(SelfError::AccountNotConfigured),
+    /// permanently close an inbox
+    pub fn inbox_close(&self, _key: &PublicKey) -> Result<(), SelfError> {
+        Ok(())
+    }
+
+    // connect with another address
+    pub fn connection_connect(
+        &self,
+        as_address: &PublicKey,
+        with_address: &PublicKey,
+        key_package: Option<&[u8]>,
+    ) -> Result<(), SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
-        let websocket = match &mut self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
         };
 
-        if let Some(msg_type) = message.content.type_get() {
-            let response = match msg_type.as_str() {
-                message::MESSAGE_TYPE_CONNECTION_REQ => {
-                    Some(connection_request_reject(message, &mut storage)?)
+        unsafe {
+            match key_package {
+                Some(key_package) => connection_establish(
+                    &(*storage),
+                    &(*websocket),
+                    as_address,
+                    with_address,
+                    key_package,
+                ),
+                None => connection_negotiate(&(*storage), &(*websocket), as_address, with_address),
+            }
+        }
+    }
+
+    // accept a group connection
+    pub fn connection_accept(
+        &self,
+        as_address: &PublicKey,
+        welcome: &[u8],
+    ) -> Result<(), SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { connection_accept(&(*storage), &(*websocket), as_address, welcome) }
+    }
+
+    /// send a message to an address
+    pub fn message_send(&self, to_address: &PublicKey, content: &[u8]) -> Result<(), SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let mut as_address: Option<KeyPair> = None;
+        let mut from_address: Option<PublicKey> = None;
+        let mut group_address: Option<PublicKey> = None;
+        let mut ciphertext = Vec::new();
+
+        unsafe {
+            (*storage).transaction(|txn| {
+                // TODO determine is this is a group, did or inbox address
+                group_address = query::group_with(txn, to_address.address(), 1)?
+                    .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
+
+                let group_address = match &group_address {
+                    Some(group_address) => group_address,
+                    None => return Err(SelfError::KeyPairNotFound),
+                };
+
+                from_address = query::group_as(txn, group_address.address(), 1)?
+                    .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
+
+                let from_address = match &from_address {
+                    Some(from_address) => from_address,
+                    None => return Err(SelfError::KeyPairNotFound),
+                };
+
+                as_address = query::keypair_lookup(txn, from_address.address())?;
+                if let Some(as_address) = &as_address {
+                    ciphertext =
+                        e2e::mls_group_encrypt(txn, group_address.address(), as_address, content)?;
                 }
-                //message::MESSAGE_TYPE_CREDENTIALS_REQ => {}
-                _ => None,
-            };
 
-            if let Some((recipient, plaintext)) = response {
-                encrypt_and_send(websocket, &mut storage, &recipient, &plaintext)?;
-            }
+                Ok(())
+            })?;
+        }
 
-            return Ok(());
+        let as_address = match &as_address {
+            Some(as_address) => as_address,
+            None => return Err(SelfError::KeyPairNotFound),
         };
 
-        Ok(())
+        let group_address = match &group_address {
+            Some(group_address) => group_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        let payload =
+            websocket::assemble_payload_message(as_address, group_address, 0, &ciphertext)?;
+
+        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+        unsafe {
+            (*websocket).send(
+                as_address,
+                &payload,
+                None,
+                Arc::new(move |resp| {
+                    resp_tx.send(resp).unwrap();
+                }),
+            );
+        }
+
+        resp_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| SelfError::RestRequestConnectionTimeout)?
+
+        // TODO de-queue message from outbox
     }
 
-    /// links an ephemeral identtiy with an existing persistent one
-    pub fn link(&mut self, _link_token: &Token) -> Result<(), SelfError> {
-        Ok(())
+    /// creates a new group
+    pub fn group_create(&self, as_address: &KeyPair) -> Result<PublicKey, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+        let group_kp = KeyPair::new();
+        let group_pk = group_kp.public().to_owned();
+
+        unsafe {
+            (*storage).transaction(|txn| {
+                // TODO think about how what roles actually means here...
+                query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+                query::group_create(txn, group_kp.address(), 2)?;
+                query::group_member_add(txn, group_kp.address(), as_address.address())?;
+                e2e::mls_group_create(txn, group_kp.address(), as_address)?;
+
+                Ok(())
+            })?;
+
+            (*websocket).open(&group_kp)?;
+            (*websocket).subscribe(&[Subscription {
+                to_address: group_kp.public().to_owned(),
+                as_address: as_address.to_owned(),
+                from: time::unix(),
+                token: None,
+            }])?;
+        }
+
+        Ok(group_pk)
     }
 
-    /// lists all groups
-    pub fn group_list(&mut self) -> Result<Vec<signing::PublicKey>, SelfError> {
+    /// list all groups
+    pub fn group_list(&self) -> Result<Vec<PublicKey>, SelfError> {
         Ok(Vec::new())
     }
+}
 
-    pub fn group_create(
-        &mut self,
-        as_address: &signing::PublicKey,
-    ) -> Result<signing::PublicKey, SelfError> {
-        let storage = match &self.storage {
-            Some(storage) => storage,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let websocket = match &mut self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        // generate keypair for the group identifier
-        let group_kp = KeyPair::new();
-
-        //let request = KeyCreateRequest::encode(&group_identifier)?;
-
-        // submit public key to the to api
-        //rest.post("/v2/keys", &request, None, None, true)?;
-
-        // persist account keys to keychain
-        let mut storage = storage.lock().unwrap();
-
-        let as_address = storage.keypair_signing_get(as_address)?;
-        storage.keypair_signing_create(
-            crate::keypair::Roles::Verification as u64
-                | crate::keypair::Roles::Invocation as u64
-                | crate::keypair::Roles::Authentication as u64,
-            group_kp.clone(),
-            None,
-        )?;
-
-        // create tokens for the identifier that will join the group
-        websocket.subscribe(vec![Subscription {
-            to_address: group_kp.public().to_owned(),
-            as_address: as_address.as_ref().to_owned(),
-            from: time::unix(),
-            token: None, // TODO add token
-        }])?;
-
-        Ok(group_kp.public().to_owned())
-    }
-
-    pub fn group_invite(
-        &mut self,
-        group: &signing::PublicKey,
-        members: &[&signing::PublicKey],
-    ) -> Result<(), SelfError> {
-        // TODO track group invites?
-
-        // send a group invite request to each of the members
-
-        for member in members {
-            let request_id = crate::crypto::random_id();
-            let now = crate::time::now();
-
-            let mut msg = Content::new();
-            msg.cti_set(&request_id);
-            msg.type_set(message::MESSAGE_TYPE_CONNECTION_REQ);
-            msg.issued_at_set(now.timestamp());
-            msg.expires_at_set((now + chrono::Duration::days(7)).timestamp());
-
-            let content = GroupInviteRequest {
-                gid: group.address().to_vec(),
-            }
-            .encode()?;
-
-            msg.content_set(&content);
-            let plaintext = msg.encode()?;
-
-            self.encrypt_and_send(member, &plaintext)?
+impl Clone for Account {
+    fn clone(&self) -> Self {
+        Account {
+            rpc: self.rpc.clone(),
+            storage: self.storage.clone(),
+            websocket: self.websocket.clone(),
         }
-
-        Ok(())
-    }
-
-    /*
-
-    pub fn group_kick(&mut self, group: &signing::PublicKey, members: &[&signing::PublicKey]) -> Result<(), SelfError> {
-
-    }
-
-    pub fn group_members(&mut self, group: &signing::PublicKey) -> Result<Vec<signing::PublicKey>, SelfError> {
-
-    }
-
-    pub fn group_leave(&mut self, group: &signing::PublicKey) -> Result<(), SelfError> {
-
-    }
-
-    pub fn group_close(&mut self, group: &signing::PublicKey) -> Result<(), SelfError> {
-
-    }
-    */
-
-    fn connect_and_create_session(
-        &mut self,
-        with: &signing::PublicKey,
-        using: &signing::PublicKey,
-        _authorization: Option<&Token>,
-    ) -> Result<(), SelfError> {
-        let rpc = match &mut self.rpc {
-            Some(rpc) => rpc,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let mut storage = match &mut self.storage {
-            Some(storage) => storage.lock().unwrap(),
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let using = storage.keypair_signing_get(using)?;
-
-        let _one_time_key = rpc.acquire(with.address(), using.address())?;
-
-        //let prekey = PrekeyResponse::new(&response.data)?;
-
-        // storage.connection_add(using, with, None, Some(&prekey.key))
-        Ok(())
-    }
-
-    fn encrypt_and_send(
-        &mut self,
-        to: &signing::PublicKey,
-        plaintext: &[u8],
-    ) -> Result<(), SelfError> {
-        let mut storage = match &mut self.storage {
-            Some(storage) => storage.lock().unwrap(),
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        let websocket = match &mut self.websocket {
-            Some(websocket) => websocket,
-            None => return Err(SelfError::AccountNotConfigured),
-        };
-
-        encrypt_and_send(websocket, &mut storage, to, plaintext)
     }
 }
 
-impl Default for Account {
-    fn default() -> Self {
-        Account::new()
-    }
-}
-
-fn encrypt_and_send(
-    websocket: &mut Websocket,
-    storage: &mut MutexGuard<Storage>,
-    to: &signing::PublicKey,
-    plaintext: &[u8],
+fn connection_negotiate(
+    storage: &Connection,
+    websocket: &Websocket,
+    as_address: &PublicKey,
+    with_address: &PublicKey,
 ) -> Result<(), SelfError> {
-    let (from, sequence, ciphertext) = storage.encrypt_and_queue(to, plaintext)?;
+    let mut key_package_payload: Option<Vec<u8>> = None;
+    let mut as_keypair: Option<KeyPair> = None;
 
-    // TODO get tokens
+    storage.transaction(|txn| {
+        as_keypair = query::keypair_lookup(txn, as_address.address())?;
+
+        let as_address = match &as_keypair {
+            Some(as_address) => as_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        // generate a key package
+        let key_package = e2e::mls_key_package_create(txn, as_address)?;
+
+        // generate a temporary send token
+
+        // generate a temporary push token
+
+        // load metrics to get sequence...
+
+        // assemble key package message
+        key_package_payload = Some(websocket::assemble_payload_key_package(
+            as_address,
+            with_address,
+            0,
+            &key_package,
+            None,
+            None,
+        )?);
+
+        // queue message in inbox
+
+        Ok(())
+    })?;
+
+    // TODO send with any tokens we may have...
+
     let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
 
+    let as_keypair = match &as_keypair {
+        Some(as_keypair) => as_keypair,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let key_package_payload = match &key_package_payload {
+        Some(key_package_payload) => key_package_payload,
+        None => return Err(SelfError::MessagePayloadInvalid),
+    };
+
+    // websocket send
     websocket.send(
-        &from,
-        to,
-        sequence,
-        &ciphertext,
+        as_keypair,
+        key_package_payload,
         None,
         Arc::new(move |resp| {
             resp_tx.send(resp).unwrap();
@@ -659,5 +440,310 @@ fn encrypt_and_send(
         .recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
 
-    storage.outbox_dequeue(from.public(), to, sequence)
+    // notify...
+
+    // deqeue sent...
+
+    Ok(())
+}
+
+fn connection_establish(
+    storage: &Connection,
+    websocket: &Websocket,
+    as_address: &PublicKey,
+    with_address: &PublicKey,
+    key_package: &[u8],
+) -> Result<(), SelfError> {
+    let group_kp = KeyPair::new();
+
+    let mut welcome_payload: Option<Vec<u8>> = None;
+    let mut commit_payload: Option<Vec<u8>> = None;
+    let mut as_keypair: Option<KeyPair> = None;
+
+    storage.transaction(|txn| {
+        as_keypair = query::keypair_lookup(txn, as_address.address())?;
+
+        let as_address = match &as_keypair {
+            Some(as_address) => as_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        // TODO think about how what roles actually means here...
+        query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+        query::group_create(txn, group_kp.address(), 1)?;
+        query::group_member_add(txn, group_kp.address(), as_address.address())?;
+        query::group_member_add(txn, group_kp.address(), with_address.address())?;
+
+        let (commit_message, welcome_message) = e2e::mls_group_create_with_members(
+            txn,
+            group_kp.address(),
+            as_address,
+            &[key_package],
+        )?;
+
+        // generate send token
+
+        // generate subscription token
+
+        // generate push token
+
+        welcome_payload = Some(websocket::assemble_payload_welcome(
+            as_address,
+            with_address,
+            0,
+            &welcome_message,
+            None,
+            None,
+        )?);
+
+        commit_payload = Some(websocket::assemble_payload_commit(
+            as_address,
+            group_kp.public(),
+            0,
+            &commit_message,
+        )?);
+
+        // queue commit message
+
+        // queue welcome message
+
+        // queue notification message
+
+        Ok(())
+    })?;
+
+    let as_keypair = match &as_keypair {
+        Some(as_keypair) => as_keypair,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let commit_payload = match &commit_payload {
+        Some(commit_payload) => commit_payload,
+        None => return Err(SelfError::MessagePayloadInvalid),
+    };
+
+    let welcome_payload = match &welcome_payload {
+        Some(welcome_payload) => welcome_payload,
+        None => return Err(SelfError::MessagePayloadInvalid),
+    };
+
+    // open the group inbox and subscribe
+    websocket.open(&group_kp)?;
+    websocket.subscribe(&[Subscription {
+        to_address: group_kp.public().to_owned(),
+        as_address: as_keypair.to_owned(),
+        from: time::unix(),
+        token: None,
+    }])?;
+
+    let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+    // send the commit message to the group inbox
+    websocket.send(
+        as_keypair,
+        commit_payload,
+        None,
+        Arc::new(move |resp| {
+            resp_tx.send(resp).unwrap();
+        }),
+    );
+
+    resp_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+    // deque send
+
+    // TODO send with any tokens we may have...
+
+    let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+    // websocket send
+    websocket.send(
+        as_keypair,
+        welcome_payload,
+        None,
+        Arc::new(move |resp| {
+            resp_tx.send(resp).unwrap();
+        }),
+    );
+
+    resp_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+    // notify...
+
+    // deqeue sent...
+
+    Ok(())
+}
+
+fn connection_accept(
+    storage: &Connection,
+    websocket: &Websocket,
+    as_address: &PublicKey,
+    welcome: &[u8],
+) -> Result<(), SelfError> {
+    let mut group_address: Option<PublicKey> = None;
+    let mut as_keypair: Option<KeyPair> = None;
+
+    storage.transaction(|txn| {
+        as_keypair = query::keypair_lookup(txn, as_address.address())?;
+        if as_keypair.is_none() {
+            return Err(SelfError::KeyPairNotFound);
+        }
+
+        let (group, members) = e2e::mls_group_create_from_welcome(txn, welcome)?;
+        query::group_create(txn, group.address(), 1)?;
+
+        for member in members {
+            query::group_member_add(txn, group.address(), member.address())?;
+        }
+
+        group_address = Some(group);
+
+        // generate send token
+
+        // generate subscription token
+
+        // generate push token
+
+        // queue notification message
+
+        Ok(())
+    })?;
+
+    let as_keypair = match &as_keypair {
+        Some(as_keypair) => as_keypair,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let group_address = match &group_address {
+        Some(group_address) => group_address,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    // subscribe
+    websocket.subscribe(&[Subscription {
+        to_address: group_address.to_owned(),
+        as_address: as_keypair.to_owned(),
+        from: time::unix(),
+        token: None,
+    }])?;
+
+    // notify...
+
+    // deqeue sent...
+
+    Ok(())
+}
+
+fn on_connect_cb(
+    user_data: Arc<dyn Any + Send + Sync>,
+    callback: OnConnectCB,
+) -> websocket::OnConnectCB {
+    Arc::new(move || {
+        callback(user_data.clone());
+    })
+}
+
+fn on_disconnect_cb(
+    user_data: Arc<dyn Any + Send + Sync>,
+    callback: OnDisconnectCB,
+) -> websocket::OnDisconnectCB {
+    Arc::new(move |result| {
+        callback(user_data.clone(), result);
+    })
+}
+
+fn on_message_cb(
+    storage: &Arc<AtomicPtr<Connection>>,
+    user_data: Arc<dyn Any + Send + Sync>,
+    callback: OnMessageCB,
+) -> websocket::OnMessageCB {
+    let storage = storage.clone();
+
+    Arc::new(move |message| {
+        let storage = storage.load(Ordering::SeqCst);
+        let mut plaintext: Option<Vec<u8>> = None;
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                plaintext = Some(e2e::mls_group_decrypt(
+                    txn,
+                    message.recipient.address(),
+                    &message.message,
+                )?);
+                Ok(())
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+                return;
+            }
+        }
+
+        let plaintext = match plaintext {
+            Some(plaintext) => plaintext,
+            None => return,
+        };
+
+        callback(
+            user_data.clone(),
+            &Message {
+                sender: &message.sender,
+                recipient: &message.recipient,
+                message: &plaintext,
+            },
+        );
+    })
+}
+
+fn on_commit_cb(
+    user_data: Arc<dyn Any + Send + Sync>,
+    callback: OnCommitCB,
+) -> websocket::OnCommitCB {
+    Arc::new(move |commit| {
+        callback(
+            user_data.clone(),
+            &Commit {
+                sender: &commit.sender,
+                recipient: &commit.recipient,
+                commit: &commit.commit,
+            },
+        );
+    })
+}
+
+fn on_key_package_cb(
+    user_data: Arc<dyn Any + Send + Sync>,
+    callback: OnKeyPackageCB,
+) -> websocket::OnKeyPackageCB {
+    Arc::new(move |package| {
+        callback(
+            user_data.clone(),
+            &KeyPackage {
+                sender: &package.sender,
+                recipient: &package.recipient,
+                package: &package.package,
+            },
+        );
+    })
+}
+
+fn on_welcome_cb(
+    user_data: Arc<dyn Any + Send + Sync>,
+    callback: OnWelcomeCB,
+) -> websocket::OnWelcomeCB {
+    Arc::new(move |welcome| {
+        callback(
+            user_data.clone(),
+            &Welcome {
+                sender: &welcome.sender,
+                recipient: &welcome.recipient,
+                welcome: &welcome.welcome,
+            },
+        );
+    })
 }

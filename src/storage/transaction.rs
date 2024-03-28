@@ -33,29 +33,27 @@ impl OpenMlsKeyStore for Transaction {
     fn store<V: MlsEntity>(&self, k: &[u8], v: &V) -> Result<(), Self::Error> {
         // println!("mls store: {:?} ({:?})", hex::encode(k), V::ID as u8);
 
-        let mut data = Vec::new();
-        ciborium::into_writer(&v, &mut data).expect("failed to serialize data");
+        let data: Vec<u8> = postcard::to_allocvec(v).expect("failed to serialize mls data");
 
-        let stmt =
-            match V::ID {
-                MlsEntityId::SignatureKeyPair => self
-                    .prepare("INSERT INTO signature_key_pairs (address, value) VALUES (?1, ?2);"),
-                MlsEntityId::HpkePrivateKey => {
-                    self.prepare("INSERT INTO hpke_private_keys (address, value) VALUES (?1, ?2);")
-                }
-                MlsEntityId::KeyPackage => {
-                    self.prepare("INSERT INTO key_packages (address, value) VALUES (?1, ?2);")
-                }
-                MlsEntityId::PskBundle => {
-                    self.prepare("INSERT INTO psk_bundles (address, value) VALUES (?1, ?2);")
-                }
-                MlsEntityId::EncryptionKeyPair => self
-                    .prepare("INSERT INTO encryption_key_pairs (address, value) VALUES (?1, ?2);"),
-                MlsEntityId::GroupState => {
-                    self.prepare("INSERT INTO group_states (address, value) VALUES (?1, ?2);")
-                }
+        let stmt = match V::ID {
+            MlsEntityId::SignatureKeyPair => self
+                .prepare("INSERT INTO mls_signature_key_pairs (address, value) VALUES (?1, ?2);"),
+            MlsEntityId::HpkePrivateKey => {
+                self.prepare("INSERT INTO mls_hpke_private_keys (address, value) VALUES (?1, ?2);")
             }
-            .expect("failed to build mls store statement");
+            MlsEntityId::KeyPackage => {
+                self.prepare("INSERT INTO mls_key_packages (address, value) VALUES (?1, ?2);")
+            }
+            MlsEntityId::PskBundle => {
+                self.prepare("INSERT INTO mls_psk_bundles (address, value) VALUES (?1, ?2);")
+            }
+            MlsEntityId::EncryptionKeyPair => self
+                .prepare("INSERT INTO mls_encryption_key_pairs (address, value) VALUES (?1, ?2);"),
+            MlsEntityId::GroupState => {
+                self.prepare("INSERT INTO mls_group_states (address, value) VALUES (?1, ?2);")
+            }
+        }
+        .expect("failed to build mls store statement");
 
         stmt.bind_blob(1, k).expect("failed to bind mls key");
         stmt.bind_blob(2, &data).expect("failed to bind mls value");
@@ -70,22 +68,22 @@ impl OpenMlsKeyStore for Transaction {
 
         let stmt = match V::ID {
             MlsEntityId::SignatureKeyPair => {
-                self.prepare("SELECT value FROM signature_key_pairs WHERE address = ?1;")
+                self.prepare("SELECT value FROM mls_signature_key_pairs WHERE address = ?1;")
             }
             MlsEntityId::HpkePrivateKey => {
-                self.prepare("SELECT value FROM hpke_private_keys WHERE address = ?1;")
+                self.prepare("SELECT value FROM mls_hpke_private_keys WHERE address = ?1;")
             }
             MlsEntityId::KeyPackage => {
-                self.prepare("SELECT value FROM key_packages WHERE address = ?1;")
+                self.prepare("SELECT value FROM mls_key_packages WHERE address = ?1;")
             }
             MlsEntityId::PskBundle => {
-                self.prepare("SELECT value FROM psk_bundles WHERE address = ?1;")
+                self.prepare("SELECT value FROM mls_psk_bundles WHERE address = ?1;")
             }
             MlsEntityId::EncryptionKeyPair => {
-                self.prepare("SELECT value FROM encryption_key_pairs WHERE address = ?1;")
+                self.prepare("SELECT value FROM mls_encryption_key_pairs WHERE address = ?1;")
             }
             MlsEntityId::GroupState => {
-                self.prepare("SELECT value FROM group_states WHERE address = ?1;")
+                self.prepare("SELECT value FROM mls_group_states WHERE address = ?1;")
             }
         }
         .expect("failed to build mls read statement");
@@ -100,10 +98,7 @@ impl OpenMlsKeyStore for Transaction {
             None => return None,
         };
 
-        Some(
-            ciborium::from_reader::<V, &[u8]>(data.as_ref())
-                .expect("failed to deserialize group state"),
-        )
+        Some(postcard::from_bytes(data.as_ref()).expect("failed to deserialize mls state"))
     }
 
     fn delete<V: MlsEntity>(&self, k: &[u8]) -> Result<(), Self::Error> {
@@ -111,17 +106,23 @@ impl OpenMlsKeyStore for Transaction {
 
         let stmt = match V::ID {
             MlsEntityId::SignatureKeyPair => {
-                self.prepare("DELETE FROM signature_key_pairs WHERE address = ?1;")
+                self.prepare("DELETE FROM mls_signature_key_pairs WHERE address = ?1;")
             }
             MlsEntityId::HpkePrivateKey => {
-                self.prepare("DELETE FROM hpke_private_keys WHERE address = ?1;")
+                self.prepare("DELETE FROM mls_hpke_private_keys WHERE address = ?1;")
             }
-            MlsEntityId::KeyPackage => self.prepare("DELETE FROM key_packages WHERE address = ?1;"),
-            MlsEntityId::PskBundle => self.prepare("DELETE FROM psk_bundles WHERE address = ?1;"),
+            MlsEntityId::KeyPackage => {
+                self.prepare("DELETE FROM mls_key_packages WHERE address = ?1;")
+            }
+            MlsEntityId::PskBundle => {
+                self.prepare("DELETE FROM mls_psk_bundles WHERE address = ?1;")
+            }
             MlsEntityId::EncryptionKeyPair => {
-                self.prepare("DELETE FROM encryption_key_pairs WHERE address = ?1;")
+                self.prepare("DELETE FROM mls_encryption_key_pairs WHERE address = ?1;")
             }
-            MlsEntityId::GroupState => self.prepare("DELETE FROM group_states WHERE address = ?1;"),
+            MlsEntityId::GroupState => {
+                self.prepare("DELETE FROM mls_group_states WHERE address = ?1;")
+            }
         }
         .expect("failed to build mls delete statement");
 
