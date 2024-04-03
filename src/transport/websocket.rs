@@ -894,7 +894,7 @@ pub fn assemble_message(
     if let Some(tokens) = tokens {
         for token in &tokens {
             match token {
-                Token::Authorization(auth) => {
+                Token::Send(auth) => {
                     let sig = builder.create_vector(&auth.token);
 
                     signatures.push(messaging::Signature::create(
@@ -1419,8 +1419,8 @@ mod tests {
                                 // token.validate();
 
                                 (authorized_by, authorized_for) = (
-                                    Some(token.signer().address().to_owned()),
-                                    Some(token.bearer().address().to_owned()),
+                                    Some(token.issuer().to_owned()),
+                                    Some(token.bearer().to_owned()),
                                 );
                             }
                             _ => {
