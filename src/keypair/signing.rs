@@ -47,6 +47,18 @@ impl PublicKey {
         })
     }
 
+    pub fn validate(bytes: &[u8]) -> Result<(), SelfError> {
+        if bytes.len() < 33 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
+        }
+
+        if bytes[0] != Algorithm::Ed25519 as u8 {
+            return Err(SelfError::KeyPairAlgorithmUnknown);
+        }
+
+        Ok(())
+    }
+
     pub fn address(&self) -> &[u8] {
         &self.bytes
     }

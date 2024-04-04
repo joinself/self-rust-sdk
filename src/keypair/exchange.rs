@@ -46,6 +46,18 @@ impl PublicKey {
         })
     }
 
+    pub fn validate(bytes: &[u8]) -> Result<(), SelfError> {
+        if bytes.len() < 33 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
+        }
+
+        if bytes[0] != Algorithm::Curve25519 as u8 {
+            return Err(SelfError::KeyPairAlgorithmUnknown);
+        }
+
+        Ok(())
+    }
+
     pub fn seal_anonymous(&self, message: &[u8]) -> Vec<u8> {
         let mut ciphertext = vec![0u8; message.len() + (crypto_box_SEALBYTES) as usize];
 

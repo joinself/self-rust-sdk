@@ -14,12 +14,17 @@ const TOKEN_KIND_SUBSCRIPTION: u8 = 4;
 const TOKEN_KIND_DELEGATION: u8 = 5;
 const FLAG_DELEGATION_PERMIT: u8 = 1 << 1;
 const FLAG_BEARER_PROMISCUOUS: u8 = 1 << 2;
+const HEADER_LENGTH: usize = 1 + 1 + 4 + 20 + 8 + 8;
+const AUTHENTICATION_BASE_LENGTH: usize = HEADER_LENGTH + 32 + 33 + 64;
+const PUSH_BASE_LENGTH: usize = HEADER_LENGTH + 2 + 33 + 33 + 64;
+const SEND_BASE_LENGTH: usize = HEADER_LENGTH + 33 + 64;
+const SUBSCRIBE_BASE_LENGTH: usize = HEADER_LENGTH + 33 + 33 + 64;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Token {
     Authentication(Authentication),
-    Send(Send),
     Push(Push),
+    Send(Send),
     Subscription(Subscription),
     Delegation(Delegation),
 }
@@ -64,7 +69,7 @@ impl Token {
     pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
         Ok(match self {
             Token::Authentication(auth) => auth.token.to_vec(),
-            Token::Send(auth) => auth.token.to_vec(),
+            Token::Send(send) => send.token.to_vec(),
             Token::Push(push) => push.token.to_vec(),
             Token::Subscription(sub) => sub.token.to_vec(),
             Token::Delegation(del) => del.token.to_vec(),
@@ -74,7 +79,7 @@ impl Token {
     pub fn version(&self) -> u8 {
         match self {
             Token::Authentication(auth) => auth.token[0],
-            Token::Send(auth) => auth.token[0],
+            Token::Send(send) => send.token[0],
             Token::Push(push) => push.token[0],
             Token::Subscription(sub) => sub.token[0],
             Token::Delegation(del) => del.token[0],
@@ -84,10 +89,20 @@ impl Token {
     pub fn id(&self) -> Vec<u8> {
         match self {
             Token::Authentication(auth) => auth.token[6..26].to_vec(),
-            Token::Send(auth) => auth.token[6..26].to_vec(),
+            Token::Send(send) => send.token[6..26].to_vec(),
             Token::Push(push) => push.token[6..26].to_vec(),
             Token::Subscription(sub) => sub.token[6..26].to_vec(),
             Token::Delegation(del) => del.token[6..26].to_vec(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), SelfError> {
+        match self {
+            Token::Authentication(auth) => auth.validate(),
+            Token::Send(send) => send.validate(),
+            Token::Push(push) => push.validate(),
+            Token::Subscription(sub) => sub.validate(),
+            Token::Delegation(del) => del.validate(),
         }
     }
 }
@@ -165,6 +180,42 @@ impl Authentication {
         &self.token[42..74]
     }
 
+    pub fn validate(&self) -> Result<(), SelfError> {
+        // validate header size
+        if self.token.len() < HEADER_LENGTH {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate timestamps
+        let issued = match self.token[26..34].try_into() {
+            Ok(issued) => i64::from_le_bytes(issued),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        let expires = match self.token[34..42].try_into() {
+            Ok(expires) => i64::from_le_bytes(expires),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        if issued > expires {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        if self.token.len() != AUTHENTICATION_BASE_LENGTH {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate signer
+        let signer = signing::PublicKey::from_bytes(&self.token[74..107])?;
+
+        // validate signature
+        if !signer.verify(&self.token[0..107], &self.token[107..171]) {
+            return Err(SelfError::TokenSignatureInvalid);
+        }
+
+        Ok(())
+    }
+
     pub fn to_vec(&self) -> Vec<u8> {
         self.token.to_vec()
     }
@@ -178,6 +229,10 @@ pub struct Delegation {
 impl Delegation {
     pub fn signer(&self) -> signing::PublicKey {
         signing::PublicKey::from_bytes(&self.token[35..67]).expect("already validated public key")
+    }
+
+    pub fn validate(&self) -> Result<(), SelfError> {
+        Ok(())
     }
 }
 
@@ -323,6 +378,107 @@ impl Push {
         }
     }
 
+    pub fn validate(&self) -> Result<(), SelfError> {
+        // validate header size
+        if self.token.len() < HEADER_LENGTH + 2 {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        let options = match self.token[2..6].try_into() {
+            Ok(options) => i32::from_le_bytes(options),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        // validate timestamps
+        let issued = match self.token[26..34].try_into() {
+            Ok(issued) => i64::from_le_bytes(issued),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        let expires = match self.token[34..42].try_into() {
+            Ok(expires) => i64::from_le_bytes(expires),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        if issued > expires {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate length based on what flags are set
+        if options & (FLAG_BEARER_PROMISCUOUS as i32) != 0 {
+            self.validate_without_bearer()
+        } else {
+            self.validate_with_bearer()
+        }
+    }
+
+    fn validate_with_bearer(&self) -> Result<(), SelfError> {
+        let epcl = match self.token[42..44].try_into() {
+            Ok(epcl) => u16::from_le_bytes(epcl) as usize,
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        if self.token.len() != PUSH_BASE_LENGTH + 33 + epcl {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate payload size
+        if epcl > self.token.len() - (HEADER_LENGTH + 2 + 33 + 33 + 33 + 64) {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate exchange
+        exchange::PublicKey::validate(&self.token[44 + epcl..77 + epcl])?;
+
+        // validate bearer
+        signing::PublicKey::validate(&self.token[77 + epcl..110 + epcl])?;
+
+        // validate signer
+        let signer = signing::PublicKey::from_bytes(&self.token[110 + epcl..143 + epcl])?;
+
+        // validate signature
+        if !signer.verify(
+            &self.token[0..143 + epcl],
+            &self.token[143 + epcl..207 + epcl],
+        ) {
+            return Err(SelfError::TokenSignatureInvalid);
+        }
+
+        Ok(())
+    }
+
+    fn validate_without_bearer(&self) -> Result<(), SelfError> {
+        let epcl = match self.token[42..44].try_into() {
+            Ok(epcl) => u16::from_le_bytes(epcl) as usize,
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        if self.token.len() != PUSH_BASE_LENGTH + epcl {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate payload size
+        if epcl > self.token.len() - (HEADER_LENGTH + 2 + 33 + 33 + 64) {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate exchange
+        exchange::PublicKey::validate(&self.token[44 + epcl..77 + epcl])?;
+
+        // validate signer
+        let signer = signing::PublicKey::from_bytes(&self.token[77 + epcl..110 + epcl])?;
+
+        // validate signature
+        if !signer.verify(
+            &self.token[0..110 + epcl],
+            &self.token[110 + epcl..174 + epcl],
+        ) {
+            return Err(SelfError::TokenSignatureInvalid);
+        }
+
+        Ok(())
+    }
+
     pub fn to_vec(&self) -> Vec<u8> {
         self.token.to_vec()
     }
@@ -428,6 +584,75 @@ impl Send {
         }
     }
 
+    pub fn validate(&self) -> Result<(), SelfError> {
+        // validate header size
+        if self.token.len() < HEADER_LENGTH {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        let options = match self.token[2..6].try_into() {
+            Ok(options) => i32::from_le_bytes(options),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        // validate timestamps
+        let issued = match self.token[26..34].try_into() {
+            Ok(issued) => i64::from_le_bytes(issued),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        let expires = match self.token[34..42].try_into() {
+            Ok(expires) => i64::from_le_bytes(expires),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        if issued > expires {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate length based on what flags are set
+        if options & (FLAG_BEARER_PROMISCUOUS as i32) != 0 {
+            self.validate_without_bearer()
+        } else {
+            self.validate_with_bearer()
+        }
+    }
+
+    fn validate_with_bearer(&self) -> Result<(), SelfError> {
+        if self.token.len() < SEND_BASE_LENGTH + 33 {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate bearer
+        signing::PublicKey::validate(&self.token[42..75])?;
+
+        // validate signer
+        let signer = signing::PublicKey::from_bytes(&self.token[75..108])?;
+
+        // validate signature
+        if !signer.verify(&self.token[0..108], &self.token[108..172]) {
+            return Err(SelfError::TokenSignatureInvalid);
+        }
+
+        Ok(())
+    }
+
+    fn validate_without_bearer(&self) -> Result<(), SelfError> {
+        if self.token.len() < SEND_BASE_LENGTH {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate signer
+        let signer = signing::PublicKey::from_bytes(&self.token[42..75])?;
+
+        // validate signature
+        if !signer.verify(&self.token[0..75], &self.token[75..139]) {
+            return Err(SelfError::TokenSignatureInvalid);
+        }
+
+        Ok(())
+    }
+
     pub fn to_vec(&self) -> Vec<u8> {
         self.token.to_vec()
     }
@@ -499,6 +724,45 @@ impl Subscription {
         &self.token[42..75]
     }
 
+    pub fn validate(&self) -> Result<(), SelfError> {
+        // validate header size
+        if self.token.len() < HEADER_LENGTH {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate timestamps
+        let issued = match self.token[26..34].try_into() {
+            Ok(issued) => i64::from_le_bytes(issued),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        let expires = match self.token[34..42].try_into() {
+            Ok(expires) => i64::from_le_bytes(expires),
+            Err(_) => return Err(SelfError::TokenEncodingInvalid),
+        };
+
+        if issued > expires {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        if self.token.len() < SUBSCRIBE_BASE_LENGTH {
+            return Err(SelfError::TokenEncodingInvalid);
+        }
+
+        // validate bearer
+        signing::PublicKey::validate(&self.token[42..75])?;
+
+        // validate signer
+        let signer = signing::PublicKey::from_bytes(&self.token[75..108])?;
+
+        // validate signature
+        if !signer.verify(&self.token[0..108], &self.token[108..172]) {
+            return Err(SelfError::TokenSignatureInvalid);
+        }
+
+        Ok(())
+    }
+
     pub fn to_vec(&self) -> Vec<u8> {
         self.token.to_vec()
     }
@@ -528,6 +792,10 @@ mod tests {
             }
             _ => unreachable!("unknown token type"),
         };
+
+        decoded_authentication_token
+            .validate()
+            .expect("token invalid");
 
         assert_eq!(decoded_authentication_token.issuer(), issuer.address());
         assert_eq!(decoded_authentication_token.issued(), 10);
@@ -561,6 +829,8 @@ mod tests {
                 _ => unreachable!("unknown token type"),
             };
 
+        decoded_push_token.validate().expect("token invalid");
+
         assert_eq!(decoded_push_token.issuer(), issuer.address());
         assert_eq!(
             decoded_push_token.bearer().expect("missing bearer"),
@@ -569,8 +839,6 @@ mod tests {
         assert_eq!(decoded_push_token.exchange(), exchanged.address());
         assert_eq!(decoded_push_token.issued(), 10);
         assert_eq!(decoded_push_token.expires(), 11);
-
-        let issuer = signing::KeyPair::new();
 
         let push_token = token::Push::new(
             &issuer,
@@ -589,6 +857,8 @@ mod tests {
                 token::Token::Push(decoded_push_token) => decoded_push_token,
                 _ => unreachable!("unknown token type"),
             };
+
+        decoded_push_token.validate().expect("token invalid");
 
         assert_eq!(decoded_push_token.issuer(), issuer.address());
         assert_eq!(decoded_push_token.bearer(), None);
@@ -610,6 +880,8 @@ mod tests {
                 _ => unreachable!("unknown token type"),
             };
 
+        decoded_send_token.validate().expect("token invalid");
+
         assert_eq!(decoded_send_token.issuer(), issuer.address());
         assert_eq!(
             decoded_send_token.bearer().expect("missing bearer"),
@@ -628,6 +900,8 @@ mod tests {
                 token::Token::Send(decoded_send_token) => decoded_send_token,
                 _ => unreachable!("unknown token type"),
             };
+
+        decoded_send_token.validate().expect("token invalid");
 
         assert_eq!(decoded_send_token.issuer(), issuer.address());
         assert_eq!(decoded_send_token.bearer(), None);
@@ -648,6 +922,8 @@ mod tests {
                 token::Token::Subscription(decoded_subscribe_token) => decoded_subscribe_token,
                 _ => unreachable!("unknown token type"),
             };
+
+        decoded_subscribe_token.validate().expect("token invalid");
 
         assert_eq!(decoded_subscribe_token.issuer(), issuer.address());
         assert_eq!(decoded_subscribe_token.bearer(), bearer.address());
