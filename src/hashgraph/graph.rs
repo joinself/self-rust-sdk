@@ -1,5 +1,4 @@
 use flatbuffers::{ForwardsUOffset, Vector};
-use http::header;
 
 use crate::error::SelfError;
 use crate::hashgraph::{node::Node, node::RoleEntry, operation::OperationBuilder};

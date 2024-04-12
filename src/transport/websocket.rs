@@ -48,6 +48,7 @@ pub struct Welcome {
     pub welcome: Vec<u8>,
     pub timestamp: i64,
     pub sequence: u64,
+    pub subscription: Vec<u8>,
 }
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
@@ -466,6 +467,9 @@ async fn invoke_message_callback(
         None => return Err(SelfError::WebsocketProtocolEmptyContent),
     };
 
+    // TODO pass through authentication status (token or proof of work)
+    // to let the sdk decide whether to accept or reject new sessions
+    // from unauthenticated users
     match payload.type_() {
         ContentType::MLS_COMMIT => {
             invoke_mls_commit_callback(
@@ -666,6 +670,11 @@ async fn invoke_mls_welcome_callback(
         None => return Ok(()),
     };
 
+    let subscription = match content.subscription() {
+        Some(subscription) => subscription.to_vec(),
+        None => return Ok(()),
+    };
+
     let sender = sender.to_owned();
     let recipient = recipient.to_owned();
     let on_welcome = on_welcome.clone();
@@ -677,6 +686,7 @@ async fn invoke_mls_welcome_callback(
             welcome,
             timestamp,
             sequence,
+            subscription,
         });
     });
 

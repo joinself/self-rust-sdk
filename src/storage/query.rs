@@ -7,14 +7,83 @@ pub trait KeyPair {
     fn decode(d: &[u8]) -> Self;
 }
 
+#[repr(u8)]
+pub enum Event {
+    Commit,
+    KeyPackage,
+    Message,
+    Proposal,
+    Welcome,
+    Invalid,
+}
+
+impl Event {
+    fn to_u8(&self) -> u8 {
+        match self {
+            Event::Commit => 0,
+            Event::KeyPackage => 1,
+            Event::Message => 2,
+            Event::Proposal => 3,
+            Event::Welcome => 4,
+            Event::Invalid => 255,
+        }
+    }
+
+    fn from_u8(event: u8) -> Event {
+        match event {
+            0 => Event::Commit,
+            1 => Event::KeyPackage,
+            2 => Event::Message,
+            3 => Event::Proposal,
+            4 => Event::Welcome,
+            _ => Event::Invalid,
+        }
+    }
+}
+
+#[repr(u8)]
+pub enum Token {
+    Authentication,
+    Send,
+    Push,
+    Subscription,
+    Delegation,
+    Invalid,
+}
+
+impl Token {
+    fn to_u8(&self) -> u8 {
+        match self {
+            Token::Authentication => 0,
+            Token::Send => 1,
+            Token::Push => 2,
+            Token::Subscription => 3,
+            Token::Delegation => 4,
+            Token::Invalid => 255,
+        }
+    }
+
+    fn from_u8(event: u8) -> Token {
+        match event {
+            0 => Token::Authentication,
+            1 => Token::Send,
+            2 => Token::Push,
+            3 => Token::Subscription,
+            4 => Token::Delegation,
+            _ => Token::Invalid,
+        }
+    }
+}
+
 pub struct QueuedMessage {
+    pub event: Event,
     pub sender: Vec<u8>,
     pub recipient: Vec<u8>,
     pub message: Vec<u8>,
     pub sequence: u64,
 }
 
-fn address_create(txn: &Transaction, address: &[u8]) -> Result<(), SelfError> {
+pub fn address_create(txn: &Transaction, address: &[u8]) -> Result<(), SelfError> {
     txn.prepare("INSERT OR IGNORE INTO addresses (address) VALUES (?1)")?
         .bind_blob(1, address)?
         .execute()
@@ -169,10 +238,10 @@ pub fn group_member_add(
 
 pub fn token_create(
     txn: &Transaction,
+    kind: Token,
     from_address: &[u8],
     to_address: &[u8],
     for_address: &[u8],
-    kind: u64,
     token: &[u8],
 ) -> Result<(), SelfError> {
     let stmt = txn.prepare(
@@ -189,7 +258,7 @@ pub fn token_create(
     stmt.bind_blob(1, from_address)?;
     stmt.bind_blob(2, to_address)?;
     stmt.bind_blob(3, for_address)?;
-    stmt.bind_integer(4, kind as i64)?;
+    stmt.bind_integer(4, kind.to_u8() as i64)?;
     stmt.bind_blob(5, token)?;
 
     Ok(())
@@ -197,24 +266,27 @@ pub fn token_create(
 
 pub fn inbox_queue(
     txn: &Transaction,
+    event: Event,
     sender: &[u8],
     recipient: &[u8],
     message: &[u8],
     sequence: u64,
 ) -> Result<(), SelfError> {
     txn.prepare(
-        "INSERT INTO inbox (sender, recipient, message, sequence)
+        "INSERT INTO inbox (event, sender, recipient, message, sequence)
         VALUES (
-            (SELECT id FROM addresses WHERE address=?1),
+            ?1,
             (SELECT id FROM addresses WHERE address=?2),
-            ?3,
-            ?4
+            (SELECT id FROM addresses WHERE address=?3),
+            ?4,
+            ?5
         );",
     )?
-    .bind_blob(1, sender)?
-    .bind_blob(2, recipient)?
-    .bind_blob(3, message)?
-    .bind_integer(4, sequence as i64)?
+    .bind_integer(1, event.to_u8() as i64)?
+    .bind_blob(2, sender)?
+    .bind_blob(3, recipient)?
+    .bind_blob(4, message)?
+    .bind_integer(5, sequence as i64)?
     .execute()
 }
 
@@ -239,7 +311,7 @@ pub fn inbox_dequeue(
 
 pub fn inbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError> {
     let stmt = txn.prepare(
-        "SELECT a1.address, a2.address, message, sequence FROM inbox
+        "SELECT a1.address, a2.address, event, message, sequence FROM inbox
         JOIN addresses a1 ON
             a1.id = inbox.sender
         JOIN addresses a2 ON
@@ -261,17 +333,23 @@ pub fn inbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError>
         None => return Err(SelfError::StorageColumnTypeMismatch),
     };
 
-    let message = match stmt.column_blob(2)? {
+    let event = match stmt.column_integer(2)? {
+        Some(event) => Event::from_u8(event as u8),
+        None => return Err(SelfError::StorageColumnTypeMismatch),
+    };
+
+    let message = match stmt.column_blob(3)? {
         Some(message) => message,
         None => return Err(SelfError::StorageColumnTypeMismatch),
     };
 
-    let sequence = match stmt.column_integer(3)? {
+    let sequence = match stmt.column_integer(4)? {
         Some(sequence) => sequence as u64,
         None => return Err(SelfError::StorageColumnTypeMismatch),
     };
 
     Ok(Some(QueuedMessage {
+        event,
         sender,
         recipient,
         message,
@@ -281,25 +359,30 @@ pub fn inbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError>
 
 pub fn outbox_queue(
     txn: &Transaction,
+    event: Event,
     sender: &[u8],
     recipient: &[u8],
     message: &[u8],
     sequence: u64,
 ) -> Result<(), SelfError> {
     txn.prepare(
-        "INSERT INTO outbox (sender, recipient, message, sequence)
+        "INSERT INTO outbox (event, sender, recipient, message, sequence)
         VALUES (
-            (SELECT id FROM addresses WHERE address=?1),
+            ?1,
             (SELECT id FROM addresses WHERE address=?2),
-            ?3,
-            ?4
+            (SELECT id FROM addresses WHERE address=?3),
+            ?4,
+            ?5
         );",
     )?
-    .bind_blob(1, sender)?
-    .bind_blob(2, recipient)?
-    .bind_blob(3, message)?
-    .bind_integer(4, sequence as i64)?
+    .bind_integer(1, event.to_u8() as i64)?
+    .bind_blob(2, sender)?
+    .bind_blob(3, recipient)?
+    .bind_blob(4, message)?
+    .bind_integer(5, sequence as i64)?
     .execute()
+    .expect("blah");
+    Ok(())
 }
 
 pub fn outbox_dequeue(
@@ -323,7 +406,7 @@ pub fn outbox_dequeue(
 
 pub fn outbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError> {
     let stmt = txn.prepare(
-        "SELECT a1.address, a2.address, message, sequence FROM outbox
+        "SELECT a1.address, a2.address, event, message, sequence FROM outbox
         JOIN addresses a1 ON
             a1.id = outbox.sender
         JOIN addresses a2 ON
@@ -345,17 +428,23 @@ pub fn outbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError
         None => return Err(SelfError::StorageColumnTypeMismatch),
     };
 
-    let message = match stmt.column_blob(2)? {
+    let event = match stmt.column_integer(2)? {
+        Some(event) => Event::from_u8(event as u8),
+        None => return Err(SelfError::StorageColumnTypeMismatch),
+    };
+
+    let message = match stmt.column_blob(3)? {
         Some(message) => message,
         None => return Err(SelfError::StorageColumnTypeMismatch),
     };
 
-    let sequence = match stmt.column_integer(3)? {
+    let sequence = match stmt.column_integer(4)? {
         Some(sequence) => sequence as u64,
         None => return Err(SelfError::StorageColumnTypeMismatch),
     };
 
     Ok(Some(QueuedMessage {
+        event,
         sender,
         recipient,
         message,
@@ -368,6 +457,7 @@ mod tests {
     use crate::{
         crypto::{self, random_id},
         storage::query,
+        storage::query::Event,
         storage::Connection,
     };
 
@@ -381,7 +471,14 @@ mod tests {
         // queue a message for an unknown sender
         connection
             .transaction(|txn| {
-                query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::inbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect_err("transaction succeeded");
 
@@ -393,7 +490,14 @@ mod tests {
         // queue a message for an unknown recipient
         connection
             .transaction(|txn| {
-                query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::inbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect_err("transaction succeeded");
 
@@ -405,7 +509,14 @@ mod tests {
         // queue a message for an unknown sender
         connection
             .transaction(|txn| {
-                query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::inbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -414,7 +525,14 @@ mod tests {
         // uniqueness constraints
         connection
             .transaction(|txn| {
-                query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::inbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -422,7 +540,14 @@ mod tests {
         connection
             .transaction(|txn| {
                 for i in 2..100 {
-                    query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), i)?
+                    query::inbox_queue(
+                        txn,
+                        Event::Message,
+                        &sender,
+                        &recipient,
+                        &crypto::random::vec(256),
+                        i,
+                    )?
                 }
 
                 Ok(())
@@ -448,7 +573,14 @@ mod tests {
                 query::address_create(txn, &sender)?;
                 query::address_create(txn, &recipient)?;
 
-                query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::inbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -480,7 +612,14 @@ mod tests {
                 query::address_create(txn, &sender)?;
                 query::address_create(txn, &recipient)?;
 
-                query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::inbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -524,7 +663,9 @@ mod tests {
             let content = crypto::random::vec(256);
 
             connection
-                .transaction(|txn| query::inbox_queue(txn, &sender, &recipient, &content, i))
+                .transaction(|txn| {
+                    query::inbox_queue(txn, Event::Message, &sender, &recipient, &content, i)
+                })
                 .expect("transaction failed");
 
             connection
@@ -545,7 +686,14 @@ mod tests {
         connection
             .transaction(|txn| {
                 for i in 100..200 {
-                    query::inbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), i)?;
+                    query::inbox_queue(
+                        txn,
+                        Event::Message,
+                        &sender,
+                        &recipient,
+                        &crypto::random::vec(256),
+                        i,
+                    )?;
                 }
                 Ok(())
             })
@@ -588,7 +736,14 @@ mod tests {
         // queue a message for an unknown sender
         connection
             .transaction(|txn| {
-                query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::outbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect_err("transaction succeeded");
 
@@ -600,7 +755,14 @@ mod tests {
         // queue a message for an unknown recipient
         connection
             .transaction(|txn| {
-                query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::outbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect_err("transaction succeeded");
 
@@ -612,7 +774,14 @@ mod tests {
         // queue a message for an unknown sender
         connection
             .transaction(|txn| {
-                query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::outbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -621,7 +790,14 @@ mod tests {
         // uniqueness constraints
         connection
             .transaction(|txn| {
-                query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::outbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -629,7 +805,14 @@ mod tests {
         connection
             .transaction(|txn| {
                 for i in 2..100 {
-                    query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), i)?
+                    query::outbox_queue(
+                        txn,
+                        Event::Message,
+                        &sender,
+                        &recipient,
+                        &crypto::random::vec(256),
+                        i,
+                    )?
                 }
 
                 Ok(())
@@ -655,7 +838,14 @@ mod tests {
                 query::address_create(txn, &sender)?;
                 query::address_create(txn, &recipient)?;
 
-                query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::outbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -687,7 +877,14 @@ mod tests {
                 query::address_create(txn, &sender)?;
                 query::address_create(txn, &recipient)?;
 
-                query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), 0)
+                query::outbox_queue(
+                    txn,
+                    Event::Message,
+                    &sender,
+                    &recipient,
+                    &crypto::random::vec(256),
+                    0,
+                )
             })
             .expect("transaction failed");
 
@@ -731,7 +928,9 @@ mod tests {
             let content = crypto::random::vec(256);
 
             connection
-                .transaction(|txn| query::outbox_queue(txn, &sender, &recipient, &content, i))
+                .transaction(|txn| {
+                    query::outbox_queue(txn, Event::Message, &sender, &recipient, &content, i)
+                })
                 .expect("transaction failed");
 
             connection
@@ -752,7 +951,14 @@ mod tests {
         connection
             .transaction(|txn| {
                 for i in 100..200 {
-                    query::outbox_queue(txn, &sender, &recipient, &crypto::random::vec(256), i)?;
+                    query::outbox_queue(
+                        txn,
+                        Event::Message,
+                        &sender,
+                        &recipient,
+                        &crypto::random::vec(256),
+                        i,
+                    )?;
                 }
                 Ok(())
             })

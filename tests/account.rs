@@ -38,14 +38,18 @@ fn encrypted_messaging() {
         on_disconnect: Arc::new(|_, _| {}),
         on_message: Arc::new(move |_, message| {
             alice_message_tx
-                .send(message.message.to_vec())
+                .send(message.message().to_vec())
                 .expect("failed to send received message for alice");
         }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, _| {}),
         on_welcome: Arc::new(move |_, welcome| {
             alice_wm_cb
-                .connection_accept(welcome.recipient, welcome.welcome)
+                .connection_accept(
+                    welcome.recipient(),
+                    welcome.welcome(),
+                    welcome.subscription_token(),
+                )
                 .expect("failed to connect using welcome mesage");
 
             alice_welcome_tx
@@ -75,19 +79,19 @@ fn encrypted_messaging() {
         on_disconnect: Arc::new(|_, _| {}),
         on_message: Arc::new(move |_, message| {
             bobby_ms_cb
-                .message_send(message.sender, b"hey alice")
+                .message_send(message.sender(), b"hey alice")
                 .expect("failed to send response message from bobby");
             bobby_message_tx
-                .send(message.message.to_vec())
+                .send(message.message().to_vec())
                 .expect("failed to send received message for bobby");
         }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, key_package| {
             bobby_kp_cb
                 .connection_connect(
-                    key_package.recipient,
-                    key_package.sender,
-                    Some(key_package.package),
+                    key_package.recipient(),
+                    key_package.sender(),
+                    Some(key_package.package()),
                 )
                 .expect("failed to connect using key package");
         }),
@@ -108,8 +112,6 @@ fn encrypted_messaging() {
     // create an inbox for alice and bob
     let alice_inbox = alice.inbox_open(None).expect("failed to open inbox");
     let bobby_inbox = bobby.inbox_open(None).expect("failed to open inbox");
-
-    println!("bobby inbox: {}", hex::encode(bobby_inbox.address()));
 
     // initiate a connection from alice to bob
     alice

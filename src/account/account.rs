@@ -4,7 +4,7 @@ use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::storage::{query, Connection};
 use crate::time;
-use crate::token::{self, Token};
+use crate::token;
 use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
 
@@ -75,9 +75,13 @@ impl Account {
                 on_connect: on_connect_cb(user_data.clone(), callbacks.on_connect),
                 on_disconnect: on_disconnect_cb(user_data.clone(), callbacks.on_disconnect),
                 on_message: on_message_cb(&self.storage, user_data.clone(), callbacks.on_message),
-                on_commit: on_commit_cb(user_data.clone(), callbacks.on_commit),
-                on_key_package: on_key_package_cb(user_data.clone(), callbacks.on_key_package),
-                on_welcome: on_welcome_cb(user_data.clone(), callbacks.on_welcome),
+                on_commit: on_commit_cb(&self.storage, user_data.clone(), callbacks.on_commit),
+                on_key_package: on_key_package_cb(
+                    &self.storage,
+                    user_data.clone(),
+                    callbacks.on_key_package,
+                ),
+                on_welcome: on_welcome_cb(&self.storage, user_data.clone(), callbacks.on_welcome),
             },
         )?;
 
@@ -158,10 +162,10 @@ impl Account {
 
                     query::token_create(
                         txn,
+                        query::Token::Subscription,
                         signing_kp.address(),
                         signing_kp.address(),
                         signing_kp.address(),
-                        4,
                         subscription_token.as_ref().unwrap().as_bytes(),
                     )?;
 
@@ -317,6 +321,7 @@ impl Account {
 
                     query::outbox_queue(
                         txn,
+                        query::Event::Message,
                         as_address.address(),
                         group_address.address(),
                         &ciphertext,
@@ -397,10 +402,10 @@ impl Account {
                 e2e::mls_group_create(txn, group_kp.address(), as_keypair.as_ref().unwrap())?;
                 query::token_create(
                     txn,
+                    query::Token::Subscription,
                     group_kp.address(),
                     as_address.address(),
                     group_kp.address(),
-                    4,
                     subscription_token.as_bytes(),
                 )
             })?;
@@ -465,16 +470,27 @@ fn connection_negotiate(
         // load metrics to get sequence...
 
         // assemble key package message
-        key_package_payload = Some(websocket::assemble_payload_key_package(
+        let key_package_encoded = websocket::assemble_payload_key_package(
             as_address,
             with_address,
             0,
             &key_package,
             None,
             None,
-        )?);
+        )?;
 
         // queue message in inbox
+        query::address_create(txn, with_address.address())?;
+        query::outbox_queue(
+            txn,
+            query::Event::KeyPackage,
+            as_address.address(),
+            with_address.address(),
+            &key_package_encoded,
+            0,
+        )?;
+
+        key_package_payload = Some(key_package_encoded);
 
         Ok(())
     })?;
@@ -529,7 +545,6 @@ fn connection_establish(
 
     // generate tokens for ourself and our counterparty
     let as_send_token = token::Send::new(&group_kp, Some(as_address), time::unix(), i64::MAX);
-
     let with_send_token = token::Send::new(&group_kp, Some(with_address), time::unix(), i64::MAX);
 
     let as_subscription_token =
@@ -564,18 +579,18 @@ fn connection_establish(
         // store our send and subscription tokens that we will use to con
         query::token_create(
             txn,
+            query::Token::Send,
             group_kp.address(),
             as_address.address(),
             group_kp.address(),
-            3,
             as_send_token.as_bytes(),
         )?;
         query::token_create(
             txn,
+            query::Token::Subscription,
             group_kp.address(),
             as_address.address(),
             group_kp.address(),
-            4,
             as_subscription_token.as_bytes(),
         )?;
 
@@ -600,13 +615,16 @@ fn connection_establish(
         // queue commit and welcome message
         query::outbox_queue(
             txn,
+            query::Event::Commit,
             as_address.address(),
             group_kp.address(),
             commit_payload.as_ref().unwrap(),
             0,
         )?;
+
         query::outbox_queue(
             txn,
+            query::Event::Welcome,
             as_address.address(),
             with_address.address(),
             welcome_payload.as_ref().unwrap(),
@@ -717,10 +735,10 @@ fn connection_accept(
 
         query::token_create(
             txn,
+            query::Token::Subscription,
             group_address.as_ref().unwrap().address(),
             as_address.address(),
             group_address.as_ref().unwrap().address(),
-            4,
             subscription_token.as_bytes(),
         )?;
 
@@ -792,8 +810,10 @@ fn on_message_cb(
                 let decrypted_message =
                     e2e::mls_group_decrypt(txn, message.recipient.address(), &message.message)?;
 
+                query::address_create(txn, message.sender.address())?;
                 query::inbox_queue(
                     txn,
+                    query::Event::Message,
                     message.sender.address(),
                     message.recipient.address(),
                     &decrypted_message,
@@ -818,11 +838,12 @@ fn on_message_cb(
 
         callback(
             user_data.clone(),
-            &Message {
-                sender: &message.sender,
-                recipient: &message.recipient,
-                message: &plaintext,
-            },
+            &Message::new(
+                &message.sender,
+                &message.recipient,
+                &plaintext,
+                message.sequence,
+            ),
         );
 
         unsafe {
@@ -843,49 +864,178 @@ fn on_message_cb(
 }
 
 fn on_commit_cb(
+    storage: &Arc<AtomicPtr<Connection>>,
     user_data: Arc<dyn Any + Send + Sync>,
     callback: OnCommitCB,
 ) -> websocket::OnCommitCB {
+    let storage = storage.clone();
+
     Arc::new(move |commit| {
+        let storage = storage.load(Ordering::SeqCst);
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                query::address_create(txn, commit.sender.address())?;
+                query::inbox_queue(
+                    txn,
+                    query::Event::Commit,
+                    commit.sender.address(),
+                    commit.recipient.address(),
+                    &commit.commit,
+                    commit.sequence,
+                )?;
+
+                Ok(())
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+                return;
+            }
+        }
+
         callback(
             user_data.clone(),
-            &Commit {
-                sender: &commit.sender,
-                recipient: &commit.recipient,
-                commit: &commit.commit,
-            },
+            &Commit::new(
+                &commit.sender,
+                &commit.recipient,
+                &commit.commit,
+                commit.sequence,
+            ),
         );
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                query::inbox_dequeue(
+                    txn,
+                    commit.sender.address(),
+                    commit.recipient.address(),
+                    commit.sequence,
+                )
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+            }
+        }
     })
 }
 
 fn on_key_package_cb(
+    storage: &Arc<AtomicPtr<Connection>>,
     user_data: Arc<dyn Any + Send + Sync>,
     callback: OnKeyPackageCB,
 ) -> websocket::OnKeyPackageCB {
+    let storage = storage.clone();
+
     Arc::new(move |package| {
+        let storage = storage.load(Ordering::SeqCst);
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                query::address_create(txn, package.sender.address())?;
+                query::inbox_queue(
+                    txn,
+                    query::Event::KeyPackage,
+                    package.sender.address(),
+                    package.recipient.address(),
+                    &package.package,
+                    package.sequence,
+                )?;
+
+                Ok(())
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+                return;
+            }
+        }
+
         callback(
             user_data.clone(),
-            &KeyPackage {
-                sender: &package.sender,
-                recipient: &package.recipient,
-                package: &package.package,
-            },
+            &KeyPackage::new(
+                &package.sender,
+                &package.recipient,
+                &package.package,
+                package.sequence,
+                true,
+            ),
         );
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                query::inbox_dequeue(
+                    txn,
+                    package.sender.address(),
+                    package.recipient.address(),
+                    package.sequence,
+                )
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+            }
+        }
     })
 }
 
 fn on_welcome_cb(
+    storage: &Arc<AtomicPtr<Connection>>,
     user_data: Arc<dyn Any + Send + Sync>,
     callback: OnWelcomeCB,
 ) -> websocket::OnWelcomeCB {
+    let storage = storage.clone();
+
     Arc::new(move |welcome| {
+        let storage = storage.load(Ordering::SeqCst);
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                query::address_create(txn, welcome.sender.address())?;
+                query::inbox_queue(
+                    txn,
+                    query::Event::KeyPackage,
+                    welcome.sender.address(),
+                    welcome.recipient.address(),
+                    &welcome.welcome,
+                    welcome.sequence,
+                )?;
+
+                Ok(())
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+                return;
+            }
+        }
+
         callback(
             user_data.clone(),
-            &Welcome {
-                sender: &welcome.sender,
-                recipient: &welcome.recipient,
-                welcome: &welcome.welcome,
-            },
+            &Welcome::new(
+                &welcome.sender,
+                &welcome.recipient,
+                &welcome.welcome,
+                welcome.sequence,
+                &welcome.subscription,
+                true,
+            ),
         );
+
+        unsafe {
+            let result = (*storage).transaction(|txn| {
+                query::inbox_dequeue(
+                    txn,
+                    welcome.sender.address(),
+                    welcome.recipient.address(),
+                    welcome.sequence,
+                )
+            });
+
+            if let Err(err) = result {
+                println!("transaction failed: {}", err);
+            }
+        }
     })
 }
