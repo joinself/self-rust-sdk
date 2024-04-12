@@ -63,7 +63,7 @@ impl Token {
         }
     }
 
-	#[allow(dead_code)]
+    #[allow(dead_code)]
     fn from_u8(event: u8) -> Token {
         match event {
             0 => Token::Authentication,
@@ -382,8 +382,6 @@ pub fn outbox_queue(
     .bind_blob(4, message)?
     .bind_integer(5, sequence as i64)?
     .execute()
-    .expect("blah");
-    Ok(())
 }
 
 pub fn outbox_dequeue(

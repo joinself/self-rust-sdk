@@ -1,10 +1,9 @@
 use libsqlite3_sys::{
-    sqlite3, sqlite3_close_v2, sqlite3_db_mutex, sqlite3_errmsg, sqlite3_mutex_enter,
-    sqlite3_mutex_leave, sqlite3_open_v2, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX,
-    SQLITE_OPEN_READWRITE,
+    sqlite3, sqlite3_close_v2, sqlite3_db_mutex, sqlite3_mutex_enter, sqlite3_mutex_leave,
+    sqlite3_open_v2, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX, SQLITE_OPEN_READWRITE,
 };
 
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::ptr;
 
 use crate::error::SelfError;
@@ -115,10 +114,11 @@ pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
     }
 }
 
-pub fn sqlite_check_result_debug(conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
+pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
     match result {
         SQLITE_OK => Ok(()),
         _ => {
+            /*
             println!("sqlite status: {}", result);
 
             unsafe {
@@ -128,6 +128,7 @@ pub fn sqlite_check_result_debug(conn: *mut sqlite3, result: i32) -> Result<(), 
                     msg.to_str().expect("failed to convert sqlite error")
                 );
             }
+            */
 
             Err(SelfError::StorageUnknown)
         }
