@@ -63,6 +63,7 @@ impl Token {
         }
     }
 
+	#[allow(dead_code)]
     fn from_u8(event: u8) -> Token {
         match event {
             0 => Token::Authentication,
