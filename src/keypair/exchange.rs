@@ -1,6 +1,11 @@
 use hex::ToHex;
 use serde::{Deserialize, Serialize};
+use sodium_sys::{
+    crypto_box_MACBYTES, crypto_box_NONCEBYTES, crypto_box_SEALBYTES, crypto_box_easy,
+    crypto_box_open_easy, crypto_box_seal, crypto_box_seal_open,
+};
 
+use crate::crypto::random;
 use crate::error::SelfError;
 use crate::keypair::Algorithm;
 
@@ -39,6 +44,35 @@ impl PublicKey {
         Ok(PublicKey {
             bytes: bytes.to_vec(),
         })
+    }
+
+    pub fn validate(bytes: &[u8]) -> Result<(), SelfError> {
+        if bytes.len() < 33 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
+        }
+
+        if bytes[0] != Algorithm::Curve25519 as u8 {
+            return Err(SelfError::KeyPairAlgorithmUnknown);
+        }
+
+        Ok(())
+    }
+
+    pub fn seal_anonymous(&self, message: &[u8]) -> Vec<u8> {
+        let mut ciphertext = vec![0u8; message.len() + (crypto_box_SEALBYTES) as usize];
+
+        unsafe {
+            let result = crypto_box_seal(
+                ciphertext.as_mut_ptr(),
+                message.as_ptr(),
+                message.len() as libc::c_ulonglong,
+                self.public_key_bytes().as_ptr(),
+            );
+
+            assert_eq!(result, 0);
+        }
+
+        ciphertext
     }
 
     pub fn matches(&self, bytes: &[u8]) -> bool {
@@ -162,6 +196,69 @@ impl KeyPair {
         &self.public_key
     }
 
+    pub fn seal(&self, recipient: &PublicKey, message: &[u8]) -> Vec<u8> {
+        let mut ciphertext =
+            vec![0u8; message.len() + (crypto_box_MACBYTES + crypto_box_NONCEBYTES) as usize];
+        random::read_bytes(&mut ciphertext[message.len() + (crypto_box_MACBYTES as usize)..]);
+
+        unsafe {
+            let result = crypto_box_easy(
+                ciphertext.as_mut_ptr(),
+                message.as_ptr(),
+                message.len() as libc::c_ulonglong,
+                ciphertext[message.len() + (crypto_box_MACBYTES as usize)..].as_ptr(),
+                recipient.public_key_bytes().as_ptr(),
+                self.secret_key.bytes.as_ptr(),
+            );
+
+            assert_eq!(result, 0);
+        }
+
+        ciphertext
+    }
+
+    pub fn open(&self, sender: &PublicKey, message: &[u8]) -> Result<Vec<u8>, SelfError> {
+        let mut plaintext =
+            vec![0u8; message.len() - (crypto_box_MACBYTES + crypto_box_NONCEBYTES) as usize];
+
+        unsafe {
+            let result = crypto_box_open_easy(
+                plaintext.as_mut_ptr(),
+                message.as_ptr(),
+                (message.len() - crypto_box_NONCEBYTES as usize) as libc::c_ulonglong,
+                message[message.len() - (crypto_box_NONCEBYTES as usize)..].as_ptr(),
+                sender.public_key_bytes().as_ptr(),
+                self.secret_key.bytes.as_ptr(),
+            );
+
+            if result != 0 {
+                return Err(SelfError::CryptoBoxOpenFailed);
+            }
+        }
+
+        Ok(plaintext)
+    }
+
+    pub fn open_anonymous(&self, message: &[u8]) -> Result<Vec<u8>, SelfError> {
+        let mut plaintext = vec![0u8; message.len() - (crypto_box_SEALBYTES) as usize];
+
+        unsafe {
+            let result = crypto_box_seal_open(
+                plaintext.as_mut_ptr(),
+                message.as_ptr(),
+                message.len() as libc::c_ulonglong,
+                self.public_key.public_key_bytes().as_ptr(),
+                self.secret_key.bytes.as_ptr(),
+            );
+
+            if result != 0 {
+                return Err(SelfError::CryptoBoxOpenFailed);
+            }
+        }
+
+        Ok(plaintext)
+    }
+
     pub fn to_vec(&self) -> Vec<u8> {
         self.secret_key.bytes.clone()
     }
@@ -193,5 +290,27 @@ mod tests {
         // encode and decode the keypair
         let encoded_skp = skp.encode();
         KeyPair::decode(&encoded_skp).unwrap();
+    }
+
+    #[test]
+    fn seal_open() {
+        let alice_kp = KeyPair::new();
+        let bobby_kp = KeyPair::new();
+
+        let message = b"hello bobby";
+
+        let ciphertext = alice_kp.seal(bobby_kp.public(), message);
+
+        let plaintext = bobby_kp
+            .open(alice_kp.public(), &ciphertext)
+            .expect("failed to decrypt message");
+
+        assert_eq!(plaintext, message);
+
+        let ciphertext = bobby_kp.public().seal_anonymous(message);
+        let plaintext = bobby_kp
+            .open_anonymous(&ciphertext)
+            .expect("failed to decrypt message");
+        assert_eq!(plaintext, message);
     }
 }

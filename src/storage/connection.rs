@@ -1,10 +1,9 @@
 use libsqlite3_sys::{
-    sqlite3, sqlite3_close_v2, sqlite3_db_mutex, sqlite3_errmsg, sqlite3_mutex_enter,
-    sqlite3_mutex_leave, sqlite3_open_v2, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX,
-    SQLITE_OPEN_READWRITE,
+    sqlite3, sqlite3_close_v2, sqlite3_db_mutex, sqlite3_mutex_enter, sqlite3_mutex_leave,
+    sqlite3_open_v2, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX, SQLITE_OPEN_READWRITE,
 };
 
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::ptr;
 
 use crate::error::SelfError;
@@ -12,10 +11,12 @@ use crate::storage::schema::{
     schema_create_addresses, schema_create_groups, schema_create_keypairs, schema_create_members,
     schema_create_mls_encryption_key_pairs, schema_create_mls_group_states,
     schema_create_mls_hpke_private_keys, schema_create_mls_key_packages,
-    schema_create_mls_psk_bundles, schema_create_mls_signature_key_pairs,
+    schema_create_mls_psk_bundles, schema_create_mls_signature_key_pairs, schema_create_tokens,
 };
 use crate::storage::statement::Statement;
 use crate::storage::transaction::Transaction;
+
+use super::schema::{schema_create_inbox, schema_create_outbox};
 
 pub struct Connection {
     conn: *mut sqlite3,
@@ -44,9 +45,12 @@ impl Connection {
         // schema migrations
         connection.transaction(|txn| {
             schema_create_addresses(txn);
-            schema_create_keypairs(txn);
             schema_create_groups(txn);
+            schema_create_keypairs(txn);
             schema_create_members(txn);
+            schema_create_tokens(txn);
+            schema_create_inbox(txn);
+            schema_create_outbox(txn);
             schema_create_mls_signature_key_pairs(txn);
             schema_create_mls_hpke_private_keys(txn);
             schema_create_mls_key_packages(txn);
@@ -110,10 +114,11 @@ pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
     }
 }
 
-pub fn sqlite_check_result_debug(conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
+pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
     match result {
         SQLITE_OK => Ok(()),
         _ => {
+            /*
             println!("sqlite status: {}", result);
 
             unsafe {
@@ -123,6 +128,7 @@ pub fn sqlite_check_result_debug(conn: *mut sqlite3, result: i32) -> Result<(), 
                     msg.to_str().expect("failed to convert sqlite error")
                 );
             }
+            */
 
             Err(SelfError::StorageUnknown)
         }

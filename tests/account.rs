@@ -38,14 +38,18 @@ fn encrypted_messaging() {
         on_disconnect: Arc::new(|_, _| {}),
         on_message: Arc::new(move |_, message| {
             alice_message_tx
-                .send(message.message.to_vec())
+                .send(message.message().to_vec())
                 .expect("failed to send received message for alice");
         }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, _| {}),
         on_welcome: Arc::new(move |_, welcome| {
             alice_wm_cb
-                .connection_accept(welcome.recipient, welcome.welcome)
+                .connection_accept(
+                    welcome.recipient(),
+                    welcome.welcome(),
+                    welcome.subscription_token(),
+                )
                 .expect("failed to connect using welcome mesage");
 
             alice_welcome_tx
@@ -75,11 +79,118 @@ fn encrypted_messaging() {
         on_disconnect: Arc::new(|_, _| {}),
         on_message: Arc::new(move |_, message| {
             bobby_ms_cb
-                .message_send(message.sender, b"hey alice")
+                .message_send(message.sender(), b"hey alice")
                 .expect("failed to send response message from bobby");
             bobby_message_tx
-                .send(message.message.to_vec())
+                .send(message.message().to_vec())
                 .expect("failed to send received message for bobby");
+        }),
+        on_commit: Arc::new(|_, _| {}),
+        on_key_package: Arc::new(move |_, key_package| {
+            bobby_kp_cb
+                .connection_connect(
+                    key_package.recipient(),
+                    key_package.sender(),
+                    Some(key_package.package()),
+                )
+                .expect("failed to connect using key package");
+        }),
+        on_welcome: Arc::new(|_, _| {}),
+    };
+
+    bobby
+        .configure(
+            rpc_url,
+            ws_url,
+            ":memory:",
+            b"",
+            bobby_callbacks,
+            Arc::new(1),
+        )
+        .expect("failed to configure account");
+
+    // create an inbox for alice and bob
+    let alice_inbox = alice.inbox_open(None).expect("failed to open inbox");
+    let bobby_inbox = bobby.inbox_open(None).expect("failed to open inbox");
+
+    // initiate a connection from alice to bob
+    alice
+        .connection_connect(&alice_inbox, &bobby_inbox, None)
+        .expect("failed to send connection request");
+
+    // accept the connection from alice
+    alice_welcome_rx
+        .recv_timeout(DEFAULT_TIMEOUT)
+        .expect("welcome message timeout");
+
+    // alice send an encrypted message to the group
+    alice
+        .message_send(&bobby_inbox, b"hey bobby")
+        .expect("failed to send message");
+
+    let message_from_alice = bobby_message_rx
+        .recv_timeout(DEFAULT_TIMEOUT)
+        .expect("failed to receive message");
+    assert_eq!(message_from_alice, b"hey bobby");
+
+    let message_from_bobby = alice_message_rx
+        .recv_timeout(DEFAULT_TIMEOUT)
+        .expect("failed to receive message");
+    assert_eq!(message_from_bobby, b"hey alice");
+}
+
+/*
+#[test]
+fn encrypted_messaging_benchmark() {
+    test_server();
+
+    let ws_url = "ws://127.0.0.1:3001/";
+    let rpc_url = "http://127.0.0.1:3000/";
+
+    let (alice_welcome_tx, alice_welcome_rx) = crossbeam::channel::bounded::<bool>(1);
+
+    // setup alices account
+    let mut alice = Account::new();
+    let alice_wm_cb = alice.clone();
+
+    let alice_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|_| {}),
+        on_disconnect: Arc::new(|_, _| {}),
+        on_message: Arc::new(move |_, _| {
+
+        }),
+        on_commit: Arc::new(|_, _| {}),
+        on_key_package: Arc::new(move |_, _| {}),
+        on_welcome: Arc::new(move |_, welcome| {
+            alice_wm_cb
+                .connection_accept(welcome.recipient, welcome.welcome)
+                .expect("failed to connect using welcome mesage");
+
+            alice_welcome_tx
+                .send(true)
+                .expect("failed to channel send welcome");
+        }),
+    };
+
+    alice
+        .configure(
+            rpc_url,
+            ws_url,
+            ":memory:",
+            b"",
+            alice_callbacks,
+            Arc::new(1),
+        )
+        .expect("failed to configure account");
+
+    // setup bob's account
+    let mut bobby = Account::new();
+    let bobby_kp_cb = bobby.clone();
+
+    let bobby_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|_| {}),
+        on_disconnect: Arc::new(|_, _| {}),
+        on_message: Arc::new(move |_, _| {
         }),
         on_commit: Arc::new(|_, _| {}),
         on_key_package: Arc::new(move |_, key_package| {
@@ -121,23 +232,17 @@ fn encrypted_messaging() {
         .recv_timeout(DEFAULT_TIMEOUT)
         .expect("welcome message timeout");
 
-    // alice send an encrypted message to the group
-    alice
-        .message_send(&bobby_inbox, b"hey bobby")
-        .expect("failed to send message");
+    let start = std::time::Instant::now();
 
-    let message_from_alice = bobby_message_rx
-        .recv_timeout(DEFAULT_TIMEOUT)
-        .expect("failed to receive message");
-    assert_eq!(message_from_alice, b"hey bobby");
+    for _ in 0..1000 {
+        alice
+            .message_send(&bobby_inbox, b"hey bobby")
+            .expect("failed to send message");
+    }
 
-    let message_from_bobby = alice_message_rx
-        .recv_timeout(DEFAULT_TIMEOUT)
-        .expect("failed to receive message");
-    assert_eq!(message_from_bobby, b"hey alice");
+    println!("sent 1000 in {} ms", std::time::Instant::now().duration_since(start).as_millis());
 }
 
-/*
 
 // account_create
 // account_list

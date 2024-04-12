@@ -85,6 +85,72 @@ pub fn schema_create_members(txn: &Transaction) {
     stmt.execute().expect("failed to execute statement");
 }
 
+pub fn schema_create_tokens(txn: &Transaction) {
+    if table_exists(txn, "tokens") {
+        print!("tokens exists!");
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind INTEGER NOT NULL,
+                to_address INTEGER NOT NULL,
+                from_address INTEGER NOT NULL,
+                for_address INTEGER NOT NULL,
+                token BLOB NOT NULL
+            );
+            CREATE INDEX idx_tokens_address
+            ON tokens (for_address);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
+pub fn schema_create_inbox(txn: &Transaction) {
+    if table_exists(txn, "inbox") {
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event INTEGER NOT NULL,
+                sender INTEGER NOT NULL,
+                recipient INTEGER NOT NULL,
+                message INTEGER NOT NULL,
+                sequence INTEGER NOT NULL
+            );",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
+pub fn schema_create_outbox(txn: &Transaction) {
+    if table_exists(txn, "outbox") {
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event INTEGER NOT NULL,
+                sender INTEGER NOT NULL,
+                recipient INTEGER NOT NULL,
+                message INTEGER NOT NULL,
+                sequence INTEGER NOT NULL
+            );",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
 pub fn schema_create_mls_signature_key_pairs(txn: &Transaction) {
     if table_exists(txn, "mls_signature_key_pairs") {
         return;
