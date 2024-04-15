@@ -13,12 +13,12 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 
-pub type OnConnectCB = Arc<dyn Fn(Arc<dyn Any + Send>) + Sync + Send>;
-pub type OnDisconnectCB = Arc<dyn Fn(Arc<dyn Any + Send>, Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Message) + Sync + Send>;
-pub type OnCommitCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Commit) + Sync + Send>;
-pub type OnKeyPackageCB = Arc<dyn Fn(Arc<dyn Any + Send>, &KeyPackage) + Sync + Send>;
-pub type OnWelcomeCB = Arc<dyn Fn(Arc<dyn Any + Send>, &Welcome) + Sync + Send>;
+pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
+pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(&Message) + Sync + Send>;
+pub type OnCommitCB = Arc<dyn Fn(&Commit) + Sync + Send>;
+pub type OnKeyPackageCB = Arc<dyn Fn(&KeyPackage) + Sync + Send>;
+pub type OnWelcomeCB = Arc<dyn Fn(&Welcome) + Sync + Send>;
 
 pub struct MessagingCallbacks {
     pub on_connect: OnConnectCB,
@@ -54,7 +54,6 @@ impl Account {
         storage_path: &str,
         _storage_key: &[u8],
         callbacks: MessagingCallbacks,
-        user_data: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), SelfError> {
         let rpc = Rpc::new(rpc_endpoint)?;
         let rpc = Box::into_raw(Box::new(rpc));
@@ -72,16 +71,12 @@ impl Account {
         let mut websocket = Websocket::new(
             messaging_endpoint,
             Callbacks {
-                on_connect: on_connect_cb(user_data.clone(), callbacks.on_connect),
-                on_disconnect: on_disconnect_cb(user_data.clone(), callbacks.on_disconnect),
-                on_message: on_message_cb(&self.storage, user_data.clone(), callbacks.on_message),
-                on_commit: on_commit_cb(&self.storage, user_data.clone(), callbacks.on_commit),
-                on_key_package: on_key_package_cb(
-                    &self.storage,
-                    user_data.clone(),
-                    callbacks.on_key_package,
-                ),
-                on_welcome: on_welcome_cb(&self.storage, user_data.clone(), callbacks.on_welcome),
+                on_connect: on_connect_cb(callbacks.on_connect),
+                on_disconnect: on_disconnect_cb(callbacks.on_disconnect),
+                on_message: on_message_cb(&self.storage, callbacks.on_message),
+                on_commit: on_commit_cb(&self.storage, callbacks.on_commit),
+                on_key_package: on_key_package_cb(&self.storage, callbacks.on_key_package),
+                on_welcome: on_welcome_cb(&self.storage, callbacks.on_welcome),
             },
         )?;
 
@@ -776,27 +771,20 @@ fn connection_accept(
     Ok(())
 }
 
-fn on_connect_cb(
-    user_data: Arc<dyn Any + Send + Sync>,
-    callback: OnConnectCB,
-) -> websocket::OnConnectCB {
+fn on_connect_cb(callback: OnConnectCB) -> websocket::OnConnectCB {
     Arc::new(move || {
-        callback(user_data.clone());
+        callback();
     })
 }
 
-fn on_disconnect_cb(
-    user_data: Arc<dyn Any + Send + Sync>,
-    callback: OnDisconnectCB,
-) -> websocket::OnDisconnectCB {
+fn on_disconnect_cb(callback: OnDisconnectCB) -> websocket::OnDisconnectCB {
     Arc::new(move |result| {
-        callback(user_data.clone(), result);
+        callback(result);
     })
 }
 
 fn on_message_cb(
     storage: &Arc<AtomicPtr<Connection>>,
-    user_data: Arc<dyn Any + Send + Sync>,
     callback: OnMessageCB,
 ) -> websocket::OnMessageCB {
     let storage = storage.clone();
@@ -836,15 +824,12 @@ fn on_message_cb(
             None => return,
         };
 
-        callback(
-            user_data.clone(),
-            &Message::new(
-                &message.sender,
-                &message.recipient,
-                &plaintext,
-                message.sequence,
-            ),
-        );
+        callback(&Message::new(
+            &message.sender,
+            &message.recipient,
+            &plaintext,
+            message.sequence,
+        ));
 
         unsafe {
             let result = (*storage).transaction(|txn| {
@@ -865,7 +850,6 @@ fn on_message_cb(
 
 fn on_commit_cb(
     storage: &Arc<AtomicPtr<Connection>>,
-    user_data: Arc<dyn Any + Send + Sync>,
     callback: OnCommitCB,
 ) -> websocket::OnCommitCB {
     let storage = storage.clone();
@@ -894,15 +878,12 @@ fn on_commit_cb(
             }
         }
 
-        callback(
-            user_data.clone(),
-            &Commit::new(
-                &commit.sender,
-                &commit.recipient,
-                &commit.commit,
-                commit.sequence,
-            ),
-        );
+        callback(&Commit::new(
+            &commit.sender,
+            &commit.recipient,
+            &commit.commit,
+            commit.sequence,
+        ));
 
         unsafe {
             let result = (*storage).transaction(|txn| {
@@ -923,7 +904,6 @@ fn on_commit_cb(
 
 fn on_key_package_cb(
     storage: &Arc<AtomicPtr<Connection>>,
-    user_data: Arc<dyn Any + Send + Sync>,
     callback: OnKeyPackageCB,
 ) -> websocket::OnKeyPackageCB {
     let storage = storage.clone();
@@ -952,16 +932,13 @@ fn on_key_package_cb(
             }
         }
 
-        callback(
-            user_data.clone(),
-            &KeyPackage::new(
-                &package.sender,
-                &package.recipient,
-                &package.package,
-                package.sequence,
-                true,
-            ),
-        );
+        callback(&KeyPackage::new(
+            &package.sender,
+            &package.recipient,
+            &package.package,
+            package.sequence,
+            true,
+        ));
 
         unsafe {
             let result = (*storage).transaction(|txn| {
@@ -982,7 +959,6 @@ fn on_key_package_cb(
 
 fn on_welcome_cb(
     storage: &Arc<AtomicPtr<Connection>>,
-    user_data: Arc<dyn Any + Send + Sync>,
     callback: OnWelcomeCB,
 ) -> websocket::OnWelcomeCB {
     let storage = storage.clone();
@@ -1011,17 +987,14 @@ fn on_welcome_cb(
             }
         }
 
-        callback(
-            user_data.clone(),
-            &Welcome::new(
-                &welcome.sender,
-                &welcome.recipient,
-                &welcome.welcome,
-                welcome.sequence,
-                &welcome.subscription,
-                true,
-            ),
-        );
+        callback(&Welcome::new(
+            &welcome.sender,
+            &welcome.recipient,
+            &welcome.welcome,
+            welcome.sequence,
+            &welcome.subscription,
+            true,
+        ));
 
         unsafe {
             let result = (*storage).transaction(|txn| {

@@ -34,16 +34,16 @@ fn encrypted_messaging() {
     let alice_wm_cb = alice.clone();
 
     let alice_callbacks = MessagingCallbacks {
-        on_connect: Arc::new(|_| {}),
-        on_disconnect: Arc::new(|_, _| {}),
-        on_message: Arc::new(move |_, message| {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |message| {
             alice_message_tx
                 .send(message.message().to_vec())
                 .expect("failed to send received message for alice");
         }),
-        on_commit: Arc::new(|_, _| {}),
-        on_key_package: Arc::new(move |_, _| {}),
-        on_welcome: Arc::new(move |_, welcome| {
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |welcome| {
             alice_wm_cb
                 .connection_accept(
                     welcome.recipient(),
@@ -59,14 +59,7 @@ fn encrypted_messaging() {
     };
 
     alice
-        .configure(
-            rpc_url,
-            ws_url,
-            ":memory:",
-            b"",
-            alice_callbacks,
-            Arc::new(1),
-        )
+        .configure(rpc_url, ws_url, ":memory:", b"", alice_callbacks)
         .expect("failed to configure account");
 
     // setup bob's account
@@ -75,9 +68,9 @@ fn encrypted_messaging() {
     let bobby_ms_cb = bobby.clone();
 
     let bobby_callbacks = MessagingCallbacks {
-        on_connect: Arc::new(|_| {}),
-        on_disconnect: Arc::new(|_, _| {}),
-        on_message: Arc::new(move |_, message| {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |message| {
             bobby_ms_cb
                 .message_send(message.sender(), b"hey alice")
                 .expect("failed to send response message from bobby");
@@ -85,8 +78,8 @@ fn encrypted_messaging() {
                 .send(message.message().to_vec())
                 .expect("failed to send received message for bobby");
         }),
-        on_commit: Arc::new(|_, _| {}),
-        on_key_package: Arc::new(move |_, key_package| {
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |key_package| {
             bobby_kp_cb
                 .connection_connect(
                     key_package.recipient(),
@@ -95,18 +88,11 @@ fn encrypted_messaging() {
                 )
                 .expect("failed to connect using key package");
         }),
-        on_welcome: Arc::new(|_, _| {}),
+        on_welcome: Arc::new(|_| {}),
     };
 
     bobby
-        .configure(
-            rpc_url,
-            ws_url,
-            ":memory:",
-            b"",
-            bobby_callbacks,
-            Arc::new(1),
-        )
+        .configure(rpc_url, ws_url, ":memory:", b"", bobby_callbacks)
         .expect("failed to configure account");
 
     // create an inbox for alice and bob
