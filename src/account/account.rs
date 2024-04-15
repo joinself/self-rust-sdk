@@ -8,7 +8,6 @@ use crate::token;
 use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
 
-use std::any::Any;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
