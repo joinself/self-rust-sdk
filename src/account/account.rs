@@ -59,6 +59,7 @@ impl Account {
         let result =
             self.rpc
                 .compare_exchange(ptr::null_mut(), rpc, Ordering::SeqCst, Ordering::SeqCst);
+
         if result.is_err() {
             return Err(SelfError::AccountAlreadyConfigured);
         };
@@ -188,8 +189,8 @@ impl Account {
             None => return Err(SelfError::KeyPairNotFound),
         };
 
-        // publish the key packages
         unsafe {
+            // publish the key packages
             (*rpc).publish(signing_kp.address(), &key_packages)?;
 
             // open & subscribe...
@@ -424,6 +425,29 @@ impl Account {
     /// list all groups
     pub fn group_list(&self) -> Result<Vec<PublicKey>, SelfError> {
         Ok(Vec::new())
+    }
+
+    pub fn shutdown(&self) -> Result<(), SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        self.storage.store(ptr::null_mut(), Ordering::SeqCst);
+        self.websocket.store(ptr::null_mut(), Ordering::SeqCst);
+
+        unsafe {
+            drop(Box::from_raw(storage));
+            (*websocket).disconnect()?;
+            drop(Box::from_raw(websocket));
+        }
+
+        Ok(())
     }
 }
 
