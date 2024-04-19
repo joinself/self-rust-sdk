@@ -37,6 +37,25 @@ impl PublicKey {
         })
     }
 
+    pub fn from_hex(bytes: &[u8]) -> Result<PublicKey, SelfError> {
+        if bytes.len() < 66 {
+            return Err(SelfError::KeyPairPublicKeyInvalidLength);
+        }
+
+        let decoded_public_key = match hex::decode(bytes) {
+            Ok(decoded_public_key) => decoded_public_key,
+            Err(_) => return Err(SelfError::KeyPairDecodeInvalidData),
+        };
+
+        if decoded_public_key[0] != Algorithm::Ed25519 as u8 {
+            return Err(SelfError::KeyPairAlgorithmUnknown);
+        }
+
+        Ok(PublicKey {
+            bytes: decoded_public_key,
+        })
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<PublicKey, SelfError> {
         if bytes.len() < 33 {
             return Err(SelfError::KeyPairPublicKeyInvalidLength);
@@ -67,7 +86,7 @@ impl PublicKey {
         &self.bytes[1..33]
     }
 
-    pub fn to_did_key(&self) -> String {
+    pub fn to_hex(&self) -> String {
         self.bytes.encode_hex()
     }
 
