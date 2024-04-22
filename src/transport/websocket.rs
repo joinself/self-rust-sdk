@@ -885,11 +885,7 @@ pub fn assemble_message(
     // TODO pool/reuse these builders
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
-    let mut payload_sig_buf = vec![0; payload.len() + 1];
-    payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-    payload_sig_buf[1..payload.len() + 1].copy_from_slice(payload);
-    let sig = builder.create_vector(&from.sign(&payload_sig_buf));
-
+    let sig = builder.create_vector(&from.sign(payload));
     let mut signatures = Vec::new();
 
     signatures.push(messaging::Signature::create(
@@ -995,15 +991,10 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
         );
 
         details_builder.finish(details, None);
-
-        let mut details_sig_buf = vec![0; details_builder.finished_data().len() + 1];
-        details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-        details_sig_buf[1..details_builder.finished_data().len() + 1]
-            .copy_from_slice(details_builder.finished_data());
-
+        let details_buf = details_builder.finished_data().to_vec();
         details_builder.reset();
 
-        let sig = builder.create_vector(&subscription.as_address.sign(&details_sig_buf));
+        let sig = builder.create_vector(&subscription.as_address.sign(&details_buf));
 
         let mut sigs = Vec::new();
         let mut signer: Option<WIPOffset<Vector<u8>>> = None;
@@ -1040,7 +1031,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
         }
 
         let signatures = builder.create_vector(&sigs);
-        let details = builder.create_vector(&details_sig_buf[1..]);
+        let details = builder.create_vector(&details_buf);
 
         subs.push(messaging::Subscription::create(
             &mut builder,
@@ -1101,16 +1092,12 @@ fn assemble_open(inbox: &KeyPair) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
     );
 
     builder.finish(details, None);
-
-    let mut details_sig_buf = vec![0; builder.finished_data().len() + 1];
-    details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-    details_sig_buf[1..builder.finished_data().len() + 1].copy_from_slice(builder.finished_data());
-
-    let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(builder.finished_data());
-
+    let details_buf = builder.finished_data().to_vec();
     builder.reset();
 
-    let details_sig = builder.create_vector(&inbox.sign(&details_sig_buf));
+    let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&details_buf);
+
+    let details_sig = builder.create_vector(&inbox.sign(&details_buf));
 
     let signature = messaging::Signature::create(
         &mut builder,
@@ -1121,7 +1108,7 @@ fn assemble_open(inbox: &KeyPair) -> Result<(Vec<u8>, Vec<u8>), SelfError> {
         },
     );
 
-    let details = builder.create_vector(&details_sig_buf[1..]);
+    let details = builder.create_vector(&details_buf);
     let pow_hash = builder.create_vector(&pow_hash);
 
     let open = messaging::Open::create(
@@ -1284,10 +1271,7 @@ mod tests {
         let payload = builder.finished_data().to_vec();
         builder.reset();
 
-        let mut payload_sig_buf = vec![0; payload.len() + 1];
-        payload_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-        payload_sig_buf[1..payload.len() + 1].copy_from_slice(&payload);
-        let sig = builder.create_vector(&from.sign(&payload_sig_buf));
+        let sig = builder.create_vector(&from.sign(&payload));
 
         let signatures = vec![messaging::Signature::create(
             &mut builder,
@@ -1372,7 +1356,6 @@ mod tests {
             .expect("Subscribe subscriptions empty")
         {
             let details_buf = subscription.details().expect("Subscription details empty");
-            let details_len = details_buf.len();
             let signatures = subscription
                 .signatures()
                 .expect("Subscription signatures empty");
@@ -1392,14 +1375,10 @@ mod tests {
                         // authenticate the subscriber over the subscriptions details
                         let signer = signature.signer().unwrap_or(inbox);
 
-                        let mut details_sig_buf = vec![0; details_len + 1];
-                        details_sig_buf[0] = messaging::SignatureType::PAYLOAD.0 as u8;
-                        details_sig_buf[1..details_len + 1].copy_from_slice(details_buf);
-
                         let pk =
                             PublicKey::from_bytes(signer).expect("Subscription signer invalid");
 
-                        if !(pk.verify(&details_sig_buf, sig)) {
+                        if !(pk.verify(details_buf, sig)) {
                             err(&mut socket_tx, event.id().unwrap(), b"bad auth").await;
                             return;
                         };
