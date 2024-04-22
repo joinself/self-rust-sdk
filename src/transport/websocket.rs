@@ -1271,14 +1271,14 @@ mod tests {
         let payload = builder.finished_data().to_vec();
         builder.reset();
 
-        let sig = builder.create_vector(&from.sign(&payload));
+        let signature = builder.create_vector(&from.sign(&payload));
 
         let signatures = vec![messaging::Signature::create(
             &mut builder,
             &messaging::SignatureArgs {
                 type_: messaging::SignatureType::PAYLOAD,
                 signer: None,
-                signature: Some(sig),
+                signature: Some(signature),
             },
         )];
 
