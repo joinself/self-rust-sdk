@@ -81,10 +81,10 @@ fn encrypted_messaging() {
         on_commit: Arc::new(|_| {}),
         on_key_package: Arc::new(move |key_package| {
             bobby_kp_cb
-                .connection_connect(
+                .connection_establish(
                     key_package.recipient(),
                     key_package.sender(),
-                    Some(key_package.package()),
+                    key_package.package(),
                 )
                 .expect("failed to connect using key package");
         }),
@@ -101,7 +101,7 @@ fn encrypted_messaging() {
 
     // initiate a connection from alice to bob
     alice
-        .connection_connect(&alice_inbox, &bobby_inbox, None)
+        .connection_negotiate(&alice_inbox, &bobby_inbox)
         .expect("failed to send connection request");
 
     // accept the connection from alice

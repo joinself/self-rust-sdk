@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[repr(u8)]
 pub enum Algorithm {
-    Ed25519,
-    Curve25519,
+    Ed25519 = 0,
+    Curve25519 = 1,
 }
 
 #[repr(u64)]

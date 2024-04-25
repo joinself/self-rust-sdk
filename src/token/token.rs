@@ -12,8 +12,8 @@ const TOKEN_KIND_SEND: u8 = 2;
 const TOKEN_KIND_PUSH: u8 = 3;
 const TOKEN_KIND_SUBSCRIPTION: u8 = 4;
 const TOKEN_KIND_DELEGATION: u8 = 5;
-const FLAG_DELEGATION_PERMIT: u8 = 1 << 1;
-const FLAG_BEARER_PROMISCUOUS: u8 = 1 << 2;
+const FLAG_DELEGATION_PERMIT: u32 = 1 << 1;
+const FLAG_BEARER_PROMISCUOUS: u32 = 1 << 2;
 const HEADER_LENGTH: usize = 1 + 1 + 4 + 20 + 8 + 8;
 const AUTHENTICATION_BASE_LENGTH: usize = HEADER_LENGTH + 32 + 33 + 64;
 const PUSH_BASE_LENGTH: usize = HEADER_LENGTH + 2 + 33 + 33 + 64;
@@ -254,9 +254,9 @@ impl Delegation {
 // | 7.  push encrypted token length (2 bytes)
 // | 8.  push encrypted token (? bytes)
 // | 9.  exchange public key (33 bytes, alg + public key)
-// | 7.  bearer (33 bytes, alg + public key, [optional, not required if FLAG_BEARER_PROMISCUOUS is set])
-// | 8.  signer (33 bytes)
-// | 9. signature over above fields (64 bytes)
+// | 10. bearer (33 bytes, alg + public key, [optional, not required if FLAG_BEARER_PROMISCUOUS is set])
+// | 11. signer (33 bytes)
+// | 12. signature over above fields (64 bytes)
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Push {
     pub token: Vec<u8>,
@@ -316,8 +316,6 @@ impl Push {
             crate::crypto::random::read_bytes(&mut token[6..26]);
             token[26..34].copy_from_slice(&issued.to_le_bytes());
             token[34..42].copy_from_slice(&expires.to_le_bytes());
-
-            let epcl = encrypted_push_credential.len();
 
             token[42..44].copy_from_slice(&(epcl as u16).to_le_bytes());
             token[44..44 + epcl].copy_from_slice(&encrypted_push_credential);
@@ -389,7 +387,7 @@ impl Push {
         }
 
         let options = match self.token[2..6].try_into() {
-            Ok(options) => i32::from_le_bytes(options),
+            Ok(options) => u32::from_le_bytes(options),
             Err(_) => return Err(SelfError::TokenEncodingInvalid),
         };
 
@@ -409,7 +407,7 @@ impl Push {
         }
 
         // validate length based on what flags are set
-        if options & (FLAG_BEARER_PROMISCUOUS as i32) != 0 {
+        if options & FLAG_BEARER_PROMISCUOUS != 0 {
             self.validate_without_bearer()
         } else {
             self.validate_with_bearer()
@@ -599,7 +597,7 @@ impl Send {
         }
 
         let options = match self.token[2..6].try_into() {
-            Ok(options) => i32::from_le_bytes(options),
+            Ok(options) => u32::from_le_bytes(options),
             Err(_) => return Err(SelfError::TokenEncodingInvalid),
         };
 
@@ -619,7 +617,7 @@ impl Send {
         }
 
         // validate length based on what flags are set
-        if options & (FLAG_BEARER_PROMISCUOUS as i32) != 0 {
+        if options & FLAG_BEARER_PROMISCUOUS != 0 {
             self.validate_without_bearer()
         } else {
             self.validate_with_bearer()

@@ -31,8 +31,6 @@ impl OpenMlsKeyStore for Transaction {
     type Error = SelfError;
 
     fn store<V: MlsEntity>(&self, k: &[u8], v: &V) -> Result<(), Self::Error> {
-        // println!("mls store: {:?} ({:?})", hex::encode(k), V::ID as u8);
-
         let data: Vec<u8> = postcard::to_allocvec(v).expect("failed to serialize mls data");
 
         let stmt = match V::ID {
@@ -64,8 +62,6 @@ impl OpenMlsKeyStore for Transaction {
     }
 
     fn read<V: MlsEntity>(&self, k: &[u8]) -> Option<V> {
-        // println!("mls read: {:?} ({:?})", hex::encode(k), V::ID as u8);
-
         let stmt = match V::ID {
             MlsEntityId::SignatureKeyPair => {
                 self.prepare("SELECT value FROM mls_signature_key_pairs WHERE address = ?1;")
@@ -102,8 +98,6 @@ impl OpenMlsKeyStore for Transaction {
     }
 
     fn delete<V: MlsEntity>(&self, k: &[u8]) -> Result<(), Self::Error> {
-        // println!("mls delete: {:?} ({:?})", hex::encode(k), V::ID as u8);
-
         let stmt = match V::ID {
             MlsEntityId::SignatureKeyPair => {
                 self.prepare("DELETE FROM mls_signature_key_pairs WHERE address = ?1;")

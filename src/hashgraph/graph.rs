@@ -147,15 +147,15 @@ impl Hashgraph {
                 return Err(SelfError::HashgraphInvalidSignerLength);
             }
 
-            if verify {
-                if op.sequence() == 0 && i == 0 {
-                    // if this is the first signature on the first operation
-                    // this is the key used as an identifier for the account.
-                    // copy it to the sig buffer for verifying signatures
-                    self.identifier = Some(signer.to_vec());
-                    self.sig_buf[0..33].copy_from_slice(signer);
-                }
+            if op.sequence() == 0 && i == 0 {
+                // if this is the first signature on the first operation
+                // this is the key used as an identifier for the account.
+                // copy it to the sig buffer for verifying signatures
+                self.identifier = Some(signer.to_vec());
+                self.sig_buf[0..33].copy_from_slice(signer);
+            }
 
+            if verify {
                 let signature_data = match signature.signature() {
                     Some(signature) => signature,
                     None => return Err(SelfError::HashgraphInvalidSignatureLength),
@@ -614,6 +614,12 @@ impl Hashgraph {
                                 return Err(SelfError::HashgraphSignerUnknown);
                             }
                         };
+
+                        if !parent.as_ref().borrow().has_roles(Role::Invocation.bits()) {
+                            // if the signer isn't the authorizing the operation
+                            // then dont link it to our new key
+                            continue;
+                        }
 
                         node.as_ref().borrow_mut().incoming.push((*parent).clone());
                         parent.as_ref().borrow_mut().outgoing.push(node.clone());
