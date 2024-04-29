@@ -1,7 +1,8 @@
 use crate::account::{operation, Commit, KeyPackage, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
-use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::keypair::exchange;
+use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::storage::{query, Connection};
 use crate::time;
 use crate::token;
@@ -11,6 +12,8 @@ use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+
+use super::keypair::KeyRole;
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
@@ -93,7 +96,7 @@ impl Account {
     }
 
     /// generates and stores a new signing keypair
-    pub fn keypair_create(&self) -> Result<PublicKey, SelfError> {
+    pub fn keypair_signing_create(&self, roles: KeyRole) -> Result<signing::PublicKey, SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -105,7 +108,7 @@ impl Account {
         unsafe {
             (*storage).transaction(|txn| {
                 // TODO think about how what roles actually means here...
-                query::keypair_create(txn, signing_kp, 0, crate::time::unix())?;
+                query::keypair_create(txn, signing_kp, roles as u64, crate::time::unix())?;
 
                 Ok(())
             })?;
@@ -114,8 +117,33 @@ impl Account {
         Ok(signing_pk)
     }
 
+    /// generates and stores a new signing keypair
+    pub fn keypair_exchange_create(
+        &self,
+        roles: KeyRole,
+    ) -> Result<exchange::PublicKey, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let exchange_kp = exchange::KeyPair::new();
+        let exchange_pk = exchange_kp.public().to_owned();
+
+        unsafe {
+            (*storage).transaction(|txn| {
+                // TODO think about how what roles actually means here...
+                query::keypair_create(txn, exchange_kp, roles as u64, crate::time::unix())?;
+
+                Ok(())
+            })?;
+        }
+
+        Ok(exchange_pk)
+    }
+
     /// opens a new messaging inbox and subscribes to it with the provided key
-    pub fn inbox_open(&self, as_address: Option<&PublicKey>) -> Result<PublicKey, SelfError> {
+    pub fn inbox_open(&self) -> Result<PublicKey, SelfError> {
         let rpc = self.rpc.load(Ordering::SeqCst);
         if rpc.is_null() {
             return Err(SelfError::AccountNotConfigured);

@@ -362,13 +362,26 @@ async fn handle_event_binary(
 
     match event.type_() {
         EventType::ACKNOWLEDGEMENT => {
-            invoke_acknowledgement_callback(runtime, requests, event.id()).await
+            invoke_acknowledgement_callback(runtime, requests, event.id().map(|id| id.bytes()))
+                .await
         }
         EventType::ERROR => {
-            invoke_error_callback(runtime, requests, event.id(), event.content()).await
+            invoke_error_callback(
+                runtime,
+                requests,
+                event.id().map(|id| id.bytes()),
+                event.content().map(|content| content.bytes()),
+            )
+            .await
         }
         EventType::MESSAGE => {
-            invoke_message_callback(runtime, subscriptions, callbacks, event.content()).await
+            invoke_message_callback(
+                runtime,
+                subscriptions,
+                callbacks,
+                event.content().map(|content| content.bytes()),
+            )
+            .await
         }
         _ => Err(SelfError::WebsocketProtocolErrorUnknown),
     }
@@ -440,7 +453,7 @@ async fn invoke_message_callback(
         None => return Err(SelfError::WebsocketProtocolEmptyContent),
     };
 
-    let payload = match flatbuffers::root::<messaging::Payload>(payload) {
+    let payload = match flatbuffers::root::<messaging::Payload>(payload.bytes()) {
         Ok(payload) => payload,
         Err(_) => return Err(SelfError::WebsocketProtocolEncodingInvalid),
     };
@@ -459,8 +472,8 @@ async fn invoke_message_callback(
 
     // TODO decide whether this constitutes a fatal error, server cannot be trusted
     // if it sends bad data, we should maybe try to reconnect to another?
-    let sender = PublicKey::from_bytes(sender)?;
-    let recipient = PublicKey::from_bytes(recipient)?;
+    let sender = PublicKey::from_bytes(sender.bytes())?;
+    let recipient = PublicKey::from_bytes(recipient.bytes())?;
 
     let content = match payload.content() {
         Some(content) => content,
@@ -479,7 +492,7 @@ async fn invoke_message_callback(
                 &recipient,
                 payload.sequence(),
                 payload.timestamp(),
-                content,
+                content.bytes(),
             )
             .await
         }
@@ -491,7 +504,7 @@ async fn invoke_message_callback(
                 &recipient,
                 payload.sequence(),
                 payload.timestamp(),
-                content,
+                content.bytes(),
             )
             .await
         }
@@ -504,7 +517,7 @@ async fn invoke_message_callback(
                 &recipient,
                 payload.sequence(),
                 payload.timestamp(),
-                content,
+                content.bytes(),
             )
             .await
         }
@@ -520,7 +533,7 @@ async fn invoke_message_callback(
                 &recipient,
                 payload.sequence(),
                 payload.timestamp(),
-                content,
+                content.bytes(),
             )
             .await
         }
@@ -543,7 +556,7 @@ async fn invoke_mls_commit_callback(
     };
 
     let commit = match content.commit() {
-        Some(commit) => commit.to_vec(),
+        Some(commit) => Vec::from(commit.bytes()),
         None => return Ok(()),
     };
 
@@ -579,7 +592,7 @@ async fn invoke_mls_key_package_callback(
     };
 
     let package = match content.package() {
-        Some(package) => package.to_vec(),
+        Some(package) => Vec::from(package.bytes()),
         None => return Ok(()),
     };
 
@@ -630,7 +643,7 @@ async fn invoke_mls_message_callback(
     };
 
     let message = match content.message() {
-        Some(message) => message.to_vec(),
+        Some(message) => Vec::from(message.bytes()),
         None => return Ok(()),
     };
 
@@ -666,12 +679,12 @@ async fn invoke_mls_welcome_callback(
     };
 
     let welcome = match content.welcome() {
-        Some(welcome) => welcome.to_vec(),
+        Some(welcome) => Vec::from(welcome.bytes()),
         None => return Ok(()),
     };
 
     let subscription = match content.subscription() {
-        Some(subscription) => subscription.to_vec(),
+        Some(subscription) => Vec::from(subscription.bytes()),
         None => return Ok(()),
     };
 
@@ -1346,8 +1359,8 @@ mod tests {
         let event = event.into_data();
         let event = messaging::root_as_event(&event).expect("Failed to read auth message");
         let content = event.content().expect("Subscribe event missing content");
-        let subscribe =
-            flatbuffers::root::<messaging::Subscribe>(content).expect("Subscribe event invalid");
+        let subscribe = flatbuffers::root::<messaging::Subscribe>(content.bytes())
+            .expect("Subscribe event invalid");
 
         let mut subscriptions = Vec::new();
 
@@ -1360,7 +1373,7 @@ mod tests {
                 .signatures()
                 .expect("Subscription signatures empty");
 
-            let details = flatbuffers::root::<messaging::SubscriptionDetails>(details_buf)
+            let details = flatbuffers::root::<messaging::SubscriptionDetails>(details_buf.bytes())
                 .expect("Subscription details invalid");
             let inbox = details.inbox().expect("Subscription inbox missing");
 
@@ -1375,29 +1388,35 @@ mod tests {
                         // authenticate the subscriber over the subscriptions details
                         let signer = signature.signer().unwrap_or(inbox);
 
-                        let pk =
-                            PublicKey::from_bytes(signer).expect("Subscription signer invalid");
+                        let pk = PublicKey::from_bytes(signer.bytes())
+                            .expect("Subscription signer invalid");
 
-                        if !(pk.verify(details_buf, sig)) {
-                            err(&mut socket_tx, event.id().unwrap(), b"bad auth").await;
+                        if !(pk.verify(details_buf.bytes(), sig.bytes())) {
+                            err(&mut socket_tx, event.id().unwrap().bytes(), b"bad auth").await;
                             return;
                         };
 
                         // if the signer is the inbox that a subscription is being requested for, then we can exit
-                        if inbox == signer {
-                            (authenticated_as, authorized_by) =
-                                (Some(signer.to_vec()), Some(signer.to_vec()));
+                        if inbox.bytes() == signer.bytes() {
+                            (authenticated_as, authorized_by) = (
+                                Some(Vec::from(signer.bytes())),
+                                Some(Vec::from(signer.bytes())),
+                            );
                             break;
                         }
 
-                        authenticated_as = Some(signer.to_vec());
+                        authenticated_as = Some(Vec::from(signer.bytes()));
                     }
                     messaging::SignatureType::TOKEN => {
-                        let token = match Token::decode(sig) {
+                        let token = match Token::decode(sig.bytes()) {
                             Ok(token) => token,
                             Err(_) => {
-                                err(&mut socket_tx, event.id().unwrap(), b"bad token encoding")
-                                    .await;
+                                err(
+                                    &mut socket_tx,
+                                    event.id().unwrap().bytes(),
+                                    b"bad token encoding",
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -1413,7 +1432,12 @@ mod tests {
                                 );
                             }
                             _ => {
-                                err(&mut socket_tx, event.id().unwrap(), b"invalid token").await;
+                                err(
+                                    &mut socket_tx,
+                                    event.id().unwrap().bytes(),
+                                    b"invalid token",
+                                )
+                                .await;
                                 return;
                             }
                         }
@@ -1427,7 +1451,7 @@ mod tests {
                 None => {
                     err(
                         &mut socket_tx,
-                        event.id().unwrap(),
+                        event.id().unwrap().bytes(),
                         b"unauthenticated subscription",
                     )
                     .await;
@@ -1440,7 +1464,7 @@ mod tests {
                 None => {
                     err(
                         &mut socket_tx,
-                        event.id().unwrap(),
+                        event.id().unwrap().bytes(),
                         b"unauthorized subscription",
                     )
                     .await;
@@ -1448,10 +1472,10 @@ mod tests {
                 }
             };
 
-            if inbox != authorized_by {
+            if inbox.bytes() != authorized_by {
                 err(
                     &mut socket_tx,
-                    event.id().unwrap(),
+                    event.id().unwrap().bytes(),
                     b"unauthorized subscription",
                 )
                 .await;
@@ -1466,7 +1490,7 @@ mod tests {
                     None => {
                         err(
                             &mut socket_tx,
-                            event.id().unwrap(),
+                            event.id().unwrap().bytes(),
                             b"unauthorized subscription",
                         )
                         .await;
@@ -1477,7 +1501,7 @@ mod tests {
                 if authenticated_as != authorized_for {
                     err(
                         &mut socket_tx,
-                        event.id().unwrap(),
+                        event.id().unwrap().bytes(),
                         b"unauthorized subscription",
                     )
                     .await;
@@ -1488,7 +1512,7 @@ mod tests {
             subscriptions.push(authorized_by);
         }
 
-        ack(&mut socket_tx, event.id().unwrap()).await;
+        ack(&mut socket_tx, event.id().unwrap().bytes()).await;
 
         let sender = KeyPair::new();
 
@@ -1508,19 +1532,19 @@ mod tests {
 
                 let event = messaging::root_as_event(&data).expect("Event invalid");
                 let content = event.content().expect("Event content missing");
-                let message = flatbuffers::root::<messaging::Message>(content)
+                let message = flatbuffers::root::<messaging::Message>(content.bytes())
                     .expect("Failed to process websocket message content");
 
                 let payload = match message.payload() {
-                    Some(payload) => flatbuffers::root::<messaging::Payload>(payload)
+                    Some(payload) => flatbuffers::root::<messaging::Payload>(payload.bytes())
                         .expect("Failed to process websocket message content"),
                     None => continue,
                 };
 
                 // TODO validate message authentication and authorization
                 if payload.recipient().is_some() {
-                    ack(&mut socket_tx, event.id().unwrap()).await;
-                    messages.push(payload.content().unwrap().to_vec());
+                    ack(&mut socket_tx, event.id().unwrap().bytes()).await;
+                    messages.push(Vec::from(payload.content().unwrap().bytes()));
                 }
             }
         }
@@ -1618,7 +1642,7 @@ mod tests {
             flatbuffers::root::<messaging::MlsMessage>(&msg).expect("is not an mls message");
         let message = content.message().expect("message is empty");
 
-        assert_eq!(message, Vec::from("test message"));
+        assert_eq!(message.bytes(), Vec::from("test message"));
 
         /*
         let (_, ciphertext) = ws.receive().expect("Failed to receive message");

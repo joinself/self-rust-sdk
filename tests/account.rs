@@ -96,8 +96,8 @@ fn encrypted_messaging() {
         .expect("failed to configure account");
 
     // create an inbox for alice and bob
-    let alice_inbox = alice.inbox_open(None).expect("failed to open inbox");
-    let bobby_inbox = bobby.inbox_open(None).expect("failed to open inbox");
+    let alice_inbox = alice.inbox_open().expect("failed to open inbox");
+    let bobby_inbox = bobby.inbox_open().expect("failed to open inbox");
 
     // initiate a connection from alice to bob
     alice

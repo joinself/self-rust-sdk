@@ -8,6 +8,7 @@ use sodium_sys::{
 use crate::crypto::random;
 use crate::error::SelfError;
 use crate::keypair::Algorithm;
+use crate::storage;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct KeyPair {
@@ -261,6 +262,20 @@ impl KeyPair {
 
     pub fn to_vec(&self) -> Vec<u8> {
         self.secret_key.bytes.clone()
+    }
+}
+
+impl storage::KeyPair for KeyPair {
+    fn address(&self) -> &[u8] {
+        self.address()
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        self.encode()
+    }
+
+    fn decode(d: &[u8]) -> Self {
+        KeyPair::decode(d).expect("failed to decode keypair")
     }
 }
 

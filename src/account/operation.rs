@@ -1,12 +1,27 @@
 use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
+use crate::protocol::hashgraph::Role;
 use crate::storage::{query, Connection};
 use crate::time;
 use crate::token;
 use crate::transport::websocket::{self, Subscription, Websocket};
 
 use std::sync::Arc;
+
+#[repr(u64)]
+enum KeyPurpose {
+    Verification = Role::Verification.bits(), // defines the key as a verification method, allowing the key to assume multiple roles
+    Assertion = Role::Assertion.bits(), // defines the key as an assertion method, used for signing and verifying credentials
+    Authentication = Role::Authentication.bits(), // defines the key as an authentication method, used for authenticating messages and requests
+    Delegation = Role::Delegation.bits(), // defines the key as a delegation method, used for delegating control on behalf of the identity
+    Invocation = Role::Invocation.bits(), // defines the key as a invocation method, used for authorizing updates to the identities document
+    KeyAgreement = Role::KeyAgreement.bits(), // defines the key as a key agreement method, used for establishing shared secrets and public key encryption
+    Messaging = Role::Messaging.bits(), // defines the key as a messaging address, used for sending and receiving messages
+    Identifier = 1 << 7, // defines the key as an identifier key, used to rerpesent the address of an identity (not valid as a role for an identity document)
+    Link = 1 << 8, // defines the key as a link secret key, used to proove ownership of a fact without (not valid as a role for an identity document)
+    Push = 1 << 9, // defines the key as a push key, used to encrypt and decrypt push notification payloads (not valid as a role for an identity document)
+}
 
 pub fn connection_negotiate(
     storage: &Connection,

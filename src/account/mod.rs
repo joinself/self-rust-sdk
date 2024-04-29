@@ -1,5 +1,6 @@
 #[allow(clippy::module_inception)]
 mod account;
+mod keypair;
 mod message;
 mod operation;
 
