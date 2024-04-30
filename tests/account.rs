@@ -3,7 +3,10 @@ use std::{
     time::Duration,
 };
 
-use self_sdk::account::{Account, MessagingCallbacks};
+use self_sdk::{
+    account::{Account, MessagingCallbacks},
+    hashgraph::{Hashgraph, Role},
+};
 use self_test_mock::Server;
 
 static INIT: Once = Once::new();
@@ -123,6 +126,53 @@ fn encrypted_messaging() {
         .recv_timeout(DEFAULT_TIMEOUT)
         .expect("failed to receive message");
     assert_eq!(message_from_bobby, b"hey alice");
+}
+
+#[test]
+fn register_identity() {
+    test_server();
+
+    let ws_url = "ws://127.0.0.1:3001/";
+    let rpc_url = "http://127.0.0.1:3000/";
+    let mut alice = Account::new();
+    let alice_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |_| {}),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |_| {}),
+    };
+
+    alice
+        .configure(rpc_url, ws_url, ":memory:", b"", alice_callbacks)
+        .expect("failed to configure account");
+
+    let invocation_key = alice
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+    let multirole_key = alice
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+
+    let document = Hashgraph::new();
+
+    /*
+    let mut operation_builder = document.create();
+    let mut operation = operation_builder
+    */
+    let mut operation = document
+        .create()
+        .grant_embedded(invocation_key.address(), Role::Invocation)
+        .grant_embedded(
+            multirole_key.address(),
+            Role::Authentication | Role::Assertion | Role::Messaging,
+        )
+        .finish();
+
+    alice
+        .identity_execute(&mut operation)
+        .expect("failed to create identity");
 }
 
 /*

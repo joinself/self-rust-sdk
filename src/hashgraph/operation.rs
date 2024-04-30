@@ -1,8 +1,98 @@
 use crate::{
     error::SelfError,
+    hashgraph::role::{Method, Role, RoleSet},
     keypair::signing::{KeyPair, PublicKey},
     protocol::hashgraph,
 };
+
+pub struct Operation<'a> {
+    operation: Vec<u8>,
+    sig_buf: Vec<u8>,
+    changelog: Vec<(u64, Vec<u8>)>,
+    signatures: Vec<(Vec<u8>, Vec<u8>)>,
+    builder: flatbuffers::FlatBufferBuilder<'a>,
+}
+
+impl<'a> Operation<'a> {
+    pub fn new(
+        operation: Vec<u8>,
+        sig_buf: Vec<u8>,
+        changelog: Vec<(u64, Vec<u8>)>,
+    ) -> Operation<'a> {
+        return Operation {
+            operation,
+            sig_buf,
+            changelog,
+            signatures: Vec::new(),
+            builder: flatbuffers::FlatBufferBuilder::with_capacity(1024),
+        };
+    }
+
+    pub fn changelog(&self) -> &[(u64, Vec<u8>)] {
+        &self.changelog
+    }
+
+    pub fn sign(&mut self, with: &KeyPair) -> &mut Self {
+        self.builder.reset();
+
+        let sb = self.builder.create_vector(with.address());
+
+        let header = hashgraph::SignatureHeader::create(
+            &mut self.builder,
+            &hashgraph::SignatureHeaderArgs { signer: Some(sb) },
+        );
+
+        self.builder.finish(header, None);
+
+        let header_bytes = self.builder.finished_data().to_vec();
+        let header_hash = crate::crypto::hash::sha3(&header_bytes);
+        self.builder.reset();
+
+        self.sig_buf[65..].copy_from_slice(&header_hash);
+        let signature = with.sign(&self.sig_buf);
+        self.signatures.push((header_bytes, signature));
+
+        self
+    }
+
+    pub fn build(&mut self) -> Result<Vec<u8>, SelfError> {
+        if self.signatures.is_empty() {
+            return Err(SelfError::HashgraphNotEnoughSigners);
+        }
+
+        let mut signatures = Vec::new();
+
+        for signature in &self.signatures {
+            let hb = self.builder.create_vector(&signature.0);
+            let sb = self.builder.create_vector(&signature.1);
+
+            signatures.push(hashgraph::Signature::create(
+                &mut self.builder,
+                &hashgraph::SignatureArgs {
+                    header: Some(hb),
+                    signature: Some(sb),
+                },
+            ));
+        }
+
+        let op_signatures = self.builder.create_vector(&signatures);
+        let op_data = self.builder.create_vector(&self.operation);
+
+        let signed_op = hashgraph::SignedOperation::create(
+            &mut self.builder,
+            &hashgraph::SignedOperationArgs {
+                operation: Some(op_data),
+                signatures: Some(op_signatures),
+            },
+        );
+
+        self.builder.finish(signed_op, None);
+
+        let signed_op_bytes = self.builder.finished_data().to_vec();
+
+        Ok(signed_op_bytes)
+    }
+}
 
 pub struct OperationBuilder<'a> {
     previous: Option<Vec<u8>>,
@@ -11,9 +101,9 @@ pub struct OperationBuilder<'a> {
     revoke: Vec<(Vec<u8>, Option<i64>)>,
     recover: Vec<Option<i64>>,
     deactivate: Vec<Option<i64>>,
-    modify: Vec<(hashgraph::Role, Vec<u8>)>,
-    grant_embedded: Vec<(hashgraph::Role, Vec<u8>)>,
-    grant_referenced: Vec<(hashgraph::Method, hashgraph::Role, Vec<u8>, Vec<u8>)>,
+    modify: Vec<(u64, Vec<u8>)>,
+    grant_embedded: Vec<(u64, Vec<u8>)>,
+    grant_referenced: Vec<(Method, u64, Vec<u8>, Vec<u8>)>,
     operation: Option<Vec<u8>>,
     signatures: Vec<(Vec<u8>, Vec<u8>)>,
     sig_buf: Vec<u8>,
@@ -59,29 +149,34 @@ impl<'a> OperationBuilder<'a> {
         self
     }
 
-    pub fn grant_embedded(
-        &mut self,
-        pk: &[u8],
-        roles: hashgraph::Role,
-    ) -> &mut OperationBuilder<'a> {
-        self.grant_embedded.push((roles, pk.to_owned()));
+    pub fn grant_embedded<T>(&mut self, pk: &[u8], roles: T) -> &mut OperationBuilder<'a>
+    where
+        T: RoleSet,
+    {
+        self.grant_embedded.push((roles.roles(), pk.to_owned()));
         self
     }
 
-    pub fn grant_referenced(
+    pub fn grant_referenced<T>(
         &mut self,
-        method: hashgraph::Method,
+        method: Method,
         controller: &[u8],
         pk: &[u8],
-        roles: hashgraph::Role,
-    ) -> &mut OperationBuilder<'a> {
+        roles: T,
+    ) -> &mut OperationBuilder<'a>
+    where
+        T: RoleSet,
+    {
         self.grant_referenced
-            .push((method, roles, controller.to_owned(), pk.to_owned()));
+            .push((method, roles.roles(), controller.to_owned(), pk.to_owned()));
         self
     }
 
-    pub fn modify(&mut self, pk: &[u8], roles: hashgraph::Role) -> &mut OperationBuilder<'a> {
-        self.modify.push((roles, pk.to_owned()));
+    pub fn modify<T>(&mut self, pk: &[u8], roles: T) -> &mut OperationBuilder<'a>
+    where
+        T: RoleSet,
+    {
+        self.modify.push((roles.roles(), pk.to_owned()));
         self
     }
 
@@ -100,14 +195,14 @@ impl<'a> OperationBuilder<'a> {
         self
     }
 
-    pub fn sign(&mut self, kp: &KeyPair) -> &mut OperationBuilder<'a> {
+    pub fn sign(&mut self, with: &KeyPair) -> &mut OperationBuilder<'a> {
         if self.operation.is_none() {
             self.build_operation();
         }
 
         self.builder.reset();
 
-        let sb = self.builder.create_vector(kp.address());
+        let sb = self.builder.create_vector(with.address());
 
         let header = hashgraph::SignatureHeader::create(
             &mut self.builder,
@@ -121,10 +216,28 @@ impl<'a> OperationBuilder<'a> {
         self.builder.reset();
 
         self.sig_buf[65..].copy_from_slice(&header_hash);
-        let signature = kp.sign(&self.sig_buf);
+        let signature = with.sign(&self.sig_buf);
         self.signatures.push((header_bytes, signature));
 
         self
+    }
+
+    pub fn finish(&mut self) -> Operation<'a> {
+        self.build_operation();
+
+        let operation = self.operation.as_ref().unwrap().clone();
+        let sig_buf = self.sig_buf.clone();
+        let mut changelog = Vec::new();
+
+        for modify in &self.modify {
+            changelog.push(modify.clone())
+        }
+
+        for grant in &self.grant_embedded {
+            changelog.push(grant.clone())
+        }
+
+        Operation::new(operation, sig_buf, changelog)
     }
 
     pub fn build(&mut self) -> Result<Vec<u8>, SelfError> {
@@ -247,7 +360,7 @@ impl<'a> OperationBuilder<'a> {
                     actionable: hashgraph::Actionable::Modify,
                     description: Some(description.as_union_value()),
                     description_type: hashgraph::Description::Reference,
-                    roles: modify.0.bits(),
+                    roles: modify.0.clone() as u64,
                     from: self.timestamp.unwrap(),
                 },
             );
@@ -262,7 +375,7 @@ impl<'a> OperationBuilder<'a> {
             let description = hashgraph::Reference::create(
                 &mut self.builder,
                 &hashgraph::ReferenceArgs {
-                    method: grant.0,
+                    method: grant.0.into_method(),
                     id: Some(granted_key),
                     controller: Some(controller),
                 },
@@ -274,7 +387,7 @@ impl<'a> OperationBuilder<'a> {
                     actionable: hashgraph::Actionable::Grant,
                     description: Some(description.as_union_value()),
                     description_type: hashgraph::Description::Reference,
-                    roles: grant.1.bits(),
+                    roles: grant.1.clone() as u64,
                     from: self.timestamp.unwrap(),
                 },
             );
@@ -299,7 +412,7 @@ impl<'a> OperationBuilder<'a> {
                     actionable: hashgraph::Actionable::Grant,
                     description: Some(description.as_union_value()),
                     description_type: hashgraph::Description::Embedded,
-                    roles: grant.0.bits(),
+                    roles: grant.0.clone() as u64,
                     from: self.timestamp.unwrap(),
                 },
             );

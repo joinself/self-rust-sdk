@@ -1,7 +1,10 @@
 #![allow(unused_imports)]
 
-pub mod graph;
+mod graph;
 mod node;
 mod operation;
+mod role;
 
 pub use self::graph::*;
+pub use self::operation::*;
+pub use self::role::*;

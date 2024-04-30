@@ -9,7 +9,7 @@ use crate::crypto::pow;
 use crate::error::SelfError;
 use crate::protocol::rpc::{
     AcquireRequest, AcquireResponse, ApiClient, ExecuteRequest, ProofOfWork, PublishRequest,
-    Request, RequestHeader, ResponseStatus, Version,
+    Request, RequestHeader, ResolveRequest, ResolveResponse, ResponseStatus, Version,
 };
 
 pub struct Rpc {
@@ -47,6 +47,55 @@ impl Rpc {
         let runtime = Arc::new(runtime);
 
         Ok(Rpc { client, runtime })
+    }
+
+    pub fn resolve(&self, id: &[u8], from: u32) -> Result<Vec<Vec<u8>>, SelfError> {
+        let (tx, rx) = channel::bounded(1);
+
+        let id = id.to_vec();
+
+        let mut client = self.client.clone();
+        let runtime = self.runtime.clone();
+
+        runtime.spawn(async move {
+            let resolve = ResolveRequest { id, from }.encode_to_vec();
+
+            let request = Request {
+                header: Some(RequestHeader {
+                    version: Version::V1 as i32,
+                }),
+                content: resolve,
+                authorization: None,
+                proof_of_work: None,
+            };
+
+            tx.send(client.execute(request).await).unwrap();
+        });
+
+        let response = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(response) => match response {
+                Ok(response) => response.into_inner(),
+                Err(_) => return Err(SelfError::RpcRequestFailed),
+            },
+            Err(err) => {
+                println!("rpc: {}", err);
+                return Err(SelfError::RpcRequestTimeout);
+            }
+        };
+
+        if let Some(header) = response.header {
+            if header.status > 204 {
+                println!("rpc: request failed with '{}'", header.message);
+                return Err(rpc_error_status(header.status));
+            }
+        }
+
+        let resolve = match ResolveResponse::decode(response.content.as_ref()) {
+            Ok(resolve) => resolve,
+            Err(_) => return Err(SelfError::RpcBadRequest),
+        };
+
+        Ok(resolve.log)
     }
 
     pub fn execute(&self, id: &[u8], operation: &[u8]) -> Result<(), SelfError> {

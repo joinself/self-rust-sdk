@@ -18,9 +18,18 @@ enum KeyPurpose {
     Invocation = Role::Invocation.bits(), // defines the key as a invocation method, used for authorizing updates to the identities document
     KeyAgreement = Role::KeyAgreement.bits(), // defines the key as a key agreement method, used for establishing shared secrets and public key encryption
     Messaging = Role::Messaging.bits(), // defines the key as a messaging address, used for sending and receiving messages
-    Identifier = 1 << 7, // defines the key as an identifier key, used to rerpesent the address of an identity (not valid as a role for an identity document)
-    Link = 1 << 8, // defines the key as a link secret key, used to proove ownership of a fact without (not valid as a role for an identity document)
-    Push = 1 << 9, // defines the key as a push key, used to encrypt and decrypt push notification payloads (not valid as a role for an identity document)
+    Inbox = 1 << 7, // defines the key as an inbox key, used to represent the the address of an inbox used to receive messages
+    Identifier = 1 << 8, // defines the key as an identifier key, used to represent the address of an identity (not valid as a role for an identity document)
+    Link = 1 << 9, // defines the key as a link secret key, used to proove ownership of a fact without (not valid as a role for an identity document)
+    Push = 1 << 10, // defines the key as a push key, used to encrypt and decrypt push notification payloads (not valid as a role for an identity document)
+}
+
+impl std::ops::BitOr for KeyPurpose {
+    type Output = u64;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self as u64 | rhs as u64
+    }
 }
 
 pub fn connection_negotiate(
@@ -144,7 +153,12 @@ pub fn connection_establish(
         };
 
         // TODO think about how what roles actually means here...
-        query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
+        query::keypair_create(
+            txn,
+            group_kp.clone(),
+            KeyPurpose::Inbox | KeyPurpose::Messaging,
+            crate::time::unix(),
+        )?;
         query::group_create(txn, group_kp.address(), 1)?;
         query::group_member_add(txn, group_kp.address(), as_address.address())?;
         query::group_member_add(txn, group_kp.address(), with_address.address())?;
@@ -354,4 +368,202 @@ pub fn connection_accept(
     // TODO deqeue sent...
 
     Ok(())
+}
+
+pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicKey, SelfError> {
+    let mut signing_kp: Option<KeyPair> = None;
+    let mut subscription_token: Option<token::Subscription> = None;
+    let mut key_packages: Vec<Vec<u8>> = Vec::new();
+
+    (*storage).transaction(|txn| {
+        signing_kp = Some(KeyPair::new());
+        query::keypair_create(txn, signing_kp.clone().unwrap(), 0, time::unix())?;
+
+        if let Some(signing_kp) = &signing_kp {
+            // TODO not sure this is actually needed
+            subscription_token = Some(token::Subscription::new(
+                signing_kp,
+                signing_kp.public(),
+                time::unix(),
+                i64::MAX,
+            ));
+
+            query::token_create(
+                txn,
+                query::Token::Subscription,
+                signing_kp.address(),
+                signing_kp.address(),
+                signing_kp.address(),
+                subscription_token.as_ref().unwrap().as_bytes(),
+            )?;
+
+            // setup the mls credentials and generate some key packages
+            key_packages = e2e::mls_inbox_setup(txn, signing_kp, 4)?;
+
+            // TODO mark this keypair as used as a messaging inbox
+            // TODO validate this keypair is not:
+            // 1. already used as an inbox
+            // 2. if attached to an did, it must have an authentication role
+
+            // TODO update metrics on inbox subscription time
+        };
+
+        Ok(())
+    })?;
+
+    let signing_kp = match signing_kp {
+        Some(signing_kp) => signing_kp,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let subscription_token = match subscription_token {
+        Some(subscription_token) => subscription_token,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    // open & subscribe...
+    websocket.open(&signing_kp)?;
+    websocket.subscribe(&[Subscription {
+        to_address: signing_kp.public().to_owned(),
+        as_address: signing_kp.to_owned(),
+        from: time::unix(),
+        token: Some(token::Token::Subscription(subscription_token)),
+    }])?;
+
+    Ok(signing_kp.public().to_owned())
+}
+
+pub fn group_create(
+    storage: &Connection,
+    websocket: &Websocket,
+    as_address: &PublicKey,
+) -> Result<PublicKey, SelfError> {
+    let group_kp = KeyPair::new();
+    let group_pk = group_kp.public().to_owned();
+    let mut as_keypair: Option<KeyPair> = None;
+
+    let subscription_token =
+        token::Subscription::new(&group_kp, as_address, time::unix(), i64::MAX);
+
+    storage.transaction(|txn| {
+        // TODO think about how what roles actually means here...
+        as_keypair = match query::keypair_lookup(txn, as_address.address())? {
+            Some(as_keypair) => Some(as_keypair),
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        query::keypair_create(
+            txn,
+            group_kp.clone(),
+            KeyPurpose::Inbox as u64,
+            crate::time::unix(),
+        )?;
+        query::group_create(txn, group_kp.address(), 2)?;
+        query::group_member_add(txn, group_kp.address(), as_address.address())?;
+        e2e::mls_group_create(txn, group_kp.address(), as_keypair.as_ref().unwrap())?;
+        query::token_create(
+            txn,
+            query::Token::Subscription,
+            group_kp.address(),
+            as_address.address(),
+            group_kp.address(),
+            subscription_token.as_bytes(),
+        )
+    })?;
+
+    let as_keypair = match as_keypair {
+        Some(as_keypair) => as_keypair,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    websocket.open(&group_kp)?;
+    websocket.subscribe(&[Subscription {
+        to_address: group_kp.public().to_owned(),
+        as_address: as_keypair,
+        from: time::unix(),
+        token: Some(token::Token::Subscription(subscription_token)),
+    }])?;
+
+    Ok(group_pk)
+}
+
+pub fn message_send(
+    storage: &Connection,
+    websocket: &Websocket,
+    to_address: &PublicKey,
+    content: &[u8],
+) -> Result<(), SelfError> {
+    let mut as_address: Option<KeyPair> = None;
+    let mut from_address: Option<PublicKey> = None;
+    let mut group_address: Option<PublicKey> = None;
+    let mut ciphertext = Vec::new();
+    let sequence: u64 = 0;
+
+    storage.transaction(|txn| {
+        // TODO determine is this is a group, did or inbox address
+        group_address = query::group_with(txn, to_address.address(), 1)?
+            .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
+
+        let group_address = match &group_address {
+            Some(group_address) => group_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        from_address = query::group_as(txn, group_address.address(), 1)?
+            .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
+
+        let from_address = match &from_address {
+            Some(from_address) => from_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        as_address = query::keypair_lookup(txn, from_address.address())?;
+        if let Some(as_address) = &as_address {
+            ciphertext = e2e::mls_group_encrypt(txn, group_address.address(), as_address, content)?;
+
+            // TODO load sequence...
+
+            query::outbox_queue(
+                txn,
+                query::Event::Message,
+                as_address.address(),
+                group_address.address(),
+                &ciphertext,
+                sequence,
+            )?;
+        }
+
+        Ok(())
+    })?;
+
+    let as_address = match &as_address {
+        Some(as_address) => as_address,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let group_address = match &group_address {
+        Some(group_address) => group_address,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    let payload = websocket::assemble_payload_message(as_address, group_address, 0, &ciphertext)?;
+
+    let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+    websocket.send(
+        as_address,
+        &payload,
+        None,
+        Arc::new(move |resp| {
+            resp_tx.send(resp).unwrap();
+        }),
+    );
+
+    resp_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+
+    storage.transaction(|txn| {
+        query::outbox_dequeue(txn, as_address.address(), group_address.address(), sequence)
+    })
 }
