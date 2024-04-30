@@ -360,7 +360,7 @@ impl<'a> OperationBuilder<'a> {
                     actionable: hashgraph::Actionable::Modify,
                     description: Some(description.as_union_value()),
                     description_type: hashgraph::Description::Reference,
-                    roles: modify.0.clone() as u64,
+                    roles: modify.0,
                     from: self.timestamp.unwrap(),
                 },
             );
@@ -387,7 +387,7 @@ impl<'a> OperationBuilder<'a> {
                     actionable: hashgraph::Actionable::Grant,
                     description: Some(description.as_union_value()),
                     description_type: hashgraph::Description::Reference,
-                    roles: grant.1.clone() as u64,
+                    roles: grant.1,
                     from: self.timestamp.unwrap(),
                 },
             );
@@ -412,7 +412,7 @@ impl<'a> OperationBuilder<'a> {
                     actionable: hashgraph::Actionable::Grant,
                     description: Some(description.as_union_value()),
                     description_type: hashgraph::Description::Embedded,
-                    roles: grant.0.clone() as u64,
+                    roles: grant.0,
                     from: self.timestamp.unwrap(),
                 },
             );

@@ -170,7 +170,7 @@ impl Account {
         //      3. store and cache operation
         //      4.
 
-        let did_address = PublicKey::from_bytes(&vec![0; 33])?;
+        let did_address = PublicKey::from_bytes(&[0; 33])?;
 
         unsafe { (*rpc).execute(did_address.address(), &operation.build()?) }
     }

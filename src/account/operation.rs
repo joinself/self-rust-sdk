@@ -9,6 +9,7 @@ use crate::transport::websocket::{self, Subscription, Websocket};
 
 use std::sync::Arc;
 
+#[allow(dead_code)]
 #[repr(u64)]
 enum KeyPurpose {
     Verification = Role::Verification.bits(), // defines the key as a verification method, allowing the key to assume multiple roles
