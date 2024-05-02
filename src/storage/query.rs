@@ -161,7 +161,7 @@ pub fn identity_sync(txn: &Transaction, address: &[u8], synced_at: i64) -> Resul
 pub fn identity_operation_create(
     txn: &Transaction,
     address: &[u8],
-    sequence: i32,
+    sequence: u32,
     operation: &[u8],
 ) -> Result<(), SelfError> {
     address_create(txn, address)?;
@@ -250,6 +250,69 @@ where
     }
 
     stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))
+}
+
+pub fn keypair_assign(txn: &Transaction, address: &[u8], roles: u64) -> Result<(), SelfError> {
+    txn.prepare(
+        "UPDATE keypairs SET roles = ?1
+        WHERE keypairs.address = (SELECT id FROM addresses WHERE address = ?2);",
+    )?
+    .bind_integer(1, roles as i64)?
+    .bind_blob(2, address)?
+    .execute()
+}
+
+pub fn keypair_associate(
+    txn: &Transaction,
+    identity_address: &[u8],
+    keypair_address: &[u8],
+    sequence: u32,
+) -> Result<(), SelfError> {
+    txn.prepare(
+        "INSERT INTO keypair_associations (identity_address, keypair_address, sequence)
+        VALUES(
+            (SELECT id FROM addresses WHERE address=?1),
+            (SELECT id FROM addresses WHERE address=?2),
+            ?3
+        );",
+    )?
+    .bind_blob(1, identity_address)?
+    .bind_blob(2, keypair_address)?
+    .bind_integer(3, sequence as i64)?
+    .execute()
+}
+
+pub fn keypair_associated_with<K>(
+    txn: &Transaction,
+    identity_address: &[u8],
+    roles: u64,
+) -> Result<Vec<K>, SelfError>
+where
+    K: KeyPair,
+{
+    let stmt = txn.prepare(
+        "SELECT k1.keypair, k1.roles FROM keypair_associations
+        JOIN keypairs k1 ON
+            k1.address = keypair_associations.keypair_address
+        JOIN identities i1 ON
+            i1.address = keypair_associations.identity_address
+        JOIN addresses a1 ON
+            i1.address = a1.id
+        WHERE a1.address = ?1 AND k1.roles & ?2 = ?2;",
+    )?;
+
+    stmt.bind_blob(1, identity_address)?;
+    stmt.bind_integer(2, roles as i64)?;
+
+    let mut keypairs = Vec::new();
+
+    while stmt.step()? {
+        if let Some(keypair) = stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))? {
+            keypairs.push(keypair);
+        }
+    }
+
+    Ok(keypairs)
 }
 
 pub fn group_create(
@@ -570,9 +633,11 @@ pub fn outbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError
 mod tests {
     use crate::{
         crypto::{self, random_id},
-        storage::query,
-        storage::query::Event,
-        storage::Connection,
+        keypair::signing,
+        storage::{
+            query::{self, Event},
+            Connection,
+        },
     };
 
     #[test]
@@ -663,6 +728,39 @@ mod tests {
                 assert_eq!(2, logs.len());
                 assert_eq!(operation0, logs[0]);
                 assert_eq!(operation1, logs[1]);
+
+                Ok(())
+            })
+            .expect("transaction failed");
+    }
+
+    #[test]
+    fn query_keypair_association() {
+        let connection = Connection::new(":memory:").expect("connection failed");
+
+        let identifier_sk = signing::KeyPair::new();
+        let invocation_sk = signing::KeyPair::new();
+
+        connection
+            .transaction(|txn| {
+                query::identity_create(txn, identifier_sk.address(), 0, crate::time::unix())?;
+                query::keypair_create(txn, identifier_sk.clone(), 0, crate::time::unix())?;
+                query::keypair_create(txn, invocation_sk.clone(), 0, crate::time::unix())?;
+                query::keypair_assign(txn, identifier_sk.address(), 256)?;
+                query::keypair_assign(txn, invocation_sk.address(), 16)?;
+                query::keypair_associate(txn, identifier_sk.address(), invocation_sk.address(), 0)
+            })
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let keys: Vec<signing::KeyPair> =
+                    query::keypair_associated_with(txn, identifier_sk.address(), 32)?;
+                assert_eq!(keys.len(), 0);
+
+                let keys: Vec<signing::KeyPair> =
+                    query::keypair_associated_with(txn, identifier_sk.address(), 16)?;
+                assert_eq!(keys.len(), 1);
 
                 Ok(())
             })

@@ -1,4 +1,4 @@
-use crate::account::{operation, Commit, KeyPackage, Message, Welcome};
+use crate::account::{operation, Commit, KeyPackage, KeyRole, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::hashgraph::Hashgraph;
@@ -135,6 +135,35 @@ impl Account {
         Ok(exchange_pk)
     }
 
+    /// looks up keys assigned to an identity with a given set of roles
+    pub fn keypair_signing_associated_with(
+        &self,
+        did_address: &PublicKey,
+        roles: KeyRole,
+    ) -> Result<Vec<signing::PublicKey>, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let mut public_keys: Vec<signing::PublicKey> = Vec::new();
+
+        unsafe {
+            (*storage).transaction(|txn| {
+                for kp in query::keypair_associated_with::<signing::KeyPair>(
+                    txn,
+                    did_address.address(),
+                    roles as u64,
+                )? {
+                    public_keys.push(kp.public().to_owned());
+                }
+                Ok(())
+            })?;
+        }
+
+        Ok(public_keys)
+    }
+
     /// resolves a did document for a given address
     pub fn identity_resolve(&self, did_address: &PublicKey) -> Result<Hashgraph, SelfError> {
         // TODO 1. check for existing cached entries
@@ -165,14 +194,7 @@ impl Account {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        // TODO 1. load keys used in operation for signing (authorization and self signatures)
-        //      2. update key roles
-        //      3. store and cache operation
-        //      4.
-
-        let did_address = PublicKey::from_bytes(&[0; 33])?;
-
-        unsafe { (*rpc).execute(did_address.address(), &operation.build()?) }
+        unsafe { operation::identity_execute(&(*storage), &(*rpc), operation) }
     }
 
     /// opens a new messaging inbox and subscribes to it with the provided key

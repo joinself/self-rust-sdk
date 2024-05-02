@@ -6,30 +6,55 @@ use crate::{
 };
 
 pub struct Operation<'a> {
+    sequence: u32,
     operation: Vec<u8>,
     sig_buf: Vec<u8>,
-    changelog: Vec<(u64, Vec<u8>)>,
+    created: Vec<(u64, Vec<u8>)>,
+    updated: Vec<(u64, Vec<u8>)>,
+    signers: Vec<PublicKey>,
     signatures: Vec<(Vec<u8>, Vec<u8>)>,
     builder: flatbuffers::FlatBufferBuilder<'a>,
 }
 
 impl<'a> Operation<'a> {
     pub fn new(
+        sequence: u32,
         operation: Vec<u8>,
         sig_buf: Vec<u8>,
-        changelog: Vec<(u64, Vec<u8>)>,
+        created: Vec<(u64, Vec<u8>)>,
+        updated: Vec<(u64, Vec<u8>)>,
+        signers: Vec<PublicKey>,
     ) -> Operation<'a> {
         return Operation {
+            sequence,
             operation,
             sig_buf,
-            changelog,
+            created,
+            updated,
+            signers,
             signatures: Vec::new(),
             builder: flatbuffers::FlatBufferBuilder::with_capacity(1024),
         };
     }
 
-    pub fn changelog(&self) -> &[(u64, Vec<u8>)] {
-        &self.changelog
+    pub fn sequence(&self) -> u32 {
+        self.sequence
+    }
+
+    pub fn identifier(&self) -> &[u8] {
+        &self.sig_buf[0..33]
+    }
+
+    pub fn created(&self) -> &[(u64, Vec<u8>)] {
+        &self.created
+    }
+
+    pub fn updated(&self) -> &[(u64, Vec<u8>)] {
+        &self.updated
+    }
+
+    pub fn signers(&self) -> &[PublicKey] {
+        &self.signers
     }
 
     pub fn sign(&mut self, with: &KeyPair) -> &mut Self {
@@ -105,6 +130,7 @@ pub struct OperationBuilder<'a> {
     grant_embedded: Vec<(u64, Vec<u8>)>,
     grant_referenced: Vec<(Method, u64, Vec<u8>, Vec<u8>)>,
     operation: Option<Vec<u8>>,
+    signers: Vec<PublicKey>,
     signatures: Vec<(Vec<u8>, Vec<u8>)>,
     sig_buf: Vec<u8>,
     builder: flatbuffers::FlatBufferBuilder<'a>,
@@ -123,6 +149,7 @@ impl<'a> OperationBuilder<'a> {
             grant_embedded: Vec::new(),
             grant_referenced: Vec::new(),
             operation: None,
+            signers: Vec::new(),
             signatures: Vec::new(),
             sig_buf: vec![0; 97],
             builder: flatbuffers::FlatBufferBuilder::with_capacity(1024),
@@ -222,25 +249,35 @@ impl<'a> OperationBuilder<'a> {
         self
     }
 
+    pub fn sign_with(&mut self, with: &PublicKey) -> &mut OperationBuilder<'a> {
+        self.signers.push(with.clone());
+        self
+    }
+
     pub fn finish(&mut self) -> Operation<'a> {
         self.build_operation();
 
         let operation = self.operation.as_ref().unwrap().clone();
+        let sequence = self.sequence.unwrap();
         let sig_buf = self.sig_buf.clone();
-        let mut changelog = Vec::new();
+        let signers = self.signers.clone();
+        let mut created = Vec::new();
+        let mut updated = Vec::new();
 
         for modify in &self.modify {
-            changelog.push(modify.clone())
+            updated.push(modify.clone())
         }
 
         for grant in &self.grant_embedded {
-            changelog.push(grant.clone())
+            created.push(grant.clone())
         }
 
-        Operation::new(operation, sig_buf, changelog)
+        Operation::new(sequence, operation, sig_buf, created, updated, signers)
     }
 
     pub fn build(&mut self) -> Result<Vec<u8>, SelfError> {
+        // TODO call finish() to build an operation object
+        // and then output the serialized operation
         if self.operation.is_none() {
             return Err(SelfError::HashgraphOperationMissing);
         }
