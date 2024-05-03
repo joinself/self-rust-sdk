@@ -166,20 +166,17 @@ impl Account {
 
     /// resolves a did document for a given address
     pub fn identity_resolve(&self, did_address: &PublicKey) -> Result<Hashgraph, SelfError> {
-        // TODO 1. check for existing cached entries
-        //      2. load existing entries into graph without validation
-        //      3. sync latest updates via rpc if last check is > max validity
-        //      4. update graph and validate new entries
-
         let rpc = self.rpc.load(Ordering::SeqCst);
         if rpc.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        unsafe {
-            let log = (*rpc).resolve(did_address.address(), 0)?;
-            Hashgraph::load(&log, true)
-        }
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::identity_resolve(&(*storage), &(*rpc), did_address.address()) }
     }
 
     /// execute an operation to update an existing document

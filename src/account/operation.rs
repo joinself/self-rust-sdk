@@ -1,7 +1,7 @@
 use crate::account::KeyPurpose;
 use crate::crypto::e2e;
 use crate::error::SelfError;
-use crate::hashgraph::Operation;
+use crate::hashgraph::{Hashgraph, Operation};
 use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::storage::{query, Connection};
 use crate::time;
@@ -10,6 +10,50 @@ use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Subscription, Websocket};
 
 use std::sync::Arc;
+use std::time::Duration;
+
+pub fn identity_resolve(
+    storage: &Connection,
+    rpc: &Rpc,
+    address: &[u8],
+) -> Result<Hashgraph, SelfError> {
+    let mut operations = Vec::new();
+    let mut synced_at = None;
+
+    storage.transaction(|txn| {
+        synced_at = query::identity_synced_at(txn, address)?;
+
+        operations = query::identity_operation_log(txn, address)?;
+
+        Ok(())
+    })?;
+
+    let mut hashgraph = Hashgraph::load(&operations, false)?;
+
+    if let Some(synced_at) = synced_at {
+        // this has been synced within the last 5 minutes, return the cached results
+        if (time::now() - Duration::from_secs(300)).timestamp() < synced_at {
+            return Ok(hashgraph);
+        }
+    }
+
+    let sequence = operations.len();
+    operations = rpc.resolve(address, sequence as u32)?;
+
+    for operation in &operations {
+        hashgraph.execute(operation.clone())?;
+    }
+
+    storage.transaction(|txn| {
+        for (seq, op) in operations.iter().enumerate() {
+            query::identity_operation_create(txn, address, (sequence + seq) as u32, op)?;
+        }
+
+        Ok(())
+    })?;
+
+    Ok(hashgraph)
+}
 
 pub fn identity_execute(
     storage: &Connection,
