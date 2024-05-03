@@ -178,9 +178,9 @@ impl Rpc {
         let response = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(response) => match response {
                 Ok(response) => response.into_inner(),
-                Err(err) => return Err(SelfError::RpcRequestFailed),
+                Err(_) => return Err(SelfError::RpcRequestFailed),
             },
-            Err(err) => return Err(SelfError::RpcRequestTimeout),
+            Err(_) => return Err(SelfError::RpcRequestTimeout),
         };
 
         if let Some(header) = response.header {
