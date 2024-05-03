@@ -47,7 +47,7 @@ uuid = "1.2.1"
 
 [dev-dependencies]
 httptest = "0.16.0"
-self-test-mock = { path = "/home/tom/code/self/self-test-mock" } #git = "https://github.com/joinself/self-test-mock" }
+self-test-mock = { git = "https://github.com/joinself/self-test-mock" }
 
 [build-dependencies]
 tonic-build = "0.11"

@@ -59,7 +59,7 @@ fn register_identity() {
         .grant_embedded(invocation_key.address(), Role::Invocation)
         .grant_embedded(
             multirole_key.address(),
-            Role::Authentication | Role::Assertion | Role::Messaging,
+            Role::Verification | Role::Authentication | Role::Assertion | Role::Messaging,
         )
         .sign_with(&identifier_key)
         .sign_with(&invocation_key)
@@ -68,7 +68,16 @@ fn register_identity() {
 
     alice
         .identity_execute(&mut operation)
-        .expect("failed to create identity");
+        .expect("failed to execute identity operation");
+    let document = alice
+        .identity_resolve(&identifier_key)
+        .expect("failed to resolve identity");
+    assert!(document.key_has_roles(invocation_key.address(), Role::Invocation as u64));
+    assert!(document.key_has_roles(multirole_key.address(), Role::Verification as u64));
+    assert!(document.key_has_roles(
+        multirole_key.address(),
+        Role::Authentication | Role::Assertion | Role::Messaging
+    ));
 }
 
 #[test]
