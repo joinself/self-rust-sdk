@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::keypair::signing::PublicKey;
-use crate::protocol::hashgraph::Role;
+use crate::protocol::hashgraph;
 
 #[derive(Debug)]
 pub struct RoleEntry {

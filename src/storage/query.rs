@@ -90,6 +90,121 @@ pub fn address_create(txn: &Transaction, address: &[u8]) -> Result<(), SelfError
         .execute()
 }
 
+pub fn identity_create(
+    txn: &Transaction,
+    address: &[u8],
+    status: u8,
+    discovered_at: i64,
+) -> Result<(), SelfError> {
+    address_create(txn, address)?;
+
+    txn.prepare(
+        "INSERT INTO identities (address, status, discovered_at, synced_at)
+        VALUES (
+            (SELECT id FROM addresses WHERE address=?1),
+            ?2,
+            ?3,
+            ?4
+        );",
+    )?
+    .bind_blob(1, address)?
+    .bind_integer(2, status as i64)?
+    .bind_integer(3, discovered_at)?
+    .bind_integer(4, discovered_at)?
+    .execute()
+}
+
+pub fn identity_synced_at(txn: &Transaction, address: &[u8]) -> Result<Option<i64>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT synced_at FROM identities
+        INNER JOIN addresses ON
+            identities.address = addresses.id
+        WHERE addresses.address = ?1;",
+    )?;
+
+    stmt.bind_blob(1, address)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    stmt.column_integer(0)
+}
+
+pub fn identity_status(txn: &Transaction, address: &[u8]) -> Result<Option<i64>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT status FROM identities
+        INNER JOIN addresses ON
+            identities.address = addresses.id
+        WHERE addresses.address = ?1;",
+    )?;
+
+    stmt.bind_blob(1, address)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    stmt.column_integer(0)
+}
+
+pub fn identity_sync(txn: &Transaction, address: &[u8], synced_at: i64) -> Result<(), SelfError> {
+    txn.prepare(
+        "UPDATE identities SET synced_at = ?1
+        WHERE address = (SELECT id FROM addresses WHERE address=?2);",
+    )?
+    .bind_integer(1, synced_at)?
+    .bind_blob(2, address)?
+    .execute()
+}
+
+pub fn identity_operation_create(
+    txn: &Transaction,
+    address: &[u8],
+    sequence: u32,
+    operation: &[u8],
+) -> Result<(), SelfError> {
+    address_create(txn, address)?;
+
+    txn.prepare(
+        "INSERT INTO identity_operations (address, sequence, operation)
+        VALUES (
+            (SELECT id FROM addresses WHERE address=?1),
+            ?2,
+            ?3
+        );",
+    )?
+    .bind_blob(1, address)?
+    .bind_integer(2, sequence as i64)?
+    .bind_blob(3, operation)?
+    .execute()
+}
+
+pub fn identity_operation_log(
+    txn: &Transaction,
+    address: &[u8],
+) -> Result<Vec<Vec<u8>>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT operation FROM identity_operations
+        INNER JOIN addresses ON
+            identity_operations.address = addresses.id
+        WHERE addresses.address = ?1
+        ORDER BY SEQUENCE ASC;",
+    )?;
+
+    stmt.bind_blob(1, address)?;
+
+    let mut logs = Vec::new();
+
+    while stmt.step()? {
+        if let Some(log) = stmt.column_blob(0)? {
+            logs.push(log);
+        }
+    }
+
+    Ok(logs)
+}
+
 pub fn keypair_create<K>(
     txn: &Transaction,
     keypair: K,
@@ -135,6 +250,69 @@ where
     }
 
     stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))
+}
+
+pub fn keypair_assign(txn: &Transaction, address: &[u8], roles: u64) -> Result<(), SelfError> {
+    txn.prepare(
+        "UPDATE keypairs SET roles = ?1
+        WHERE keypairs.address = (SELECT id FROM addresses WHERE address = ?2);",
+    )?
+    .bind_integer(1, roles as i64)?
+    .bind_blob(2, address)?
+    .execute()
+}
+
+pub fn keypair_associate(
+    txn: &Transaction,
+    identity_address: &[u8],
+    keypair_address: &[u8],
+    sequence: u32,
+) -> Result<(), SelfError> {
+    txn.prepare(
+        "INSERT INTO keypair_associations (identity_address, keypair_address, sequence)
+        VALUES(
+            (SELECT id FROM addresses WHERE address=?1),
+            (SELECT id FROM addresses WHERE address=?2),
+            ?3
+        );",
+    )?
+    .bind_blob(1, identity_address)?
+    .bind_blob(2, keypair_address)?
+    .bind_integer(3, sequence as i64)?
+    .execute()
+}
+
+pub fn keypair_associated_with<K>(
+    txn: &Transaction,
+    identity_address: &[u8],
+    roles: u64,
+) -> Result<Vec<K>, SelfError>
+where
+    K: KeyPair,
+{
+    let stmt = txn.prepare(
+        "SELECT k1.keypair, k1.roles FROM keypair_associations
+        JOIN keypairs k1 ON
+            k1.address = keypair_associations.keypair_address
+        JOIN identities i1 ON
+            i1.address = keypair_associations.identity_address
+        JOIN addresses a1 ON
+            i1.address = a1.id
+        WHERE a1.address = ?1 AND k1.roles & ?2 = ?2;",
+    )?;
+
+    stmt.bind_blob(1, identity_address)?;
+    stmt.bind_integer(2, roles as i64)?;
+
+    let mut keypairs = Vec::new();
+
+    while stmt.step()? {
+        if let Some(keypair) = stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))? {
+            keypairs.push(keypair);
+        }
+    }
+
+    Ok(keypairs)
 }
 
 pub fn group_create(
@@ -455,10 +633,139 @@ pub fn outbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError
 mod tests {
     use crate::{
         crypto::{self, random_id},
-        storage::query,
-        storage::query::Event,
-        storage::Connection,
+        keypair::signing,
+        storage::{
+            query::{self, Event},
+            Connection,
+        },
     };
+
+    #[test]
+    fn query_identity_create() {
+        let connection = Connection::new(":memory:").expect("connection failed");
+
+        let identifier = random_id();
+
+        connection
+            .transaction(|txn| query::identity_create(txn, &identifier, 1, 1714500792))
+            .expect("transaction failed");
+    }
+
+    #[test]
+    fn query_identity_synced_at() {
+        let connection = Connection::new(":memory:").expect("connection failed");
+
+        let identifier = random_id();
+
+        connection
+            .transaction(|txn| query::identity_create(txn, &identifier, 1, 1714500792))
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let synced_at =
+                    query::identity_synced_at(txn, &identifier).expect("failed to get synced at");
+
+                assert_eq!(1714500792, synced_at.expect("synced_at was none!"));
+
+                Ok(())
+            })
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| query::identity_sync(txn, &identifier, 1714509999))
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let synced_at =
+                    query::identity_synced_at(txn, &identifier).expect("failed to get synced at");
+
+                assert_eq!(1714509999, synced_at.expect("synced_at was none!"));
+
+                Ok(())
+            })
+            .expect("transaction failed");
+    }
+
+    #[test]
+    fn query_identity_operation() {
+        let connection = Connection::new(":memory:").expect("connection failed");
+
+        let identifier = random_id();
+        let operation0: Vec<u8> = vec![0, 1, 2, 3];
+        let operation1: Vec<u8> = vec![4, 5, 6, 7];
+
+        connection
+            .transaction(|txn| query::identity_create(txn, &identifier, 1, 1714500792))
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| query::identity_operation_create(txn, &identifier, 0, &operation0))
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let logs = query::identity_operation_log(txn, &identifier)
+                    .expect("failed to get synced at");
+
+                assert_eq!(1, logs.len());
+                assert_eq!(operation0, logs[0]);
+
+                Ok(())
+            })
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| query::identity_operation_create(txn, &identifier, 1, &operation1))
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let logs = query::identity_operation_log(txn, &identifier)
+                    .expect("failed to get synced at");
+
+                assert_eq!(2, logs.len());
+                assert_eq!(operation0, logs[0]);
+                assert_eq!(operation1, logs[1]);
+
+                Ok(())
+            })
+            .expect("transaction failed");
+    }
+
+    #[test]
+    fn query_keypair_association() {
+        let connection = Connection::new(":memory:").expect("connection failed");
+
+        let identifier_sk = signing::KeyPair::new();
+        let invocation_sk = signing::KeyPair::new();
+
+        connection
+            .transaction(|txn| {
+                query::identity_create(txn, identifier_sk.address(), 0, crate::time::unix())?;
+                query::keypair_create(txn, identifier_sk.clone(), 0, crate::time::unix())?;
+                query::keypair_create(txn, invocation_sk.clone(), 0, crate::time::unix())?;
+                query::keypair_assign(txn, identifier_sk.address(), 256)?;
+                query::keypair_assign(txn, invocation_sk.address(), 16)?;
+                query::keypair_associate(txn, identifier_sk.address(), invocation_sk.address(), 0)
+            })
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let keys: Vec<signing::KeyPair> =
+                    query::keypair_associated_with(txn, identifier_sk.address(), 32)?;
+                assert_eq!(keys.len(), 0);
+
+                let keys: Vec<signing::KeyPair> =
+                    query::keypair_associated_with(txn, identifier_sk.address(), 16)?;
+                assert_eq!(keys.len(), 1);
+
+                Ok(())
+            })
+            .expect("transaction failed");
+    }
 
     #[test]
     fn query_inbox_queue() {

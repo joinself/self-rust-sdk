@@ -43,6 +43,75 @@ pub fn schema_create_keypairs(txn: &Transaction) {
     stmt.execute().expect("failed to execute statement");
 }
 
+pub fn schema_create_keypair_associations(txn: &Transaction) {
+    if table_exists(txn, "keypair_associations") {
+        print!("keypair_associations exists!");
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE keypair_associations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity_address INTEGER NOT NULL,
+                keypair_address INTEGER NOT NULL,
+                sequence INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_keypair_associations_keypair
+            ON keypair_associations (keypair);
+            CREATE INDEX idx_keypair_associations_identity
+            ON keypair_associations (identity);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
+pub fn schema_create_identities(txn: &Transaction) {
+    if table_exists(txn, "identities") {
+        print!("identities exists!");
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE identities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address INTEGER NOT NULL,
+                status INTEGER NOT NULL,
+                discovered_at INTEGER NOT NULL,
+                synced_at INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_identities_address
+            ON identities (address);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
+pub fn schema_create_identity_operations(txn: &Transaction) {
+    if table_exists(txn, "identity_operations") {
+        print!("identity_operations exists!");
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE identity_operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address INTEGER NOT NULL,
+                sequence INTEGER NOT NULL,
+                operation BLOB NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_identity_operations_address
+            ON identity_operations (address, sequence);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
 pub fn schema_create_groups(txn: &Transaction) {
     if table_exists(txn, "groups") {
         print!("groups exists!");

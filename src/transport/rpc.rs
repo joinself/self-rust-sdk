@@ -9,7 +9,7 @@ use crate::crypto::pow;
 use crate::error::SelfError;
 use crate::protocol::rpc::{
     AcquireRequest, AcquireResponse, ApiClient, ExecuteRequest, ProofOfWork, PublishRequest,
-    Request, RequestHeader, ResponseStatus, Version,
+    Request, RequestHeader, ResolveRequest, ResolveResponse, ResponseStatus, Version,
 };
 
 pub struct Rpc {
@@ -49,6 +49,55 @@ impl Rpc {
         Ok(Rpc { client, runtime })
     }
 
+    pub fn resolve(&self, id: &[u8], from: u32) -> Result<Vec<Vec<u8>>, SelfError> {
+        let (tx, rx) = channel::bounded(1);
+
+        let id = id.to_vec();
+
+        let mut client = self.client.clone();
+        let runtime = self.runtime.clone();
+
+        let resolve = ResolveRequest { id, from }.encode_to_vec();
+
+        let request = Request {
+            header: Some(RequestHeader {
+                version: Version::V1 as i32,
+            }),
+            content: resolve,
+            authorization: None,
+            proof_of_work: None,
+        };
+
+        runtime.spawn(async move {
+            tx.send(client.resolve(request).await).unwrap();
+        });
+
+        let response = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(response) => match response {
+                Ok(response) => response.into_inner(),
+                Err(_) => return Err(SelfError::RpcRequestFailed),
+            },
+            Err(err) => {
+                println!("rpc: {}", err);
+                return Err(SelfError::RpcRequestTimeout);
+            }
+        };
+
+        if let Some(header) = response.header {
+            if header.status > 204 {
+                println!("rpc: request failed with '{}'", header.message);
+                return Err(rpc_error_status(header.status));
+            }
+        }
+
+        let resolve = match ResolveResponse::decode(response.content.as_ref()) {
+            Ok(resolve) => resolve,
+            Err(_) => return Err(SelfError::RpcBadRequest),
+        };
+
+        Ok(resolve.log)
+    }
+
     pub fn execute(&self, id: &[u8], operation: &[u8]) -> Result<(), SelfError> {
         let (tx, rx) = channel::bounded(1);
 
@@ -58,18 +107,22 @@ impl Rpc {
         let mut client = self.client.clone();
         let runtime = self.runtime.clone();
 
+        let execute = ExecuteRequest { id, operation }.encode_to_vec();
+        let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&execute);
+
+        let request = Request {
+            header: Some(RequestHeader {
+                version: Version::V1 as i32,
+            }),
+            content: execute,
+            authorization: None,
+            proof_of_work: Some(ProofOfWork {
+                hash: pow_hash,
+                nonce: pow_nonce,
+            }),
+        };
+
         runtime.spawn(async move {
-            let execute = ExecuteRequest { id, operation }.encode_to_vec();
-
-            let request = Request {
-                header: Some(RequestHeader {
-                    version: Version::V1 as i32,
-                }),
-                content: execute,
-                authorization: None,
-                proof_of_work: None,
-            };
-
             tx.send(client.execute(request).await).unwrap();
         });
 
@@ -103,37 +156,31 @@ impl Rpc {
         let mut client = self.client.clone();
         let runtime = self.runtime.clone();
 
+        let publish = PublishRequest { id, keys }.encode_to_vec();
+        let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&publish);
+
+        let request = Request {
+            header: Some(RequestHeader {
+                version: Version::V1 as i32,
+            }),
+            content: publish,
+            authorization: None,
+            proof_of_work: Some(ProofOfWork {
+                hash: pow_hash,
+                nonce: pow_nonce,
+            }),
+        };
+
         runtime.spawn(async move {
-            let publish = PublishRequest { id, keys }.encode_to_vec();
-            let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&publish);
-
-            let request = Request {
-                header: Some(RequestHeader {
-                    version: Version::V1 as i32,
-                }),
-                content: publish,
-                authorization: None,
-                proof_of_work: Some(ProofOfWork {
-                    hash: pow_hash,
-                    nonce: pow_nonce,
-                }),
-            };
-
             tx.send(client.publish(request).await).unwrap();
         });
 
         let response = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(response) => match response {
                 Ok(response) => response.into_inner(),
-                Err(err) => {
-                    println!("error: {:?}", err);
-                    return Err(SelfError::RpcRequestFailed);
-                }
+                Err(_) => return Err(SelfError::RpcRequestFailed),
             },
-            Err(err) => {
-                println!("rpc: {}", err);
-                return Err(SelfError::RpcRequestTimeout);
-            }
+            Err(_) => return Err(SelfError::RpcRequestTimeout),
         };
 
         if let Some(header) = response.header {
@@ -155,22 +202,22 @@ impl Rpc {
         let mut client = self.client.clone();
         let runtime = self.runtime.clone();
 
+        let acquire = AcquireRequest { id, by }.encode_to_vec();
+        let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&acquire);
+
+        let request = Request {
+            header: Some(RequestHeader {
+                version: Version::V1 as i32,
+            }),
+            content: acquire,
+            authorization: None,
+            proof_of_work: Some(ProofOfWork {
+                hash: pow_hash,
+                nonce: pow_nonce,
+            }),
+        };
+
         runtime.spawn(async move {
-            let acquire = AcquireRequest { id, by }.encode_to_vec();
-            let (pow_hash, pow_nonce) = pow::ProofOfWork::new(8).calculate(&acquire);
-
-            let request = Request {
-                header: Some(RequestHeader {
-                    version: Version::V1 as i32,
-                }),
-                content: acquire,
-                authorization: None,
-                proof_of_work: Some(ProofOfWork {
-                    hash: pow_hash,
-                    nonce: pow_nonce,
-                }),
-            };
-
             tx.send(client.acquire(request).await).unwrap();
         });
 

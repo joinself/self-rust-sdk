@@ -1011,8 +1011,8 @@ impl Default for Hashgraph {
 
 #[cfg(test)]
 mod tests {
-    use super::Hashgraph;
     use crate::error::SelfError;
+    use crate::hashgraph::{Hashgraph, Role};
     use crate::keypair::signing::KeyPair;
     use crate::keypair::{exchange, signing};
     use crate::protocol::hashgraph;
@@ -1030,13 +1030,10 @@ mod tests {
         let operation = graph
             .create()
             .id(identifier_key.address())
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
-            .grant_embedded(
-                authentication_key.address(),
-                hashgraph::Role::Authentication,
-            )
-            .grant_embedded(assertion_key.address(), hashgraph::Role::Assertion)
-            .grant_embedded(agreement_key.address(), hashgraph::Role::KeyAgreement)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
+            .grant_embedded(authentication_key.address(), Role::Authentication)
+            .grant_embedded(assertion_key.address(), Role::Assertion)
+            .grant_embedded(agreement_key.address(), Role::KeyAgreement)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .sign(&authentication_key)
@@ -1066,13 +1063,10 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
-            .grant_embedded(
-                authentication_key.address(),
-                hashgraph::Role::Authentication,
-            )
-            .grant_embedded(assertion_key.address(), hashgraph::Role::Assertion)
-            .grant_embedded(agreement_key.address(), hashgraph::Role::KeyAgreement)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
+            .grant_embedded(authentication_key.address(), Role::Authentication)
+            .grant_embedded(assertion_key.address(), Role::Assertion)
+            .grant_embedded(agreement_key.address(), Role::KeyAgreement)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .sign(&authentication_key)
@@ -1090,7 +1084,7 @@ mod tests {
             .timestamp(now + 1)
             .grant_embedded(
                 multirole_key.address(),
-                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+                Role::Verification | Role::Authentication,
             )
             .sign(&invocation_key)
             .sign(&multirole_key)
@@ -1107,10 +1101,7 @@ mod tests {
             .timestamp(now + 2)
             .modify(
                 multirole_key.address(),
-                hashgraph::Role::Verification
-                    | hashgraph::Role::Authentication
-                    | hashgraph::Role::Assertion
-                    | hashgraph::Role::Invocation,
+                Role::Verification | Role::Authentication | Role::Assertion | Role::Invocation,
             )
             .revoke(invocation_key.address(), Some(now + 2))
             .sign(&invocation_key)
@@ -1136,7 +1127,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1151,7 +1142,7 @@ mod tests {
             .id(identifier_key.address())
             .timestamp(now + 1)
             .recover(Some(now + 1))
-            .grant_embedded(recovery_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(recovery_key.address(), Role::Invocation)
             .sign(&invocation_key)
             .sign(&recovery_key)
             .build()
@@ -1175,7 +1166,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1213,7 +1204,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1227,7 +1218,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&authenticaton_key)
             .build()
@@ -1252,10 +1243,10 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .grant_embedded(
                 multirole_key.address(),
-                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+                Role::Verification | Role::Authentication,
             )
             .sign(&identifier_key)
             .sign(&invocation_key)
@@ -1273,7 +1264,7 @@ mod tests {
             .timestamp(now + 1)
             .modify(
                 multirole_key.address(),
-                hashgraph::Role::Verification | hashgraph::Role::Assertion,
+                Role::Verification | Role::Assertion,
             )
             .sign(&invocation_key)
             .build()
@@ -1298,8 +1289,8 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
-            .grant_embedded(assertion_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
+            .grant_embedded(assertion_key.address(), Role::Assertion)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .sign(&assertion_key)
@@ -1338,7 +1329,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1353,7 +1344,7 @@ mod tests {
             .id(identifier_key.address())
             .sequence(2)
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&authenticaton_key)
             .build()
@@ -1379,7 +1370,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1393,7 +1384,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&authenticaton_key)
             .build()
@@ -1408,7 +1399,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now - 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&authenticaton_key)
             .build()
@@ -1434,7 +1425,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1451,7 +1442,7 @@ mod tests {
             .id(identifier_key.address())
             .timestamp(now + 1)
             .previous(&invalid_previous_hash)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&authenticaton_key)
             .build()
@@ -1478,7 +1469,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1495,7 +1486,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&bad_signing_key)
             .sign(&authenticaton_key)
             .build()
@@ -1510,7 +1501,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .build()
             .expect("operation invalid");
@@ -1524,7 +1515,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&authenticaton_key)
             .sign(&authenticaton_key)
@@ -1553,8 +1544,8 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
-            .grant_embedded(assertion_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
+            .grant_embedded(assertion_key.address(), Role::Assertion)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .sign(&assertion_key)
@@ -1572,7 +1563,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&bad_signing_key)
             .sign(&authenticaton_key)
             .build()
@@ -1587,7 +1578,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&assertion_key)
             .sign(&authenticaton_key)
@@ -1615,7 +1606,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1629,7 +1620,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&authenticaton_key)
             .build()
             .expect("operation invalid");
@@ -1643,7 +1634,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(replacement_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(replacement_key.address(), Role::Invocation)
             .revoke(invocation_key.address(), None)
             .sign(&invocation_key)
             .sign(&replacement_key)
@@ -1658,7 +1649,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 2)
-            .grant_embedded(authenticaton_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(authenticaton_key.address(), Role::Authentication)
             .sign(&invocation_key)
             .sign(&authenticaton_key)
             .build()
@@ -1684,7 +1675,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -1699,7 +1690,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&invocation_key)
             .build()
             .expect("operation invalid");
@@ -1714,8 +1705,8 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .grant_embedded(duplicate_key.address(), hashgraph::Role::Assertion)
-            .grant_embedded(duplicate_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(duplicate_key.address(), Role::Assertion)
+            .grant_embedded(duplicate_key.address(), Role::Assertion)
             .sign(&invocation_key)
             .sign(&duplicate_key)
             .build()
@@ -1733,7 +1724,7 @@ mod tests {
             .timestamp(now + 1)
             .grant_embedded(
                 duplicate_key.address(),
-                hashgraph::Role::Assertion | hashgraph::Role::Authentication,
+                Role::Assertion | Role::Authentication,
             )
             .sign(&invocation_key)
             .sign(&duplicate_key)
@@ -1764,7 +1755,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 2)
-            .grant_embedded(duplicate_key.address(), hashgraph::Role::Assertion)
+            .grant_embedded(duplicate_key.address(), Role::Assertion)
             .sign(&invocation_key)
             .sign(&duplicate_key)
             .build()
@@ -1792,9 +1783,9 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
-            .grant_embedded(assertion_key.address(), hashgraph::Role::Assertion)
-            .grant_embedded(revoked_key.address(), hashgraph::Role::Authentication)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
+            .grant_embedded(assertion_key.address(), Role::Assertion)
+            .grant_embedded(revoked_key.address(), Role::Authentication)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .sign(&assertion_key)
@@ -1927,9 +1918,9 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
-            .grant_embedded(modified_key.address(), hashgraph::Role::Assertion)
-            .grant_embedded(verification_key.address(), hashgraph::Role::Verification)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
+            .grant_embedded(modified_key.address(), Role::Assertion)
+            .grant_embedded(verification_key.address(), Role::Verification)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .sign(&modified_key)
@@ -1946,7 +1937,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .modify(unknown_key.address(), hashgraph::Role::Invocation)
+            .modify(unknown_key.address(), Role::Invocation)
             .sign(&invocation_key)
             .build()
             .expect("operation invalid");
@@ -1963,11 +1954,11 @@ mod tests {
             .timestamp(now + 1)
             .modify(
                 verification_key.address(),
-                hashgraph::Role::Verification | hashgraph::Role::Invocation,
+                Role::Verification | Role::Invocation,
             )
             .modify(
                 verification_key.address(),
-                hashgraph::Role::Verification | hashgraph::Role::Invocation,
+                Role::Verification | Role::Invocation,
             )
             .sign(&invocation_key)
             .build()
@@ -1985,7 +1976,7 @@ mod tests {
             .timestamp(now + 1)
             .modify(
                 modified_key.address(),
-                hashgraph::Role::Assertion | hashgraph::Role::Authentication,
+                Role::Assertion | Role::Authentication,
             )
             .sign(&invocation_key)
             .build()
@@ -2001,7 +1992,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now + 1)
-            .modify(verification_key.address(), hashgraph::Role::Verification)
+            .modify(verification_key.address(), Role::Verification)
             .sign(&invocation_key)
             .build()
             .expect("operation invalid");
@@ -2032,7 +2023,7 @@ mod tests {
             .timestamp(now + 2)
             .modify(
                 verification_key.address(),
-                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+                Role::Verification | Role::Authentication,
             )
             .sign(&invocation_key)
             .build()
@@ -2064,7 +2055,7 @@ mod tests {
             .timestamp(now + 4)
             .modify(
                 modified_key.address(),
-                hashgraph::Role::Verification | hashgraph::Role::Authentication,
+                Role::Verification | Role::Authentication,
             )
             .sign(&invocation_key)
             .build()
@@ -2089,7 +2080,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -2173,7 +2164,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()
@@ -2256,7 +2247,7 @@ mod tests {
             .create()
             .id(identifier_key.address())
             .timestamp(now)
-            .grant_embedded(invocation_key.address(), hashgraph::Role::Invocation)
+            .grant_embedded(invocation_key.address(), Role::Invocation)
             .sign(&identifier_key)
             .sign(&invocation_key)
             .build()

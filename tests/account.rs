@@ -3,7 +3,10 @@ use std::{
     time::Duration,
 };
 
-use self_sdk::account::{Account, MessagingCallbacks};
+use self_sdk::{
+    account::{Account, KeyRole, MessagingCallbacks},
+    hashgraph::{Hashgraph, Role},
+};
 use self_test_mock::Server;
 
 static INIT: Once = Once::new();
@@ -16,6 +19,162 @@ pub fn test_server() {
             SERVER = Some(Server::new(3000, 3001));
         });
     }
+}
+
+#[test]
+fn register_identity() {
+    test_server();
+
+    let ws_url = "ws://127.0.0.1:3001/";
+    let rpc_url = "http://127.0.0.1:3000/";
+    let mut alice = Account::new();
+    let alice_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |_| {}),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |_| {}),
+    };
+
+    alice
+        .configure(rpc_url, ws_url, ":memory:", b"", alice_callbacks)
+        .expect("failed to configure account");
+
+    // create a new document for alice and register a new identity
+    let alice_identifier_key = alice
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+    let alice_invocation_key = alice
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+    let alice_multirole_key = alice
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+
+    let document = Hashgraph::new();
+
+    let mut operation = document
+        .create()
+        .id(alice_identifier_key.address())
+        .grant_embedded(alice_invocation_key.address(), Role::Invocation)
+        .grant_embedded(
+            alice_multirole_key.address(),
+            Role::Verification | Role::Authentication | Role::Assertion | Role::Messaging,
+        )
+        .sign_with(&alice_identifier_key)
+        .sign_with(&alice_invocation_key)
+        .sign_with(&alice_multirole_key)
+        .finish();
+
+    // execute the operation creating the identity
+    alice
+        .identity_execute(&mut operation)
+        .expect("failed to execute identity operation");
+
+    // resolve the identity's hashgraph
+    let document = alice
+        .identity_resolve(&alice_identifier_key)
+        .expect("failed to resolve identity");
+
+    // check that it has the right roles
+    assert!(document.key_has_roles(alice_invocation_key.address(), Role::Invocation as u64));
+    assert!(document.key_has_roles(alice_multirole_key.address(), Role::Verification as u64));
+    assert!(document.key_has_roles(
+        alice_multirole_key.address(),
+        Role::Authentication | Role::Assertion | Role::Messaging
+    ));
+
+    let mut bobby = Account::new();
+    let bobby_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |_| {}),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |_| {}),
+    };
+
+    bobby
+        .configure(rpc_url, ws_url, ":memory:", b"", bobby_callbacks)
+        .expect("failed to configure account");
+
+    // register a new account with bobby
+    let bobby_identifier_key = bobby
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+    let bobby_invocation_key = bobby
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+    let bobby_multirole_key = bobby
+        .keypair_signing_create()
+        .expect("failed to create keypair");
+
+    let document = Hashgraph::new();
+
+    let mut operation = document
+        .create()
+        .id(bobby_identifier_key.address())
+        .grant_embedded(bobby_invocation_key.address(), Role::Invocation)
+        .grant_embedded(
+            bobby_multirole_key.address(),
+            Role::Verification | Role::Authentication | Role::Assertion | Role::Messaging,
+        )
+        .sign_with(&bobby_identifier_key)
+        .sign_with(&bobby_invocation_key)
+        .sign_with(&bobby_multirole_key)
+        .finish();
+
+    bobby
+        .identity_execute(&mut operation)
+        .expect("failed to execute identity operation");
+
+    // resolve his keys with alice's account
+    let document = alice
+        .identity_resolve(&bobby_identifier_key)
+        .expect("failed to resolve identity");
+
+    // check that it has the right roles
+    assert!(document.key_has_roles(bobby_invocation_key.address(), Role::Invocation as u64));
+    assert!(document.key_has_roles(bobby_multirole_key.address(), Role::Verification as u64));
+    assert!(document.key_has_roles(
+        bobby_multirole_key.address(),
+        Role::Authentication | Role::Assertion | Role::Messaging
+    ));
+
+    // update bobbys document to change his key's roles
+    let document = bobby
+        .identity_resolve(&bobby_identifier_key)
+        .expect("failed to resolve identity");
+    let bobby_invocation_keys = bobby
+        .keypair_signing_associated_with(&bobby_identifier_key, KeyRole::Invocation)
+        .expect("failed to find keys");
+
+    let mut operation = document
+        .create()
+        .timestamp((self_sdk::time::now() + std::time::Duration::from_secs(1)).timestamp())
+        .modify(
+            bobby_multirole_key.address(),
+            Role::Verification | Role::Authentication | Role::Messaging,
+        )
+        .sign_with(&bobby_invocation_keys[0])
+        .finish();
+
+    bobby
+        .identity_execute(&mut operation)
+        .expect("failed to execute operation");
+
+    // try to resolve the changes from alices account
+    let document = alice
+        .identity_resolve(&bobby_identifier_key)
+        .expect("failed to resolve identity");
+
+    // as we have already have a valid cache entry for bobby, we don't pull down his latest changes
+    // as we are inside the cache validity window of 5 minutes. as such, his key's roles won't have changed
+    assert!(document.key_has_roles(
+        bobby_multirole_key.address(),
+        Role::Authentication | Role::Assertion | Role::Messaging
+    ));
 }
 
 #[test]

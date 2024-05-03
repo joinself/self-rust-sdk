@@ -1,19 +1,17 @@
-use crate::account::{operation, Commit, KeyPackage, Message, Welcome};
+use crate::account::{operation, Commit, KeyPackage, KeyRole, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
+use crate::hashgraph::Hashgraph;
+use crate::hashgraph::Operation;
 use crate::keypair::exchange;
 use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::storage::{query, Connection};
-use crate::time;
-use crate::token;
 use crate::transport::rpc::Rpc;
-use crate::transport::websocket::{self, Callbacks, Subscription, Websocket};
+use crate::transport::websocket::{self, Callbacks, Websocket};
 
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
-
-use super::keypair::KeyRole;
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
@@ -96,7 +94,7 @@ impl Account {
     }
 
     /// generates and stores a new signing keypair
-    pub fn keypair_signing_create(&self, roles: KeyRole) -> Result<signing::PublicKey, SelfError> {
+    pub fn keypair_signing_create(&self) -> Result<signing::PublicKey, SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -107,9 +105,8 @@ impl Account {
 
         unsafe {
             (*storage).transaction(|txn| {
-                // TODO think about how what roles actually means here...
-                query::keypair_create(txn, signing_kp, roles as u64, crate::time::unix())?;
-
+                // create a key with no roles assigned
+                query::keypair_create(txn, signing_kp, 0, crate::time::unix())?;
                 Ok(())
             })?;
         }
@@ -118,10 +115,7 @@ impl Account {
     }
 
     /// generates and stores a new signing keypair
-    pub fn keypair_exchange_create(
-        &self,
-        roles: KeyRole,
-    ) -> Result<exchange::PublicKey, SelfError> {
+    pub fn keypair_exchange_create(&self) -> Result<exchange::PublicKey, SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -132,9 +126,8 @@ impl Account {
 
         unsafe {
             (*storage).transaction(|txn| {
-                // TODO think about how what roles actually means here...
-                query::keypair_create(txn, exchange_kp, roles as u64, crate::time::unix())?;
-
+                // create a key with no roles assigned
+                query::keypair_create(txn, exchange_kp, 0, crate::time::unix())?;
                 Ok(())
             })?;
         }
@@ -142,8 +135,37 @@ impl Account {
         Ok(exchange_pk)
     }
 
-    /// opens a new messaging inbox and subscribes to it with the provided key
-    pub fn inbox_open(&self) -> Result<PublicKey, SelfError> {
+    /// looks up keys assigned to an identity with a given set of roles
+    pub fn keypair_signing_associated_with(
+        &self,
+        did_address: &PublicKey,
+        roles: KeyRole,
+    ) -> Result<Vec<signing::PublicKey>, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let mut public_keys: Vec<signing::PublicKey> = Vec::new();
+
+        unsafe {
+            (*storage).transaction(|txn| {
+                for kp in query::keypair_associated_with::<signing::KeyPair>(
+                    txn,
+                    did_address.address(),
+                    roles as u64,
+                )? {
+                    public_keys.push(kp.public().to_owned());
+                }
+                Ok(())
+            })?;
+        }
+
+        Ok(public_keys)
+    }
+
+    /// resolves a did document for a given address
+    pub fn identity_resolve(&self, did_address: &PublicKey) -> Result<Hashgraph, SelfError> {
         let rpc = self.rpc.load(Ordering::SeqCst);
         if rpc.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -154,78 +176,37 @@ impl Account {
             return Err(SelfError::AccountNotConfigured);
         };
 
+        unsafe { operation::identity_resolve(&(*storage), &(*rpc), did_address.address()) }
+    }
+
+    /// execute an operation to update an existing document
+    pub fn identity_execute(&self, operation: &mut Operation) -> Result<(), SelfError> {
+        let rpc = self.rpc.load(Ordering::SeqCst);
+        if rpc.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::identity_execute(&(*storage), &(*rpc), operation) }
+    }
+
+    /// opens a new messaging inbox and subscribes to it with the provided key
+    pub fn inbox_open(&self) -> Result<PublicKey, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
         let websocket = self.websocket.load(Ordering::SeqCst);
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        let mut signing_kp: Option<KeyPair> = None;
-        let mut subscription_token: Option<token::Subscription> = None;
-        let mut key_packages: Vec<Vec<u8>> = Vec::new();
-
-        unsafe {
-            (*storage).transaction(|txn| {
-                signing_kp = Some(KeyPair::new());
-                query::keypair_create(txn, signing_kp.clone().unwrap(), 0, time::unix())?;
-
-                if let Some(signing_kp) = &signing_kp {
-                    // TODO not sure this is actually needed
-                    subscription_token = Some(token::Subscription::new(
-                        signing_kp,
-                        signing_kp.public(),
-                        time::unix(),
-                        i64::MAX,
-                    ));
-
-                    query::token_create(
-                        txn,
-                        query::Token::Subscription,
-                        signing_kp.address(),
-                        signing_kp.address(),
-                        signing_kp.address(),
-                        subscription_token.as_ref().unwrap().as_bytes(),
-                    )?;
-
-                    // setup the mls credentials and generate some key packages
-                    key_packages = e2e::mls_inbox_setup(txn, signing_kp, 4)?;
-
-                    // TODO mark this keypair as used as a messaging inbox
-                    // TODO validate this keypair is not:
-                    // 1. already used as an inbox
-                    // 2. if attached to an did, it must have an authentication role
-
-                    // TODO update metrics on inbox subscription time
-                };
-
-                Ok(())
-            })?;
-        }
-
-        let signing_kp = match signing_kp {
-            Some(signing_kp) => signing_kp,
-            None => return Err(SelfError::KeyPairNotFound),
-        };
-
-        let subscription_token = match subscription_token {
-            Some(subscription_token) => subscription_token,
-            None => return Err(SelfError::KeyPairNotFound),
-        };
-
-        unsafe {
-            // publish the key packages
-            (*rpc).publish(signing_kp.address(), &key_packages)?;
-
-            // open & subscribe...
-            (*websocket).open(&signing_kp)?;
-            (*websocket).subscribe(&[Subscription {
-                to_address: signing_kp.public().to_owned(),
-                as_address: signing_kp.to_owned(),
-                from: time::unix(),
-                token: Some(token::Token::Subscription(subscription_token)),
-            }])?;
-        }
-
-        Ok(signing_kp.public().to_owned())
+        unsafe { operation::inbox_open(&(*storage), &(*websocket)) }
     }
 
     /// permanently close an inbox
@@ -322,87 +303,7 @@ impl Account {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        let mut as_address: Option<KeyPair> = None;
-        let mut from_address: Option<PublicKey> = None;
-        let mut group_address: Option<PublicKey> = None;
-        let mut ciphertext = Vec::new();
-        let sequence: u64 = 0;
-
-        unsafe {
-            (*storage).transaction(|txn| {
-                // TODO determine is this is a group, did or inbox address
-                group_address = query::group_with(txn, to_address.address(), 1)?
-                    .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
-
-                let group_address = match &group_address {
-                    Some(group_address) => group_address,
-                    None => return Err(SelfError::KeyPairNotFound),
-                };
-
-                from_address = query::group_as(txn, group_address.address(), 1)?
-                    .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
-
-                let from_address = match &from_address {
-                    Some(from_address) => from_address,
-                    None => return Err(SelfError::KeyPairNotFound),
-                };
-
-                as_address = query::keypair_lookup(txn, from_address.address())?;
-                if let Some(as_address) = &as_address {
-                    ciphertext =
-                        e2e::mls_group_encrypt(txn, group_address.address(), as_address, content)?;
-
-                    // TODO load sequence...
-
-                    query::outbox_queue(
-                        txn,
-                        query::Event::Message,
-                        as_address.address(),
-                        group_address.address(),
-                        &ciphertext,
-                        sequence,
-                    )?;
-                }
-
-                Ok(())
-            })?;
-        }
-
-        let as_address = match &as_address {
-            Some(as_address) => as_address,
-            None => return Err(SelfError::KeyPairNotFound),
-        };
-
-        let group_address = match &group_address {
-            Some(group_address) => group_address,
-            None => return Err(SelfError::KeyPairNotFound),
-        };
-
-        let payload =
-            websocket::assemble_payload_message(as_address, group_address, 0, &ciphertext)?;
-
-        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
-
-        unsafe {
-            (*websocket).send(
-                as_address,
-                &payload,
-                None,
-                Arc::new(move |resp| {
-                    resp_tx.send(resp).unwrap();
-                }),
-            );
-        }
-
-        resp_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
-
-        unsafe {
-            (*storage).transaction(|txn| {
-                query::outbox_dequeue(txn, as_address.address(), group_address.address(), sequence)
-            })
-        }
+        unsafe { operation::message_send(&(*storage), &(*websocket), to_address, content) }
     }
 
     /// creates a new group
@@ -416,50 +317,8 @@ impl Account {
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
-        let group_kp = KeyPair::new();
-        let group_pk = group_kp.public().to_owned();
-        let mut as_keypair: Option<KeyPair> = None;
 
-        let subscription_token =
-            token::Subscription::new(&group_kp, as_address, time::unix(), i64::MAX);
-
-        unsafe {
-            (*storage).transaction(|txn| {
-                // TODO think about how what roles actually means here...
-                as_keypair = match query::keypair_lookup(txn, as_address.address())? {
-                    Some(as_keypair) => Some(as_keypair),
-                    None => return Err(SelfError::KeyPairNotFound),
-                };
-
-                query::keypair_create(txn, group_kp.clone(), 0, crate::time::unix())?;
-                query::group_create(txn, group_kp.address(), 2)?;
-                query::group_member_add(txn, group_kp.address(), as_address.address())?;
-                e2e::mls_group_create(txn, group_kp.address(), as_keypair.as_ref().unwrap())?;
-                query::token_create(
-                    txn,
-                    query::Token::Subscription,
-                    group_kp.address(),
-                    as_address.address(),
-                    group_kp.address(),
-                    subscription_token.as_bytes(),
-                )
-            })?;
-
-            let as_keypair = match as_keypair {
-                Some(as_keypair) => as_keypair,
-                None => return Err(SelfError::KeyPairNotFound),
-            };
-
-            (*websocket).open(&group_kp)?;
-            (*websocket).subscribe(&[Subscription {
-                to_address: group_kp.public().to_owned(),
-                as_address: as_keypair,
-                from: time::unix(),
-                token: Some(token::Token::Subscription(subscription_token)),
-            }])?;
-        }
-
-        Ok(group_pk)
+        unsafe { operation::group_create(&(*storage), &(*websocket), as_address) }
     }
 
     /// list all groups
