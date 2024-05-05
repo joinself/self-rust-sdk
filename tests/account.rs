@@ -4,7 +4,7 @@ use std::{
 };
 
 use self_sdk::{
-    account::{Account, KeyRole, MessagingCallbacks},
+    account::{Account, MessagingCallbacks},
     hashgraph::{Hashgraph, Role},
 };
 use self_test_mock::Server;
@@ -147,7 +147,7 @@ fn register_identity() {
         .identity_resolve(&bobby_identifier_key)
         .expect("failed to resolve identity");
     let bobby_invocation_keys = bobby
-        .keypair_signing_associated_with(&bobby_identifier_key, KeyRole::Invocation)
+        .keypair_signing_associated_with(&bobby_identifier_key, Role::Invocation)
         .expect("failed to find keys");
 
     let mut operation = document

@@ -1,8 +1,7 @@
-use crate::account::{operation, Commit, KeyPackage, KeyRole, Message, Welcome};
+use crate::account::{operation, Commit, KeyPackage, Message, Welcome};
 use crate::crypto::e2e;
 use crate::error::SelfError;
-use crate::hashgraph::Hashgraph;
-use crate::hashgraph::Operation;
+use crate::hashgraph::{Hashgraph, Operation, RoleSet};
 use crate::keypair::exchange;
 use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::storage::{query, Connection};
@@ -136,11 +135,14 @@ impl Account {
     }
 
     /// looks up keys assigned to an identity with a given set of roles
-    pub fn keypair_signing_associated_with(
+    pub fn keypair_signing_associated_with<T>(
         &self,
         did_address: &PublicKey,
-        roles: KeyRole,
-    ) -> Result<Vec<signing::PublicKey>, SelfError> {
+        roles: T,
+    ) -> Result<Vec<signing::PublicKey>, SelfError>
+    where
+        T: RoleSet,
+    {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -153,7 +155,7 @@ impl Account {
                 for kp in query::keypair_associated_with::<signing::KeyPair>(
                     txn,
                     did_address.address(),
-                    roles as u64,
+                    roles.roles(),
                 )? {
                     public_keys.push(kp.public().to_owned());
                 }

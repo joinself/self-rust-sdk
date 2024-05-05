@@ -54,15 +54,23 @@ impl std::ops::BitOr<Role> for u64 {
 
 #[repr(u16)]
 pub enum Method {
-    Key = hashgraph::Method::Key.0,
     Aure = hashgraph::Method::Aure.0,
+    Key = hashgraph::Method::Key.0,
 }
 
 impl Method {
     pub fn into_method(&self) -> hashgraph::Method {
         match self {
-            Method::Key => hashgraph::Method::Key,
             Method::Aure => hashgraph::Method::Aure,
+            Method::Key => hashgraph::Method::Key,
+        }
+    }
+
+    pub fn from_u16(method: u16) -> Method {
+        match method {
+            0 => Method::Aure,
+            1 => Method::Key,
+            _ => unreachable!(),
         }
     }
 }
