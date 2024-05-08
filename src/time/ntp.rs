@@ -27,6 +27,10 @@ pub fn now() -> DateTime<Utc> {
     ts + offset
 }
 
+pub fn datetime(datetime: DateTime<Utc>) -> String {
+    datetime.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 fn update_ntp_offset() {
     loop {
         let stime = chrono::Utc::now();
@@ -92,5 +96,10 @@ mod tests {
     #[test]
     fn get_unix() {
         unix();
+    }
+
+    #[test]
+    fn get_datetime() {
+        println!("{}", datetime(now()));
     }
 }
