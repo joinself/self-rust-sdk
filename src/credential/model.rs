@@ -246,6 +246,10 @@ impl VerifiableCredential {
         decode_datetime(&self.valid_from)
     }
 
+    pub fn created(&self) -> Result<DateTime<Utc>, SelfError> {
+        decode_datetime(&self.proof.created)
+    }
+
     pub fn signing_key(&self) -> Result<PublicKey, SelfError> {
         match Address::decode(&self.proof.verification_method)?.signing_key() {
             Some(signer) => Ok(signer.to_owned()),
@@ -278,9 +282,13 @@ impl VerifiableCredential {
             Err(_) => return Err(SelfError::CredentialSignatureInvalid),
         };
 
-        self.issuer()?;
         self.valid_from()?;
+        let issuer = self.issuer()?;
         let signing_key = self.signing_key()?;
+
+        if issuer.address().ne(&signing_key) {
+            return Err(SelfError::CredentialSignerMismatch);
+        }
 
         // TODO this copying is really not ideal...
         let credential = Credential {
@@ -330,6 +338,8 @@ pub fn default(default: &[&str]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::SubsecRound;
+
     use crate::{
         credential::{
             did::Address, VerifiableCredential, CRYPTO_SUITE_DEFAULT, PROOF_TYPE_DATA_INTEGRITY,
@@ -392,6 +402,7 @@ mod tests {
         let assertion_key = KeyPair::new();
         let subject_identifier = Address::key(subject_key.public());
         let issuer_identifier = Address::aure(issuer_key.public());
+        let current_time = now();
 
         let credential = CredentialBuilder::new()
             .context(default(CONTEXT_DEFAULT))
@@ -399,8 +410,8 @@ mod tests {
             .credential_subject(&subject_identifier)
             .credential_subject_claim("alumniOf", "Harvard")
             .issuer(&issuer_identifier)
-            .valid_from(now())
-            .sign_with(assertion_key.public(), now())
+            .valid_from(current_time)
+            .sign_with(assertion_key.public(), current_time)
             .finish()
             .expect("failed to create credential");
 
@@ -410,6 +421,7 @@ mod tests {
         let verifiable_credential = credential
             .sign(&assertion_key, now())
             .expect("credential sign failed");
+
         let encoded_credential = verifiable_credential
             .into_bytes()
             .expect("failed to encode credential");
@@ -431,11 +443,37 @@ mod tests {
         );
 
         assert_eq!(
+            verifiable_credential.credential_subject_claim("alumniOf"),
+            Some(&String::from("Harvard")),
+        );
+
+        assert_eq!(
             verifiable_credential
                 .issuer()
                 .expect("bad credential issuer")
                 .to_string(),
             issuer_identifier.to_string(),
         );
+
+        assert_eq!(
+            verifiable_credential
+                .valid_from()
+                .expect("bad valid from timestamp"),
+            current_time.trunc_subsecs(0),
+        );
+
+        assert_eq!(
+            verifiable_credential.signing_key().expect("invalid signer"),
+            assertion_key.public().to_owned(),
+        );
+
+        assert_eq!(
+            verifiable_credential
+                .created()
+                .expect("bad created timestamp"),
+            current_time.trunc_subsecs(0),
+        );
     }
+
+    // TODO add more tests for invalid credential validation and parsing
 }

@@ -35,9 +35,9 @@ pub fn datetime(datetime: DateTime<Utc>) -> String {
 
 pub fn decode_datetime(datetime: &str) -> Result<DateTime<Utc>, SelfError> {
     Ok(
-        chrono::DateTime::parse_from_str(datetime, "%Y-%m-%dT%H:%M:%SZ")
+        chrono::NaiveDateTime::parse_from_str(datetime, "%Y-%m-%dT%H:%M:%SZ")
             .map_err(|_| SelfError::TimeDatetimeInvalid)?
-            .to_utc(),
+            .and_utc(),
     )
 }
 
