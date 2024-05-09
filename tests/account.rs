@@ -43,13 +43,13 @@ fn register_identity() {
 
     // create a new document for alice and register a new identity
     let alice_identifier_key = alice
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let alice_invocation_key = alice
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let alice_multirole_key = alice
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
 
     let document = Hashgraph::new();
@@ -101,13 +101,13 @@ fn register_identity() {
 
     // register a new account with bobby
     let bobby_identifier_key = bobby
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let bobby_invocation_key = bobby
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let bobby_multirole_key = bobby
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
 
     let document = Hashgraph::new();
@@ -147,7 +147,7 @@ fn register_identity() {
         .identity_resolve(&bobby_identifier_key)
         .expect("failed to resolve identity");
     let bobby_invocation_keys = bobby
-        .keypair_signing_associated_with(&bobby_identifier_key, Role::Invocation)
+        .keychain_signing_associated_with(&bobby_identifier_key, Role::Invocation)
         .expect("failed to find keys");
 
     let mut operation = document

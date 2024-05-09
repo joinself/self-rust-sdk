@@ -93,7 +93,7 @@ impl Account {
     }
 
     /// generates and stores a new signing keypair
-    pub fn keypair_signing_create(&self) -> Result<signing::PublicKey, SelfError> {
+    pub fn keychain_signing_create(&self) -> Result<signing::PublicKey, SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -114,7 +114,7 @@ impl Account {
     }
 
     /// generates and stores a new signing keypair
-    pub fn keypair_exchange_create(&self) -> Result<exchange::PublicKey, SelfError> {
+    pub fn keychain_exchange_create(&self) -> Result<exchange::PublicKey, SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -135,7 +135,7 @@ impl Account {
     }
 
     /// looks up keys assigned to an identity with a given set of roles
-    pub fn keypair_signing_associated_with<T>(
+    pub fn keychain_signing_associated_with<T>(
         &self,
         did_address: &PublicKey,
         roles: T,
