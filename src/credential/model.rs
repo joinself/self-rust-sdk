@@ -218,9 +218,11 @@ impl VerifiableCredential {
         &self.credential_type
     }
 
+    /* 
     pub fn issuer(&self) -> &Address {
 
     }
+    */
 }
 
 #[derive(Serialize,Deserialize)]
