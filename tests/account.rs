@@ -5,7 +5,9 @@ use std::{
 
 use self_sdk::{
     account::{Account, MessagingCallbacks},
+    credential::{default, Address, CredentialBuilder, CONTEXT_DEFAULT, CREDENTIAL_DEFAULT},
     hashgraph::{Hashgraph, Role},
+    time::now,
 };
 use self_test_mock::Server;
 
@@ -27,6 +29,7 @@ fn register_identity() {
 
     let ws_url = "ws://127.0.0.1:3001/";
     let rpc_url = "http://127.0.0.1:3000/";
+
     let mut alice = Account::new();
     let alice_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|| {}),
@@ -43,13 +46,13 @@ fn register_identity() {
 
     // create a new document for alice and register a new identity
     let alice_identifier_key = alice
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let alice_invocation_key = alice
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let alice_multirole_key = alice
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
 
     let document = Hashgraph::new();
@@ -101,13 +104,13 @@ fn register_identity() {
 
     // register a new account with bobby
     let bobby_identifier_key = bobby
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let bobby_invocation_key = bobby
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
     let bobby_multirole_key = bobby
-        .keypair_signing_create()
+        .keychain_signing_create()
         .expect("failed to create keypair");
 
     let document = Hashgraph::new();
@@ -147,7 +150,7 @@ fn register_identity() {
         .identity_resolve(&bobby_identifier_key)
         .expect("failed to resolve identity");
     let bobby_invocation_keys = bobby
-        .keypair_signing_associated_with(&bobby_identifier_key, Role::Invocation)
+        .keychain_signing_associated_with(&bobby_identifier_key, Role::Invocation)
         .expect("failed to find keys");
 
     let mut operation = document
@@ -282,6 +285,159 @@ fn encrypted_messaging() {
         .recv_timeout(DEFAULT_TIMEOUT)
         .expect("failed to receive message");
     assert_eq!(message_from_bobby, b"hey alice");
+}
+
+#[test]
+fn credentials() {
+    test_server();
+
+    let ws_url = "ws://127.0.0.1:3001/";
+    let rpc_url = "http://127.0.0.1:3000/";
+
+    let mut alice = Account::new();
+    let alice_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |_| {}),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |_| {}),
+    };
+
+    alice
+        .configure(rpc_url, ws_url, ":memory:", b"", alice_callbacks)
+        .expect("failed to configure account");
+
+    // create a new document for alice and register a new identity
+    let alice_identifier_key = alice
+        .keychain_signing_create()
+        .expect("failed to create keypair");
+    let alice_invocation_key = alice
+        .keychain_signing_create()
+        .expect("failed to create keypair");
+    let alice_multirole_key = alice
+        .keychain_signing_create()
+        .expect("failed to create keypair");
+
+    let document = Hashgraph::new();
+
+    let mut operation = document
+        .create()
+        .id(alice_identifier_key.address())
+        .grant_embedded(alice_invocation_key.address(), Role::Invocation)
+        .grant_embedded(
+            alice_multirole_key.address(),
+            Role::Verification | Role::Authentication | Role::Assertion | Role::Messaging,
+        )
+        .sign_with(&alice_identifier_key)
+        .sign_with(&alice_invocation_key)
+        .sign_with(&alice_multirole_key)
+        .finish();
+
+    // execute the operation creating the identity
+    alice
+        .identity_execute(&mut operation)
+        .expect("failed to execute identity operation");
+
+    let mut bobby = Account::new();
+    let bobby_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |_| {}),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |_| {}),
+    };
+
+    bobby
+        .configure(rpc_url, ws_url, ":memory:", b"", bobby_callbacks)
+        .expect("failed to configure account");
+
+    // create a new link key for bobby
+    let bobby_link_key = bobby
+        .keychain_signing_create()
+        .expect("failed to create keypair");
+
+    // issue a credential from alice about bobby
+    let mut credential = CredentialBuilder::new()
+        .context(default(CONTEXT_DEFAULT))
+        .credential_type(default(CREDENTIAL_DEFAULT))
+        .credential_subject(&Address::key(&bobby_link_key))
+        .credential_subject_claim("friendOf", "alice")
+        .issuer(&Address::aure(&alice_identifier_key))
+        .valid_from(now())
+        .sign_with(&alice_multirole_key, now())
+        .finish()
+        .expect("failed to build credential");
+
+    let verified_credential = alice
+        .credential_issue(&mut credential)
+        .expect("failed to issue credential");
+
+    // store the credential from alice
+    bobby
+        .credential_store(&verified_credential)
+        .expect("failed to store credential");
+
+    // query the credential and check it's details
+    let credentials = bobby
+        .credential_lookup_by_issuer(&alice_identifier_key)
+        .expect("failed to lookup credentials");
+    assert_eq!(credentials.len(), 1);
+
+    let credentials = bobby
+        .credential_lookup_by_bearer(&bobby_link_key)
+        .expect("failed to lookup credentials");
+    assert_eq!(credentials.len(), 1);
+
+    let credentials = bobby
+        .credential_lookup_by_credential_type(CREDENTIAL_DEFAULT)
+        .expect("failed to lookup credentials");
+    assert_eq!(credentials.len(), 1);
+
+    credentials[0]
+        .validate()
+        .expect("failed to validate credential");
+    assert_eq!(
+        credentials[0]
+            .credential_subject()
+            .expect("credential subject failed")
+            .address(),
+        &bobby_link_key
+    );
+    assert_eq!(
+        credentials[0]
+            .credential_subject_claim("friendOf")
+            .expect("credential claim failed"),
+        "alice"
+    );
+    assert_eq!(
+        credentials[0]
+            .issuer()
+            .expect("credential issuer failed")
+            .address(),
+        &alice_identifier_key
+    );
+    assert_eq!(
+        credentials[0]
+            .signing_key()
+            .expect("credential signing key failed"),
+        alice_multirole_key
+    );
+
+    // verify that the alices issuing key is valid
+    let issuer = credentials[0].issuer().expect("issuer failed");
+    let signing_key = credentials[0].signing_key().expect("signing key failed");
+    let created = credentials[0].created().expect("created timestamp failed");
+
+    let issuer_document = bobby
+        .identity_resolve(issuer.address())
+        .expect("failed to resolve issuer identity");
+    assert!(issuer_document.key_has_roles_at(
+        signing_key.address(),
+        Role::Assertion as u64,
+        created.timestamp()
+    ));
 }
 
 /*

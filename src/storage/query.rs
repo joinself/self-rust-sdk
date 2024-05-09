@@ -90,6 +90,121 @@ pub fn address_create(txn: &Transaction, address: &[u8]) -> Result<(), SelfError
         .execute()
 }
 
+pub fn credential_type_create(txn: &Transaction, credential_type: &[u8]) -> Result<(), SelfError> {
+    txn.prepare("INSERT OR IGNORE INTO credential_types (type) VALUES (?1)")?
+        .bind_blob(1, credential_type)?
+        .execute()
+}
+
+pub fn credential_store(
+    txn: &Transaction,
+    issuer_address: &[u8],
+    bearer_address: &[u8],
+    credential_type: &[u8],
+    credential: &[u8],
+) -> Result<(), SelfError> {
+    credential_type_create(txn, credential_type)?;
+
+    txn.prepare(
+        "INSERT INTO credentials (issuer_address, bearer_address, credential_type, credential)
+        VALUES (
+            (SELECT id FROM addresses WHERE address=?1),
+            (SELECT id FROM addresses WHERE address=?2),
+            (SELECT id FROM credential_types WHERE type=?3),
+            ?4
+        );",
+    )?
+    .bind_blob(1, issuer_address)?
+    .bind_blob(2, bearer_address)?
+    .bind_blob(3, credential_type)?
+    .bind_blob(4, credential)?
+    .execute()
+}
+
+pub fn credential_lookup_by_bearer(
+    txn: &Transaction,
+    bearer_address: &[u8],
+) -> Result<Vec<Vec<u8>>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT credential FROM credentials
+        INNER JOIN addresses a1 ON
+            credentials.issuer_address = a1.id
+        INNER JOIN addresses a2 ON
+            credentials.bearer_address = a2.id
+        INNER JOIN credential_types c1 ON
+            credentials.credential_type = c1.id
+        WHERE a2.address = ?1;",
+    )?;
+
+    stmt.bind_blob(1, bearer_address)?;
+
+    let mut credentials = Vec::new();
+
+    while stmt.step()? {
+        if let Some(credential) = stmt.column_blob(0)? {
+            credentials.push(credential);
+        }
+    }
+
+    Ok(credentials)
+}
+
+pub fn credential_lookup_by_issuer(
+    txn: &Transaction,
+    issuer_address: &[u8],
+) -> Result<Vec<Vec<u8>>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT credential FROM credentials
+        INNER JOIN addresses a1 ON
+            credentials.issuer_address = a1.id
+        INNER JOIN addresses a2 ON
+            credentials.bearer_address = a2.id
+        INNER JOIN credential_types c1 ON
+            credentials.credential_type = c1.id
+        WHERE a1.address = ?1;",
+    )?;
+
+    stmt.bind_blob(1, issuer_address)?;
+
+    let mut credentials = Vec::new();
+
+    while stmt.step()? {
+        if let Some(credential) = stmt.column_blob(0)? {
+            credentials.push(credential);
+        }
+    }
+
+    Ok(credentials)
+}
+
+pub fn credential_lookup_by_credential_type(
+    txn: &Transaction,
+    credential_type: &[u8],
+) -> Result<Vec<Vec<u8>>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT credential FROM credentials
+        INNER JOIN addresses a1 ON
+            credentials.issuer_address = a1.id
+        INNER JOIN addresses a2 ON
+            credentials.bearer_address = a2.id
+        INNER JOIN credential_types c1 ON
+            credentials.credential_type = c1.id
+        WHERE c1.type = ?1;",
+    )?;
+
+    stmt.bind_blob(1, credential_type)?;
+
+    let mut credentials = Vec::new();
+
+    while stmt.step()? {
+        if let Some(credential) = stmt.column_blob(0)? {
+            credentials.push(credential);
+        }
+    }
+
+    Ok(credentials)
+}
+
 pub fn identity_create(
     txn: &Transaction,
     address: &[u8],
@@ -643,7 +758,6 @@ mod tests {
     #[test]
     fn query_identity_create() {
         let connection = Connection::new(":memory:").expect("connection failed");
-
         let identifier = random_id();
 
         connection
@@ -729,6 +843,58 @@ mod tests {
                 assert_eq!(operation0, logs[0]);
                 assert_eq!(operation1, logs[1]);
 
+                Ok(())
+            })
+            .expect("transaction failed");
+    }
+
+    #[test]
+    fn query_credential_store() {
+        let connection = Connection::new(":memory:").expect("connection failed");
+
+        let issuer_sk = signing::KeyPair::new();
+        let bearer_sk = signing::KeyPair::new();
+        let credential_type = b"[VerifiableCredential, PassportCredential]";
+        let credential = b"credential";
+
+        connection
+            .transaction(|txn| {
+                query::address_create(txn, issuer_sk.address())?;
+                query::address_create(txn, bearer_sk.address())?;
+                query::credential_store(
+                    txn,
+                    issuer_sk.address(),
+                    bearer_sk.address(),
+                    credential_type,
+                    credential,
+                )
+            })
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let credentials = query::credential_lookup_by_bearer(txn, bearer_sk.address())?;
+                assert_eq!(credentials.len(), 1);
+                assert_eq!(credentials[0], credential);
+                Ok(())
+            })
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let credentials = query::credential_lookup_by_issuer(txn, issuer_sk.address())?;
+                assert_eq!(credentials.len(), 1);
+                assert_eq!(credentials[0], credential);
+                Ok(())
+            })
+            .expect("transaction failed");
+
+        connection
+            .transaction(|txn| {
+                let credentials =
+                    query::credential_lookup_by_credential_type(txn, credential_type)?;
+                assert_eq!(credentials.len(), 1);
+                assert_eq!(credentials[0], credential);
                 Ok(())
             })
             .expect("transaction failed");

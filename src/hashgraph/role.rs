@@ -53,6 +53,7 @@ impl std::ops::BitOr<Role> for u64 {
 }
 
 #[repr(u16)]
+#[derive(Debug, PartialEq)]
 pub enum Method {
     Aure = hashgraph::Method::Aure.0,
     Key = hashgraph::Method::Key.0,
