@@ -1,5 +1,1 @@
-
-
-pub struct VerifiablePresentation {
-    
-}
+pub struct VerifiablePresentation {}

@@ -1,11 +1,15 @@
 use std::fmt;
 
-use crate::{error::SelfError, hashgraph, keypair::{self, signing}};
+use crate::{
+    error::SelfError,
+    hashgraph,
+    keypair::{self, signing},
+};
 
 pub struct Address {
     method: hashgraph::Method,
     address: signing::PublicKey,
-    signing_key: Option<signing::PublicKey>
+    signing_key: Option<signing::PublicKey>,
 }
 
 impl Address {
@@ -21,19 +25,19 @@ impl Address {
                 delimiters[p] = i;
             } else if c == '?' {
                 delimiters[3] = i;
-                break
+                break;
             }
         }
 
         if delimiters[0] == 0 || delimiters[1] == 0 {
-            return Err(SelfError::DIDAddressInvalid)
+            return Err(SelfError::DIDAddressInvalid);
         }
 
         if &did[0..delimiters[0]] != "did" {
-            return Err(SelfError::DIDAddressSchemeInvalid)
+            return Err(SelfError::DIDAddressSchemeInvalid);
         }
-        
-        match &did[delimiters[0]+1..delimiters[1]] {
+
+        match &did[delimiters[0] + 1..delimiters[1]] {
             "key" => Address::decode_method_key(did, &delimiters),
             "aure" => Address::decode_method_aure(did, &delimiters),
             _ => Err(SelfError::DIDAddressMethodInvalid),
@@ -42,20 +46,21 @@ impl Address {
 
     fn decode_method_key(did: &str, delimiters: &[usize]) -> Result<Address, SelfError> {
         if delimiters[2] > 0 {
-            return Err(SelfError::DIDAddressInvalid)
+            return Err(SelfError::DIDAddressInvalid);
         }
 
-        if did.chars().nth(delimiters[1]+1).ne(&Some('z')) {
-            return Err(SelfError::DIDAddressInvalid)
+        if did.chars().nth(delimiters[1] + 1).ne(&Some('z')) {
+            return Err(SelfError::DIDAddressInvalid);
         }
 
-        let mut decoded_key = match bs58::decode(&did[delimiters[1]+2..delimiters[3]]).into_vec() {
+        let mut decoded_key = match bs58::decode(&did[delimiters[1] + 2..delimiters[3]]).into_vec()
+        {
             Ok(decoded_key) => decoded_key,
             Err(_) => return Err(SelfError::DIDAddressInvalid),
         };
 
         if decoded_key.len() != 34 {
-            return Err(SelfError::DIDAddressInvalid)
+            return Err(SelfError::DIDAddressInvalid);
         }
 
         match decoded_key[0] {
@@ -63,7 +68,7 @@ impl Address {
             _ => return Err(SelfError::DIDAddressInvalid),
         };
 
-        Ok(Address{
+        Ok(Address {
             method: hashgraph::Method::Key,
             address: signing::PublicKey::from_bytes(&decoded_key[1..34])?,
             signing_key: None,
@@ -72,22 +77,28 @@ impl Address {
 
     fn decode_method_aure(did: &str, delimiters: &[usize]) -> Result<Address, SelfError> {
         if delimiters[2] > 0 {
-            return Ok(Address{
+            return Ok(Address {
                 method: hashgraph::Method::Aure,
-                address: signing::PublicKey::from_hex(did[delimiters[1]+1..delimiters[2]].as_bytes())?,
-                signing_key: Some(signing::PublicKey::from_hex(did[delimiters[2]+1..delimiters[3]].as_bytes())?),
-            })
+                address: signing::PublicKey::from_hex(
+                    did[delimiters[1] + 1..delimiters[2]].as_bytes(),
+                )?,
+                signing_key: Some(signing::PublicKey::from_hex(
+                    did[delimiters[2] + 1..delimiters[3]].as_bytes(),
+                )?),
+            });
         }
 
-        Ok(Address{
+        Ok(Address {
             method: hashgraph::Method::Aure,
-            address: signing::PublicKey::from_hex(did[delimiters[1]+1..delimiters[3]].as_bytes())?,
+            address: signing::PublicKey::from_hex(
+                did[delimiters[1] + 1..delimiters[3]].as_bytes(),
+            )?,
             signing_key: None,
         })
     }
 
     pub fn aure(address: &signing::PublicKey) -> Address {
-        Address{
+        Address {
             method: hashgraph::Method::Aure,
             address: address.to_owned(),
             signing_key: None,
@@ -95,7 +106,7 @@ impl Address {
     }
 
     pub fn key(address: &signing::PublicKey) -> Address {
-        Address{
+        Address {
             method: hashgraph::Method::Key,
             address: address.to_owned(),
             signing_key: None,
@@ -130,7 +141,7 @@ impl fmt::Display for Address {
                 } else {
                     write!(f, "did:aure:{}", self.address.to_hex())
                 }
-            },
+            }
             hashgraph::Method::Key => {
                 // TODO we only support ed25519 keys, handle this properly
                 assert_eq!(self.address.address()[0], keypair::Algorithm::Ed25519 as u8);
@@ -141,7 +152,7 @@ impl fmt::Display for Address {
                 key[2..34].copy_from_slice(self.address.public_key_bytes());
 
                 write!(f, "did:key:z{}", bs58::encode(key).into_string())
-            },
+            }
         }
     }
 }
@@ -154,10 +165,14 @@ mod tests {
 
     #[test]
     fn did_address_key_generate() {
-        let identifier_key = signing::PublicKey::from_bytes(&[0; 33]).expect("failed to parse public key");
+        let identifier_key =
+            signing::PublicKey::from_bytes(&[0; 33]).expect("failed to parse public key");
 
         let did_key = Address::key(&identifier_key).to_string();
-        assert_eq!(did_key, "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP");
+        assert_eq!(
+            did_key,
+            "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+        );
     }
 
     #[test]
@@ -173,13 +188,20 @@ mod tests {
 
     #[test]
     fn did_address_aure_generate() {
-        let identifier_key = signing::PublicKey::from_bytes(&[0; 33]).expect("failed to parse public key");
-        let signing_key = signing::PublicKey::from_bytes(&[0; 33]).expect("failed to parse public key");
+        let identifier_key =
+            signing::PublicKey::from_bytes(&[0; 33]).expect("failed to parse public key");
+        let signing_key =
+            signing::PublicKey::from_bytes(&[0; 33]).expect("failed to parse public key");
 
         let did_key = Address::aure(&identifier_key).to_string();
-        assert_eq!(did_key, "did:aure:000000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(
+            did_key,
+            "did:aure:000000000000000000000000000000000000000000000000000000000000000000"
+        );
 
-        let did_key = Address::aure(&identifier_key).with_signing_key(&signing_key).to_string();
+        let did_key = Address::aure(&identifier_key)
+            .with_signing_key(&signing_key)
+            .to_string();
         assert_eq!(did_key, "did:aure:000000000000000000000000000000000000000000000000000000000000000000#000000000000000000000000000000000000000000000000000000000000000000");
     }
 
@@ -190,18 +212,20 @@ mod tests {
 
         let did_key = Address::aure(identifier_key.public()).to_string();
         let address = Address::decode(&did_key).expect("failed to decode key");
-        
+
         let identifier_public_key = address.address();
         assert_eq!(identifier_public_key.address(), identifier_key.address());
         assert!(address.signing_key().is_none());
 
-        let did_key = Address::aure(identifier_key.public()).with_signing_key(signing_key.public()).to_string();
+        let did_key = Address::aure(identifier_key.public())
+            .with_signing_key(signing_key.public())
+            .to_string();
         let address = Address::decode(&did_key).expect("failed to decode key");
-        
+
         let identifier_public_key = address.address();
         assert_eq!(identifier_public_key.address(), identifier_key.address());
 
-        let signing_public_key = address.signing_key().expect("no signing key found");;
+        let signing_public_key = address.signing_key().expect("no signing key found");
         assert_eq!(signing_public_key.address(), signing_key.address());
     }
 }

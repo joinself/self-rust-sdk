@@ -2,6 +2,8 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use chrono::prelude::*;
 
+use crate::error::SelfError;
+
 static mut NTP_OFFSET: AtomicPtr<chrono::Duration> = AtomicPtr::new(std::ptr::null_mut());
 static mut LAST_CHECK: AtomicPtr<DateTime<Utc>> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -29,6 +31,14 @@ pub fn now() -> DateTime<Utc> {
 
 pub fn datetime(datetime: DateTime<Utc>) -> String {
     datetime.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+pub fn decode_datetime(datetime: &str) -> Result<DateTime<Utc>, SelfError> {
+    Ok(
+        chrono::DateTime::parse_from_str(datetime, "%Y-%m-%dT%H:%M:%SZ")
+            .map_err(|_| SelfError::TimeDatetimeInvalid)?
+            .to_utc(),
+    )
 }
 
 fn update_ntp_offset() {
@@ -96,10 +106,5 @@ mod tests {
     #[test]
     fn get_unix() {
         unix();
-    }
-
-    #[test]
-    fn get_datetime() {
-        println!("{}", datetime(now()));
     }
 }
