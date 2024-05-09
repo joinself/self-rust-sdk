@@ -181,7 +181,7 @@ impl Credential {
                 cryptosuite: CRYPTO_SUITE_DEFAULT.to_string(),
                 proof_type: PROOF_TYPE_DATA_INTEGRITY.to_string(),
                 proof_purpose: PURPOSE_ASSERTION.to_string(),
-                proof_value: signature.into_string(),
+                proof_value: format!("z{}", signature.into_string()),
                 created: datetime(at),
                 verification_method: format!("{}#{}", self.issuer, signer.public().to_hex())
                     .to_string(),
@@ -250,6 +250,10 @@ impl VerifiableCredential {
         decode_datetime(&self.proof.created)
     }
 
+    pub fn signer(&self) -> Result<Address, SelfError> {
+        Address::decode(&self.proof.verification_method)
+    }
+
     pub fn signing_key(&self) -> Result<PublicKey, SelfError> {
         match Address::decode(&self.proof.verification_method)?.signing_key() {
             Some(signer) => Ok(signer.to_owned()),
@@ -257,7 +261,7 @@ impl VerifiableCredential {
         }
     }
 
-    pub fn validate(&mut self) -> Result<(), SelfError> {
+    pub fn validate(&self) -> Result<(), SelfError> {
         // TODO validate this without allocating a bunch of objects
         // we then throw away :/
 
@@ -284,9 +288,10 @@ impl VerifiableCredential {
 
         self.valid_from()?;
         let issuer = self.issuer()?;
+        let signer = self.signer()?;
         let signing_key = self.signing_key()?;
 
-        if issuer.address().ne(&signing_key) {
+        if issuer.address().ne(signer.address()) {
             return Err(SelfError::CredentialSignerMismatch);
         }
 
@@ -428,6 +433,10 @@ mod tests {
 
         let verifiable_credential = VerifiableCredential::from_bytes(&encoded_credential)
             .expect("failed to decode credential");
+
+        verifiable_credential
+            .validate()
+            .expect("failed to validate credential");
 
         assert_eq!(
             verifiable_credential.credential_type(),

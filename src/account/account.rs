@@ -1,4 +1,5 @@
 use crate::account::{operation, Commit, KeyPackage, Message, Welcome};
+use crate::credential::{Credential, VerifiableCredential};
 use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Operation, RoleSet};
@@ -194,6 +195,68 @@ impl Account {
         };
 
         unsafe { operation::identity_execute(&(*storage), &(*rpc), operation) }
+    }
+
+    /// signs and issues a new verifiable credential
+    pub fn credential_issue(
+        &self,
+        credential: &mut Credential,
+    ) -> Result<VerifiableCredential, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::credential_issue(&(*storage), credential) }
+    }
+
+    /// validates and stores a verifiable credential
+    pub fn credential_store(&self, credential: &VerifiableCredential) -> Result<(), SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::credential_store(&(*storage), credential) }
+    }
+
+    /// looks up credentials by a given issuer
+    pub fn credential_lookup_by_issuer(
+        &self,
+        issuer: &PublicKey,
+    ) -> Result<Vec<VerifiableCredential>, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::credential_lookup_by_issuer(&(*storage), issuer) }
+    }
+
+    /// looks up credentials by a given bearer
+    pub fn credential_lookup_by_bearer(
+        &self,
+        bearer: &PublicKey,
+    ) -> Result<Vec<VerifiableCredential>, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::credential_lookup_by_bearer(&(*storage), bearer) }
+    }
+
+    /// looks up credentials by credential type
+    pub fn credential_lookup_by_credential_type(
+        &self,
+        credential_type: &[&str],
+    ) -> Result<Vec<VerifiableCredential>, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::credential_lookup_by_credential_type(&(*storage), credential_type) }
     }
 
     /// opens a new messaging inbox and subscribes to it with the provided key

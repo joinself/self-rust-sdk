@@ -19,6 +19,51 @@ pub fn schema_create_addresses(txn: &Transaction) {
     stmt.execute().expect("failed to execute statement");
 }
 
+pub fn schema_create_credentials(txn: &Transaction) {
+    if table_exists(txn, "credentials") {
+        print!("credentials exists!");
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                issuer_address INTEGER NOT NULL,
+                bearer_address INTEGER NOT NULL,
+                credential_type INTEGER NOT NULL,
+                credential BLOB NOT NULL
+            );
+            CREATE INDEX idx_credentials_bearer_address
+            ON credentials (bearer_address);
+            CREATE INDEX idx_credentials_credential_type
+            ON credentials (credential_type);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
+pub fn schema_create_credential_types(txn: &Transaction) {
+    if table_exists(txn, "credential_types") {
+        print!("credential_types exists!");
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE credential_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type BLOB NOT NULL
+            );
+            CREATE INDEX idx_credential_types_type
+            ON credential_types (type);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
 pub fn schema_create_keypairs(txn: &Transaction) {
     if table_exists(txn, "keypairs") {
         print!("keypairs exists!");

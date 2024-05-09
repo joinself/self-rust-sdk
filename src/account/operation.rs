@@ -1,4 +1,5 @@
 use crate::account::KeyPurpose;
+use crate::credential::{Credential, VerifiableCredential};
 use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Operation};
@@ -120,6 +121,115 @@ pub fn identity_execute(
             &signed_operation,
         )
     })
+}
+
+pub fn credential_issue(
+    storage: &Connection,
+    credential: &Credential,
+) -> Result<VerifiableCredential, SelfError> {
+    let mut issuer_kp: Option<KeyPair> = None;
+
+    let (signer, created) = match credential.signer() {
+        Some(signer) => signer,
+        None => return Err(SelfError::CredentialSignerMissing),
+    };
+
+    storage.transaction(|txn| {
+        // TODO check keypair has role if assigned to identifier...
+        issuer_kp = query::keypair_lookup(txn, signer.address())?;
+        Ok(())
+    })?;
+
+    let issuer_kp = match issuer_kp {
+        Some(issuer_kp) => issuer_kp,
+        None => return Err(SelfError::KeyPairNotFound),
+    };
+
+    credential.sign(&issuer_kp, *created)
+}
+
+pub fn credential_store(
+    storage: &Connection,
+    credential: &VerifiableCredential,
+) -> Result<(), SelfError> {
+    credential.validate()?;
+
+    let issuer = credential.issuer()?;
+    let bearer = credential.credential_subject()?;
+    let credential_type = serde_json::to_vec(credential.credential_type())
+        .expect("failed to serialize credential type");
+    let credential_encoded = credential.into_bytes()?;
+
+    storage.transaction(|txn| {
+        query::address_create(txn, issuer.address().address())?;
+
+        query::credential_store(
+            txn,
+            issuer.address().address(),
+            bearer.address().address(),
+            &credential_type,
+            &credential_encoded,
+        )
+    })
+}
+
+pub fn credential_lookup_by_issuer(
+    storage: &Connection,
+    issuer: &PublicKey,
+) -> Result<Vec<VerifiableCredential>, SelfError> {
+    let mut credentials = Vec::new();
+    let mut encoded_credentials = Vec::new();
+
+    storage.transaction(|txn| {
+        encoded_credentials = query::credential_lookup_by_issuer(txn, issuer.address())?;
+        Ok(())
+    })?;
+
+    for credential in encoded_credentials {
+        credentials.push(VerifiableCredential::from_bytes(&credential)?)
+    }
+
+    Ok(credentials)
+}
+
+pub fn credential_lookup_by_bearer(
+    storage: &Connection,
+    bearer: &PublicKey,
+) -> Result<Vec<VerifiableCredential>, SelfError> {
+    let mut credentials = Vec::new();
+    let mut encoded_credentials = Vec::new();
+
+    storage.transaction(|txn| {
+        encoded_credentials = query::credential_lookup_by_bearer(txn, bearer.address())?;
+        Ok(())
+    })?;
+
+    for credential in encoded_credentials {
+        credentials.push(VerifiableCredential::from_bytes(&credential)?)
+    }
+
+    Ok(credentials)
+}
+
+pub fn credential_lookup_by_credential_type(
+    storage: &Connection,
+    credential_type: &[&str],
+) -> Result<Vec<VerifiableCredential>, SelfError> {
+    let mut credentials = Vec::new();
+    let mut encoded_credentials = Vec::new();
+    let credential_type =
+        serde_json::to_vec(credential_type).expect("failed to encode credential type");
+
+    storage.transaction(|txn| {
+        encoded_credentials = query::credential_lookup_by_credential_type(txn, &credential_type)?;
+        Ok(())
+    })?;
+
+    for credential in encoded_credentials {
+        credentials.push(VerifiableCredential::from_bytes(&credential)?)
+    }
+
+    Ok(credentials)
 }
 
 pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicKey, SelfError> {
