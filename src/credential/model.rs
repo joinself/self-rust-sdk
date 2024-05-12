@@ -4,30 +4,22 @@ use chrono::prelude::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json;
 
-use crate::credential::did::Address;
+use crate::credential::{
+    did::Address, CONTEXT_DEFAULT, CREDENTIAL_DEFAULT, CRYPTO_SUITE_DEFAULT,
+    PROOF_TYPE_DATA_INTEGRITY, PURPOSE_ASSERTION,
+};
 use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::time::{datetime, decode_datetime};
 
-pub const CONTEXT_DEFAULT: &[&str] = &["https://www.w3.org/ns/credentials/v2"];
-pub const CREDENTIAL_DEFAULT: &[&str] = &["VerifiableCredential"];
-pub const CREDENTIAL_PASSPORT: &[&str] = &["VerifiableCredential", "PassportCredential"];
-pub const CREDENTIAL_LIVENESS: &[&str] = &["VerifiableCredential", "LivenessCredential"];
-pub const CREDENTIAL_PROFILE_IMAGE: &[&str] = &["VerifiableCredential", "ProfileImageCredential"];
-pub const CREDENTIAL_APPLICATION_PUBLISHER: &[&str] =
-    &["VerifiableCredential", "ApplicationPublisherCredential"];
-pub const CRYPTO_SUITE_DEFAULT: &str = "jcs-eddsa-2022";
-pub const PROOF_TYPE_DATA_INTEGRITY: &str = "DataIntegrityProof";
-pub const PURPOSE_ASSERTION: &str = "assertionMethod";
-
 #[derive(Default)]
 pub struct CredentialBuilder {
-    pub id: Option<String>,
-    pub context: Option<Vec<String>>,
-    pub credential_type: Option<Vec<String>>,
-    pub credential_subject: HashMap<String, String>,
-    pub issuer: Option<String>,
-    pub valid_from: Option<String>,
+    id: Option<String>,
+    context: Option<Vec<String>>,
+    credential_type: Option<Vec<String>>,
+    credential_subject: HashMap<String, String>,
+    issuer: Option<String>,
+    valid_from: Option<String>,
     signer: Option<PublicKey>,
     issued: Option<DateTime<Utc>>,
 }
@@ -198,7 +190,7 @@ impl Credential {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VerifiableCredential {
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
@@ -320,7 +312,7 @@ impl VerifiableCredential {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Proof {
     #[serde(rename = "type")]
     proof_type: String,
@@ -381,6 +373,7 @@ mod tests {
         let verifiable_credential = credential
             .sign(&assertion_key, now())
             .expect("credential sign failed");
+
         assert_eq!(
             verifiable_credential.proof.cryptosuite,
             CRYPTO_SUITE_DEFAULT
