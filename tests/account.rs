@@ -5,7 +5,10 @@ use std::{
 
 use self_sdk::{
     account::{Account, MessagingCallbacks},
-    credential::{default, Address, CredentialBuilder, CONTEXT_DEFAULT, CREDENTIAL_DEFAULT},
+    credential::{
+        default, Address, CredentialBuilder, PresentationBuilder, CONTEXT_DEFAULT,
+        CREDENTIAL_DEFAULT, PRESENTATION_DEFAULT,
+    },
     hashgraph::{Hashgraph, Role},
     time::now,
 };
@@ -288,7 +291,7 @@ fn encrypted_messaging() {
 }
 
 #[test]
-fn credentials() {
+fn credentials_and_presentations() {
     test_server();
 
     let ws_url = "ws://127.0.0.1:3001/";
@@ -358,8 +361,13 @@ fn credentials() {
         .keychain_signing_create()
         .expect("failed to create keypair");
 
+    // create a new holder key for bobby to use as a holder of the credentials
+    let bobby_holder_key = bobby
+        .keychain_signing_create()
+        .expect("failed to create keypair");
+
     // issue a credential from alice about bobby
-    let mut credential = CredentialBuilder::new()
+    let credential = CredentialBuilder::new()
         .context(default(CONTEXT_DEFAULT))
         .credential_type(default(CREDENTIAL_DEFAULT))
         .credential_subject(&Address::key(&bobby_link_key))
@@ -371,7 +379,7 @@ fn credentials() {
         .expect("failed to build credential");
 
     let verified_credential = alice
-        .credential_issue(&mut credential)
+        .credential_issue(&credential)
         .expect("failed to issue credential");
 
     // store the credential from alice
@@ -438,6 +446,19 @@ fn credentials() {
         Role::Assertion as u64,
         created.timestamp()
     ));
+
+    // present the credentials back to alice
+    let presentation = PresentationBuilder::new()
+        .context(default(CONTEXT_DEFAULT))
+        .presentation_type(default(PRESENTATION_DEFAULT))
+        .holder(&Address::key(&bobby_holder_key))
+        .credential_add(credentials[0].clone())
+        .finish()
+        .expect("failed to create presentation");
+
+    bobby
+        .presentation_issue(&presentation)
+        .expect("failed to generate verifiable presentation");
 }
 
 /*

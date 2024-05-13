@@ -1,5 +1,5 @@
 use crate::account::{operation, Commit, KeyPackage, Message, Welcome};
-use crate::credential::{Credential, VerifiableCredential};
+use crate::credential::{Credential, Presentation, VerifiableCredential, VerifiablePresentation};
 use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Operation, RoleSet};
@@ -200,7 +200,7 @@ impl Account {
     /// signs and issues a new verifiable credential
     pub fn credential_issue(
         &self,
-        credential: &mut Credential,
+        credential: &Credential,
     ) -> Result<VerifiableCredential, SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
@@ -257,6 +257,19 @@ impl Account {
         };
 
         unsafe { operation::credential_lookup_by_credential_type(&(*storage), credential_type) }
+    }
+
+    /// issues a verifiable presentation containing verifiable credentials
+    pub fn presentation_issue(
+        &self,
+        presentation: &Presentation,
+    ) -> Result<VerifiablePresentation, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::presentation_issue(&(*storage), presentation) }
     }
 
     /// opens a new messaging inbox and subscribes to it with the provided key

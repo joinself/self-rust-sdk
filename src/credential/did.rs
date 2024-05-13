@@ -6,6 +6,7 @@ use crate::{
     keypair::{self, signing},
 };
 
+#[derive(Clone)]
 pub struct Address {
     method: hashgraph::Method,
     address: signing::PublicKey,
@@ -113,6 +114,10 @@ impl Address {
         }
     }
 
+    pub fn method(&self) -> &hashgraph::Method {
+        &self.method
+    }
+
     pub fn address(&self) -> &signing::PublicKey {
         &self.address
     }
@@ -129,6 +134,15 @@ impl Address {
             self.signing_key = Some(key.clone());
         }
         self
+    }
+
+    pub fn base_address(&self) -> String {
+        match self.method {
+            hashgraph::Method::Aure => {
+                format!("did:aure:{}", self.address.to_hex())
+            }
+            _ => self.to_string(),
+        }
     }
 }
 
@@ -156,6 +170,28 @@ impl fmt::Display for Address {
         }
     }
 }
+
+impl std::hash::Hash for Address {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        state.write_u16(self.method.clone() as u16);
+        state.write(self.address().address());
+        if let Some(signing_key) = &self.signing_key {
+            state.write(signing_key.address());
+        }
+        state.finish();
+    }
+}
+
+impl PartialEq for Address {
+    fn eq(&self, other: &Address) -> bool {
+        self.address.eq(other.address()) && self.signing_key.eq(&other.signing_key)
+    }
+}
+
+impl Eq for Address {}
 
 #[cfg(test)]
 mod tests {
