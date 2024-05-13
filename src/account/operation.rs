@@ -1,8 +1,10 @@
 use crate::account::KeyPurpose;
-use crate::credential::{Credential, VerifiableCredential};
+use crate::credential::{
+    Address, Credential, Presentation, VerifiableCredential, VerifiablePresentation,
+};
 use crate::crypto::e2e;
 use crate::error::SelfError;
-use crate::hashgraph::{Hashgraph, Operation};
+use crate::hashgraph::{Hashgraph, Method, Operation, Role};
 use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::storage::{query, Connection};
 use crate::time;
@@ -230,6 +232,61 @@ pub fn credential_lookup_by_credential_type(
     }
 
     Ok(credentials)
+}
+
+pub fn presentation_issue(
+    storage: &Connection,
+    presentation: &Presentation,
+) -> Result<VerifiablePresentation, SelfError> {
+    let mut signers = Vec::new();
+
+    storage.transaction(|txn| {
+        // TODO check keypair has role if assigned to identifier...
+        for signer in presentation.required_signers() {
+            match signer.method() {
+                Method::Key => {
+                    match query::keypair_lookup::<KeyPair>(txn, signer.address().address())? {
+                        Some(signer_kp) => {
+                            signers.push((signer.to_owned(), signer_kp));
+                        }
+                        None => return Err(SelfError::KeyPairNotFound),
+                    }
+                }
+                Method::Aure => {
+                    match query::keypair_lookup_with::<signing::KeyPair>(
+                        txn,
+                        signer.address().address(),
+                        Role::Assertion as u64,
+                    )? {
+                        Some(signer_kp) => {
+                            match query::keypair_assigned_to(txn, signer.address().address())? {
+                                Some(identifier_address) => {
+                                    let identifier_pk = PublicKey::from_bytes(&identifier_address)?;
+                                    let mut address = Address::aure(&identifier_pk);
+                                    address.with_signing_key(signer_kp.public());
+                                    signers.push((address, signer_kp));
+                                }
+                                None => {
+                                    let address = Address::key(signer_kp.public());
+                                    signers.push((address, signer_kp));
+                                }
+                            }
+                        }
+                        None => return Err(SelfError::KeyPairNotFound),
+                    };
+                }
+            }
+        }
+
+        Ok(())
+    })?;
+
+    let signer_refs = signers
+        .iter()
+        .map(|(address, signing_kp)| (address, signing_kp))
+        .collect::<Vec<(&Address, &KeyPair)>>();
+
+    presentation.sign(&signer_refs, crate::time::now())
 }
 
 pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicKey, SelfError> {

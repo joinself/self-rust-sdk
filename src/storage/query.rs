@@ -367,6 +367,31 @@ where
     stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))
 }
 
+pub fn keypair_lookup_with<K>(
+    txn: &Transaction,
+    address: &[u8],
+    roles: u64,
+) -> Result<Option<K>, SelfError>
+where
+    K: KeyPair,
+{
+    let stmt = txn.prepare(
+        "SELECT keypair FROM keypairs
+        INNER JOIN addresses ON
+            keypairs.address = addresses.id
+        WHERE addresses.address = ?1 AND keypairs.roles & ?2 = ?2;;",
+    )?;
+
+    stmt.bind_blob(1, address)?;
+    stmt.bind_integer(2, roles as i64)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    stmt.column_blob(0).map(|c| c.map(|k| K::decode(&k)))
+}
+
 pub fn keypair_assign(txn: &Transaction, address: &[u8], roles: u64) -> Result<(), SelfError> {
     txn.prepare(
         "UPDATE keypairs SET roles = ?1
@@ -428,6 +453,32 @@ where
     }
 
     Ok(keypairs)
+}
+
+pub fn keypair_assigned_to(
+    txn: &Transaction,
+    keypair_address: &[u8],
+) -> Result<Option<Vec<u8>>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT a2.address FROM keypair_associations
+        JOIN keypairs k1 ON
+            k1.address = keypair_associations.keypair_address
+        JOIN identities i1 ON
+            i1.address = keypair_associations.identity_address
+        JOIN addresses a1 ON
+            i1.address = a1.id
+        JOIN addresses a2 ON
+            k1.address = a2.id
+        WHERE a1.address = ?1;",
+    )?;
+
+    stmt.bind_blob(1, keypair_address)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    stmt.column_blob(0)
 }
 
 pub fn group_create(

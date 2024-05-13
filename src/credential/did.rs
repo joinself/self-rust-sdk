@@ -6,6 +6,7 @@ use crate::{
     keypair::{self, signing},
 };
 
+#[derive(Clone)]
 pub struct Address {
     method: hashgraph::Method,
     address: signing::PublicKey,
