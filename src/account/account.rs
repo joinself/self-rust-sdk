@@ -167,6 +167,16 @@ impl Account {
         Ok(public_keys)
     }
 
+    /// lists all identities that the account either owns or is associated with
+    pub fn identity_list(&self) -> Result<Vec<signing::PublicKey>, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::identity_list(&(*storage)) }
+    }
+
     /// resolves a did document for a given address
     pub fn identity_resolve(&self, did_address: &PublicKey) -> Result<Hashgraph, SelfError> {
         let rpc = self.rpc.load(Ordering::SeqCst);

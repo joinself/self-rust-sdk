@@ -481,6 +481,30 @@ pub fn keypair_assigned_to(
     stmt.column_blob(0)
 }
 
+pub fn keypair_identifiers(txn: &Transaction) -> Result<Vec<Vec<u8>>, SelfError> {
+    let mut identifiers = Vec::new();
+
+    let stmt = txn.prepare(
+        "SELECT DISTINCT a1.address FROM keypair_associations
+        JOIN keypairs k1 ON
+            k1.address = keypair_associations.keypair_address
+        JOIN identities i1 ON
+            i1.address = keypair_associations.identity_address
+        JOIN addresses a1 ON
+            i1.address = a1.id
+        JOIN addresses a2 ON
+            k1.address = a2.id;",
+    )?;
+
+    while stmt.step()? {
+        if let Some(identifier) = stmt.column_blob(0)? {
+            identifiers.push(identifier);
+        }
+    }
+
+    Ok(identifiers)
+}
+
 pub fn group_create(
     txn: &Transaction,
     group_address: &[u8],

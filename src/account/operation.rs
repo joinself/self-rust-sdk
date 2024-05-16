@@ -15,6 +15,21 @@ use crate::transport::websocket::{self, Subscription, Websocket};
 use std::sync::Arc;
 use std::time::Duration;
 
+pub fn identity_list(storage: &Connection) -> Result<Vec<signing::PublicKey>, SelfError> {
+    let mut identifiers = Vec::new();
+
+    storage.transaction(|txn| {
+        identifiers = query::keypair_identifiers(txn)?;
+
+        Ok(())
+    })?;
+
+    Ok(identifiers
+        .iter()
+        .map(|i| PublicKey::from_bytes(i).expect("failed to load public key"))
+        .collect())
+}
+
 pub fn identity_resolve(
     storage: &Connection,
     rpc: &Rpc,
@@ -25,7 +40,6 @@ pub fn identity_resolve(
 
     storage.transaction(|txn| {
         synced_at = query::identity_synced_at(txn, address)?;
-
         operations = query::identity_operation_log(txn, address)?;
 
         Ok(())
@@ -253,25 +267,17 @@ pub fn presentation_issue(
                     }
                 }
                 Method::Aure => {
+                    let signing_key = match signer.signing_key() {
+                        Some(signing_key) => signing_key,
+                        None => continue,
+                    };
+
                     match query::keypair_lookup_with::<signing::KeyPair>(
                         txn,
-                        signer.address().address(),
+                        signing_key.address(),
                         Role::Assertion as u64,
                     )? {
-                        Some(signer_kp) => {
-                            match query::keypair_assigned_to(txn, signer.address().address())? {
-                                Some(identifier_address) => {
-                                    let identifier_pk = PublicKey::from_bytes(&identifier_address)?;
-                                    let mut address = Address::aure(&identifier_pk);
-                                    address.with_signing_key(signer_kp.public());
-                                    signers.push((address, signer_kp));
-                                }
-                                None => {
-                                    let address = Address::key(signer_kp.public());
-                                    signers.push((address, signer_kp));
-                                }
-                            }
-                        }
+                        Some(signer_kp) => signers.push((signer.to_owned(), signer_kp)),
                         None => return Err(SelfError::KeyPairNotFound),
                     };
                 }

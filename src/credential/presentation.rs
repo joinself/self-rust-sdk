@@ -273,7 +273,7 @@ impl VerifiablePresentation {
                 return Err(SelfError::PresentationSignatureInvalid);
             }
 
-            signers.insert(signer);
+            signers.insert(signer.address().to_owned());
         }
 
         // check every credential subject has signed, as well as the holder
@@ -283,7 +283,7 @@ impl VerifiablePresentation {
 
         for credential in &self.credentials {
             let subject = credential.credential_subject()?;
-            if !signers.contains(&subject) {
+            if !signers.contains(subject.address()) {
                 return Err(SelfError::PresentationSignerMissing);
             }
         }

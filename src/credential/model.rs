@@ -69,9 +69,24 @@ impl CredentialBuilder {
         self
     }
 
+    pub fn valid_from_unix(&mut self, valid_from: i64) -> &mut CredentialBuilder {
+        if let Some(timestamp) = chrono::DateTime::from_timestamp(valid_from, 0) {
+            self.valid_from = Some(datetime(timestamp));
+        }
+        self
+    }
+
     pub fn sign_with(&mut self, signer: &PublicKey, at: DateTime<Utc>) -> &mut CredentialBuilder {
         self.signer = Some(signer.to_owned());
         self.issued = Some(at);
+        self
+    }
+
+    pub fn sign_with_unix(&mut self, signer: &PublicKey, at: i64) -> &mut CredentialBuilder {
+        if let Some(timestamp) = chrono::DateTime::from_timestamp(at, 0) {
+            self.signer = Some(signer.to_owned());
+            self.issued = Some(timestamp);
+        }
         self
     }
 
