@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use chrono::prelude::*;
+use chrono::{prelude::*, TimeDelta};
 
 use crate::error::SelfError;
 
@@ -47,6 +47,13 @@ fn update_ntp_offset() {
 
         let ntp_server =
             std::env::var("SELF_NTP").unwrap_or_else(|_| "time.google.com:123".to_string());
+
+        if ntp_server == "skip" {
+            unsafe {
+                NTP_OFFSET.store(Box::into_raw(Box::new(TimeDelta::zero())), Ordering::SeqCst);
+            }
+            return;
+        }
 
         match ntp::request(ntp_server) {
             Ok(response) => {

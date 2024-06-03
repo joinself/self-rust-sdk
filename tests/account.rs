@@ -10,6 +10,7 @@ use self_sdk::{
         CREDENTIAL_DEFAULT, PRESENTATION_DEFAULT,
     },
     hashgraph::{Hashgraph, Role},
+    message,
     time::now,
 };
 use self_test_mock::Server;
@@ -191,8 +192,8 @@ fn encrypted_messaging() {
     let rpc_url = "http://127.0.0.1:3000/";
 
     let (alice_welcome_tx, alice_welcome_rx) = crossbeam::channel::bounded::<bool>(1);
-    let (alice_message_tx, alice_message_rx) = crossbeam::channel::bounded::<Vec<u8>>(1);
-    let (bobby_message_tx, bobby_message_rx) = crossbeam::channel::bounded::<Vec<u8>>(1);
+    let (alice_message_tx, alice_message_rx) = crossbeam::channel::bounded::<message::Content>(1);
+    let (bobby_message_tx, bobby_message_rx) = crossbeam::channel::bounded::<message::Content>(1);
 
     // setup alices account
     let mut alice = Account::new();
@@ -203,7 +204,7 @@ fn encrypted_messaging() {
         on_disconnect: Arc::new(|_| {}),
         on_message: Arc::new(move |message| {
             alice_message_tx
-                .send(message.message().to_vec())
+                .send(message.content().clone())
                 .expect("failed to send received message for alice");
         }),
         on_commit: Arc::new(|_| {}),
@@ -236,11 +237,16 @@ fn encrypted_messaging() {
         on_connect: Arc::new(|| {}),
         on_disconnect: Arc::new(|_| {}),
         on_message: Arc::new(move |message| {
+            let chat_message = message::ChatBuilder::new()
+                .message("hey alice")
+                .finish()
+                .expect("failed to build chat message");
+
             bobby_ms_cb
-                .message_send(message.sender(), b"hey alice")
+                .message_send(message.sender(), &chat_message)
                 .expect("failed to send response message from bobby");
             bobby_message_tx
-                .send(message.message().to_vec())
+                .send(message.content().clone())
                 .expect("failed to send received message for bobby");
         }),
         on_commit: Arc::new(|_| {}),
@@ -274,20 +280,35 @@ fn encrypted_messaging() {
         .recv_timeout(DEFAULT_TIMEOUT)
         .expect("welcome message timeout");
 
+    let chat_message = message::ChatBuilder::new()
+        .message("hey bobby")
+        .finish()
+        .expect("failed to build chat message");
+
     // alice send an encrypted message to the group
     alice
-        .message_send(&bobby_inbox, b"hey bobby")
+        .message_send(&bobby_inbox, &chat_message)
         .expect("failed to send message");
 
     let message_from_alice = bobby_message_rx
         .recv_timeout(DEFAULT_TIMEOUT)
         .expect("failed to receive message");
-    assert_eq!(message_from_alice, b"hey bobby");
+
+    match message_from_alice {
+        message::Content::Chat(chat) => {
+            assert_eq!(chat.message(), "hey bobby");
+        }
+    }
 
     let message_from_bobby = alice_message_rx
         .recv_timeout(DEFAULT_TIMEOUT)
         .expect("failed to receive message");
-    assert_eq!(message_from_bobby, b"hey alice");
+
+    match message_from_bobby {
+        message::Content::Chat(chat) => {
+            assert_eq!(chat.message(), "hey alice");
+        }
+    }
 }
 
 #[test]

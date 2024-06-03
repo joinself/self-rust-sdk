@@ -1,0 +1,95 @@
+syntax = "proto3";
+package p2p;
+
+enum Version {
+  V1 = 0;
+}
+  
+enum ContentType {
+  TypeCustom                         = 0;
+  TypeChat                           = 1;
+  TypeReceipt                        = 2;
+  TypeCredentialVerifyRequest        = 4;
+  TypeCredentialVerifyResponse       = 5;
+  TypeCredentialPresentationRequest  = 6;
+  TypeCredentialPresentationResponse = 7;
+}
+
+enum Status {
+  StatusOK            = 0;
+  StatusAccepted      = 1;
+  StatusCreated       = 2;
+  StatusBadRequest    = 3;
+  StatusUnauthorized  = 4;
+  StatusForbidden     = 5;
+  StatusNotFound      = 6;
+  StatusNotAcceptable = 7;
+  StatusConflict      = 8;
+}
+
+message RequestHeader {
+  int64 expires = 1;
+}
+
+message ResponseHeader {
+  Status status = 1;
+}
+
+message Object {
+  string url =  1;
+  bytes  key  = 2;
+  string name = 3;
+  string mime = 4;
+}
+
+message Proof {
+  bytes credential = 1;
+}
+
+message Evidence {
+  string id     = 1;
+  Object object = 2;
+}
+
+message PresentationDetails {
+  repeated string type = 2;
+  bytes subject        = 3;
+}
+
+message Message {
+  Version version  = 1;
+  ContentType type = 2;
+  bytes id         = 3;
+  bytes content    = 4;
+}
+
+message Chat {
+  string msg = 1;
+}
+
+message Receipt {
+  repeated bytes delivered = 1;
+  repeated bytes read      = 2;
+}
+
+message CredentialVerificationRequest {
+  RequestHeader header       = 1;
+  repeated string type       = 2;
+  repeated Proof proof       = 3;
+  repeated Evidence evidence = 4;
+}
+
+message CredentialVerificationResponse {
+  ResponseHeader header      = 1;
+  repeated bytes credentials = 2;
+}
+
+message CredentialPresentationRequest {
+  RequestHeader header        = 1;
+  PresentationDetails details = 2;
+}
+
+message CredentialPresentationResponse {
+  ResponseHeader header        = 1;
+  repeated bytes presentations = 2;
+}

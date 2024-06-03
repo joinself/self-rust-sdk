@@ -1,10 +1,14 @@
-use crate::account::{operation, Commit, KeyPackage, Message, Welcome};
+use prost::Message as ProstMessage;
+
+use crate::account::{operation, Commit, KeyPackage, Welcome};
 use crate::credential::{Credential, Presentation, VerifiableCredential, VerifiablePresentation};
 use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Operation, RoleSet};
 use crate::keypair::exchange;
 use crate::keypair::signing::{self, KeyPair, PublicKey};
+use crate::message::{self, Content, ContentType, Message};
+use crate::protocol::p2p::p2p;
 use crate::storage::{query, Connection};
 use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Callbacks, Websocket};
@@ -380,7 +384,11 @@ impl Account {
     }
 
     /// send a message to an address
-    pub fn message_send(&self, to_address: &PublicKey, content: &[u8]) -> Result<(), SelfError> {
+    pub fn message_send(
+        &self,
+        to_address: &PublicKey,
+        content: &message::Content,
+    ) -> Result<(), SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
             return Err(SelfError::AccountNotConfigured);
@@ -501,11 +509,29 @@ fn on_message_cb(
             None => return,
         };
 
+        let encoded_messaage = match p2p::Message::decode(plaintext.as_slice()) {
+            Ok(encoded_messaage) => encoded_messaage,
+            Err(err) => {
+                println!("received invalid protobuf message: {}", err);
+                return;
+            }
+        };
+
+        let content_type = ContentType::from(encoded_messaage.r#type());
+        let content = match Content::decode(content_type, &encoded_messaage.content) {
+            Ok(content) => content,
+            Err(err) => {
+                println!("received invalid protobuf content: {}", err);
+                return;
+            }
+        };
+
         callback(&Message::new(
+            &encoded_messaage.id,
             &message.sender,
             &message.recipient,
-            &plaintext,
-            message.sequence,
+            &content,
+            message.timestamp,
         ));
 
         unsafe {

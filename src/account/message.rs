@@ -1,11 +1,5 @@
 use crate::keypair::signing::PublicKey;
 
-pub enum Action {
-    Accept,
-    Reject,
-    Ignore,
-}
-
 pub struct Message<'m> {
     sender: &'m PublicKey,
     recipient: &'m PublicKey,

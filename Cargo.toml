@@ -52,4 +52,5 @@ httptest = "0.16.0"
 self-test-mock = { git = "https://github.com/joinself/self-test-mock" }
 
 [build-dependencies]
+prost-build = "0.12.6"
 tonic-build = "0.11"

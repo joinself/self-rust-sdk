@@ -1,11 +1,15 @@
+use prost::Message;
+
 use crate::account::KeyPurpose;
 use crate::credential::{
     Address, Credential, Presentation, VerifiableCredential, VerifiablePresentation,
 };
-use crate::crypto::e2e;
+use crate::crypto::{self, e2e};
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Method, Operation, Role};
 use crate::keypair::signing::{self, KeyPair, PublicKey};
+use crate::message;
+use crate::protocol::p2p::p2p;
 use crate::storage::{query, Connection};
 use crate::time;
 use crate::token;
@@ -754,7 +758,7 @@ pub fn message_send(
     storage: &Connection,
     websocket: &Websocket,
     to_address: &PublicKey,
-    content: &[u8],
+    content: &message::Content,
 ) -> Result<(), SelfError> {
     let mut as_address: Option<KeyPair> = None;
     let mut from_address: Option<PublicKey> = None;
@@ -780,9 +784,21 @@ pub fn message_send(
             None => return Err(SelfError::KeyPairNotFound),
         };
 
+        let message = p2p::Message {
+            version: p2p::Version::V1.into(),
+            r#type: content.content_type().into(),
+            id: crypto::random_id(),
+            content: content.encode()?,
+        };
+
         as_address = query::keypair_lookup(txn, from_address.address())?;
         if let Some(as_address) = &as_address {
-            ciphertext = e2e::mls_group_encrypt(txn, group_address.address(), as_address, content)?;
+            ciphertext = e2e::mls_group_encrypt(
+                txn,
+                group_address.address(),
+                as_address,
+                &message.encode_to_vec(),
+            )?;
 
             // TODO load sequence...
 
