@@ -89,6 +89,7 @@ impl From<i32> for ContentType {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<p2p::ContentType> for ContentType {
     fn into(self) -> p2p::ContentType {
         match self {
@@ -108,6 +109,7 @@ impl Into<p2p::ContentType> for ContentType {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<i32> for ContentType {
     fn into(self) -> i32 {
         match self {
