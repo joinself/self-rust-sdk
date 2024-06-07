@@ -265,6 +265,27 @@ pub fn schema_create_outbox(txn: &Transaction) {
     stmt.execute().expect("failed to execute statement");
 }
 
+pub fn schema_create_objects(txn: &Transaction) {
+    if table_exists(txn, "objects") {
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE objects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash BLOB NOT NULL,
+                key BLOB NOT NULL,
+                data BLOB NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_objects_hash
+            ON objects (hash);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
 pub fn schema_create_mls_signature_key_pairs(txn: &Transaction) {
     if table_exists(txn, "mls_signature_key_pairs") {
         return;

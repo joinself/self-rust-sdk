@@ -9,10 +9,12 @@ use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Method, Operation, Role};
 use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::message;
+use crate::object;
 use crate::protocol::p2p::p2p;
 use crate::storage::{query, Connection};
 use crate::time;
 use crate::token;
+use crate::transport::object::ObjectStore;
 use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Subscription, Websocket};
 
@@ -299,43 +301,34 @@ pub fn presentation_issue(
     presentation.sign(&signer_refs, crate::time::now())
 }
 
-pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicKey, SelfError> {
+pub fn object_upload(
+    storage: &Connection,
+    object_store: &ObjectStore,
+    as_address: &PublicKey,
+    object: &object::Object,
+    persist_local: bool,
+) -> Result<(), SelfError> {
     let mut signing_kp: Option<KeyPair> = None;
-    let mut subscription_token: Option<token::Subscription> = None;
-    let mut key_packages: Vec<Vec<u8>> = Vec::new();
+
+    if object.key().is_none() {
+        return Err(SelfError::ObjectKeyMissing);
+    }
+
+    if object.data().is_none() {
+        return Err(SelfError::ObjectDataInvalid);
+    }
 
     storage.transaction(|txn| {
-        signing_kp = Some(KeyPair::new());
-        query::keypair_create(txn, signing_kp.clone().unwrap(), 0, time::unix())?;
+        signing_kp = query::keypair_lookup(txn, as_address.address())?;
 
-        if let Some(signing_kp) = &signing_kp {
-            // TODO not sure this is actually needed
-            subscription_token = Some(token::Subscription::new(
-                signing_kp,
-                signing_kp.public(),
-                time::unix(),
-                i64::MAX,
-            ));
-
-            query::token_create(
+        if persist_local {
+            query::object_create(
                 txn,
-                query::Token::Subscription,
-                signing_kp.address(),
-                signing_kp.address(),
-                signing_kp.address(),
-                subscription_token.as_ref().unwrap().as_bytes(),
+                object.id(),
+                object.key().expect("object key missing"),
+                object.data().expect("object data missing"),
             )?;
-
-            // setup the mls credentials and generate some key packages
-            key_packages = e2e::mls_inbox_setup(txn, signing_kp, 4)?;
-
-            // TODO mark this keypair as used as a messaging inbox
-            // TODO validate this keypair is not:
-            // 1. already used as an inbox
-            // 2. if attached to an did, it must have an authentication role
-
-            // TODO update metrics on inbox subscription time
-        };
+        }
 
         Ok(())
     })?;
@@ -344,6 +337,73 @@ pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicK
         Some(signing_kp) => signing_kp,
         None => return Err(SelfError::KeyPairNotFound),
     };
+
+    object_store.upload(object, &signing_kp)
+}
+
+pub fn object_download(
+    storage: &Connection,
+    object_store: &ObjectStore,
+    as_address: &PublicKey,
+    object: &mut object::Object,
+) -> Result<(), SelfError> {
+    let mut signing_kp: Option<KeyPair> = None;
+    let mut stored_object: Option<(Vec<u8>, Vec<u8>)> = None;
+
+    storage.transaction(|txn| {
+        stored_object = query::object_lookup(txn, object.id())?;
+
+        if stored_object.is_some() {
+            return Ok(());
+        }
+
+        signing_kp = query::keypair_lookup(txn, as_address.address())?;
+
+        Ok(())
+    })?;
+
+    match stored_object {
+        Some((key, data)) => object.decrypt_with_key(data, key),
+        None => object_store.download(object),
+    }
+}
+
+pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicKey, SelfError> {
+    let signing_kp = KeyPair::new();
+    let mut subscription_token: Option<token::Subscription> = None;
+    let mut key_packages: Vec<Vec<u8>> = Vec::new();
+
+    storage.transaction(|txn| {
+        query::keypair_create(txn, signing_kp.clone(), 0, time::unix())?;
+        // TODO not sure this is actually needed
+        subscription_token = Some(token::Subscription::new(
+            &signing_kp,
+            signing_kp.public(),
+            time::unix(),
+            i64::MAX,
+        ));
+
+        query::token_create(
+            txn,
+            query::Token::Subscription,
+            signing_kp.address(),
+            signing_kp.address(),
+            signing_kp.address(),
+            subscription_token.as_ref().unwrap().as_bytes(),
+        )?;
+
+        // setup the mls credentials and generate some key packages
+        key_packages = e2e::mls_inbox_setup(txn, &signing_kp, 4)?;
+
+        // TODO mark this keypair as used as a messaging inbox
+        // TODO validate this keypair is not:
+        // 1. already used as an inbox
+        // 2. if attached to an did, it must have an authentication role
+
+        // TODO update metrics on inbox subscription time
+
+        Ok(())
+    })?;
 
     let subscription_token = match subscription_token {
         Some(subscription_token) => subscription_token,
@@ -494,7 +554,7 @@ pub fn connection_negotiate(
 
     resp_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+        .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
     // notify...
 
@@ -554,7 +614,7 @@ pub fn connection_establish(
             &[key_package],
         )?;
 
-        // store our send and subscription tokens that we will use to con
+        // store our send and subscription tokens that we will use to connect
         query::token_create(
             txn,
             query::Token::Send,
@@ -652,7 +712,7 @@ pub fn connection_establish(
 
     resp_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+        .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
     // TODO deque send
 
@@ -672,7 +732,7 @@ pub fn connection_establish(
 
     resp_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+        .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
     // TODO notify...
 
@@ -840,7 +900,7 @@ pub fn message_send(
 
     resp_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+        .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
     storage.transaction(|txn| {
         query::outbox_dequeue(txn, as_address.address(), group_address.address(), sequence)

@@ -10,15 +10,14 @@ use crate::error::SelfError;
 use crate::storage::schema::{
     schema_create_addresses, schema_create_credential_types, schema_create_credentials,
     schema_create_groups, schema_create_identities, schema_create_identity_operations,
-    schema_create_keypair_associations, schema_create_keypairs, schema_create_members,
-    schema_create_mls_encryption_key_pairs, schema_create_mls_group_states,
+    schema_create_inbox, schema_create_keypair_associations, schema_create_keypairs,
+    schema_create_members, schema_create_mls_encryption_key_pairs, schema_create_mls_group_states,
     schema_create_mls_hpke_private_keys, schema_create_mls_key_packages,
-    schema_create_mls_psk_bundles, schema_create_mls_signature_key_pairs, schema_create_tokens,
+    schema_create_mls_psk_bundles, schema_create_mls_signature_key_pairs, schema_create_objects,
+    schema_create_outbox, schema_create_tokens,
 };
 use crate::storage::statement::Statement;
 use crate::storage::transaction::Transaction;
-
-use super::schema::{schema_create_inbox, schema_create_outbox};
 
 pub struct Connection {
     conn: *mut sqlite3,
@@ -56,6 +55,7 @@ impl Connection {
             schema_create_keypairs(txn);
             schema_create_keypair_associations(txn);
             schema_create_members(txn);
+            schema_create_objects(txn);
             schema_create_outbox(txn);
             schema_create_tokens(txn);
             schema_create_mls_signature_key_pairs(txn);

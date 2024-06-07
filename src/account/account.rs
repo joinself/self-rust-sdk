@@ -1,15 +1,17 @@
 use prost::Message as ProstMessage;
 
-use crate::account::{operation, Commit, KeyPackage, Welcome};
+use crate::account::operation;
 use crate::credential::{Credential, Presentation, VerifiableCredential, VerifiablePresentation};
 use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Operation, RoleSet};
 use crate::keypair::exchange;
 use crate::keypair::signing::{self, KeyPair, PublicKey};
-use crate::message::{self, Content, ContentType, Message};
+use crate::message::{self, Commit, Content, ContentType, KeyPackage, Message, Welcome};
+use crate::object;
 use crate::protocol::p2p::p2p;
 use crate::storage::{query, Connection};
+use crate::transport::object::ObjectStore;
 use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Callbacks, Websocket};
 
@@ -19,10 +21,10 @@ use std::sync::Arc;
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(&Message) + Sync + Send>;
-pub type OnCommitCB = Arc<dyn Fn(&Commit) + Sync + Send>;
-pub type OnKeyPackageCB = Arc<dyn Fn(&KeyPackage) + Sync + Send>;
-pub type OnWelcomeCB = Arc<dyn Fn(&Welcome) + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(Message) + Sync + Send>;
+pub type OnCommitCB = Arc<dyn Fn(Commit) + Sync + Send>;
+pub type OnKeyPackageCB = Arc<dyn Fn(KeyPackage) + Sync + Send>;
+pub type OnWelcomeCB = Arc<dyn Fn(Welcome) + Sync + Send>;
 
 pub struct MessagingCallbacks {
     pub on_connect: OnConnectCB,
@@ -36,6 +38,7 @@ pub struct MessagingCallbacks {
 #[derive(Default)]
 pub struct Account {
     rpc: Arc<AtomicPtr<Rpc>>,
+    object: Arc<AtomicPtr<ObjectStore>>,
     storage: Arc<AtomicPtr<Connection>>,
     websocket: Arc<AtomicPtr<Websocket>>,
 }
@@ -44,6 +47,7 @@ impl Account {
     pub fn new() -> Account {
         Account {
             rpc: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            object: Arc::new(AtomicPtr::new(ptr::null_mut())),
             storage: Arc::new(AtomicPtr::new(ptr::null_mut())),
             websocket: Arc::new(AtomicPtr::new(ptr::null_mut())),
         }
@@ -54,6 +58,7 @@ impl Account {
     pub fn configure(
         &mut self,
         rpc_endpoint: &str,
+        object_endpoint: &str,
         messaging_endpoint: &str,
         storage_path: &str,
         _storage_key: &[u8],
@@ -68,6 +73,10 @@ impl Account {
         if result.is_err() {
             return Err(SelfError::AccountAlreadyConfigured);
         };
+
+        let object = ObjectStore::new(object_endpoint)?;
+        let object = Box::into_raw(Box::new(object));
+        self.object.swap(object, Ordering::SeqCst);
 
         let storage = Connection::new(storage_path)?;
         let storage = Box::into_raw(Box::new(storage));
@@ -383,6 +392,53 @@ impl Account {
         }
     }
 
+    /// uploads an object
+    pub fn object_upload(
+        &self,
+        as_address: &PublicKey,
+        object: &object::Object,
+        persist_local: bool,
+    ) -> Result<(), SelfError> {
+        let object_store = self.object.load(Ordering::SeqCst);
+        if object_store.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe {
+            operation::object_upload(
+                &(*storage),
+                &(*object_store),
+                as_address,
+                object,
+                persist_local,
+            )
+        }
+    }
+
+    /// downloads an object
+    pub fn object_download(
+        &self,
+        as_address: &PublicKey,
+        object: &mut object::Object,
+    ) -> Result<(), SelfError> {
+        let object_store = self.object.load(Ordering::SeqCst);
+        if object_store.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::object_download(&(*storage), &(*object_store), as_address, object) }
+    }
+
     /// send a message to an address
     pub fn message_send(
         &self,
@@ -450,6 +506,7 @@ impl Clone for Account {
     fn clone(&self) -> Self {
         Account {
             rpc: self.rpc.clone(),
+            object: self.object.clone(),
             storage: self.storage.clone(),
             websocket: self.websocket.clone(),
         }
@@ -526,11 +583,11 @@ fn on_message_cb(
             }
         };
 
-        callback(&Message::new(
-            &encoded_messaage.id,
-            &message.sender,
-            &message.recipient,
-            &content,
+        callback(Message::new(
+            encoded_messaage.id,
+            message.sender.clone(),
+            message.recipient.clone(),
+            content,
             message.timestamp,
         ));
 
@@ -581,10 +638,10 @@ fn on_commit_cb(
             }
         }
 
-        callback(&Commit::new(
-            &commit.sender,
-            &commit.recipient,
-            &commit.commit,
+        callback(Commit::new(
+            commit.sender.clone(),
+            commit.recipient.clone(),
+            commit.commit,
             commit.sequence,
         ));
 
@@ -614,6 +671,8 @@ fn on_key_package_cb(
     Arc::new(move |package| {
         let storage = storage.load(Ordering::SeqCst);
 
+        println!("GOT KEY PACKAGE: {:?}", &package.package);
+
         unsafe {
             let result = (*storage).transaction(|txn| {
                 query::address_create(txn, package.sender.address())?;
@@ -635,10 +694,10 @@ fn on_key_package_cb(
             }
         }
 
-        callback(&KeyPackage::new(
-            &package.sender,
-            &package.recipient,
-            &package.package,
+        callback(KeyPackage::new(
+            package.sender.clone(),
+            package.recipient.clone(),
+            package.package,
             package.sequence,
             true,
         ));
@@ -690,12 +749,12 @@ fn on_welcome_cb(
             }
         }
 
-        callback(&Welcome::new(
-            &welcome.sender,
-            &welcome.recipient,
-            &welcome.welcome,
+        callback(Welcome::new(
+            welcome.sender.clone(),
+            welcome.recipient.clone(),
+            welcome.welcome,
             welcome.sequence,
-            &welcome.subscription,
+            welcome.subscription,
             true,
         ));
 

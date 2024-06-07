@@ -505,6 +505,48 @@ pub fn keypair_identifiers(txn: &Transaction) -> Result<Vec<Vec<u8>>, SelfError>
     Ok(identifiers)
 }
 
+pub fn object_create(
+    txn: &Transaction,
+    hash: &[u8],
+    key: &[u8],
+    data: &[u8],
+) -> Result<(), SelfError> {
+    txn.prepare(
+        "INSERT OR IGNORE INTO objects (hash, key, data) 
+        VALUES (
+            ?1,
+            ?2,
+            ?3
+        );",
+    )?
+    .bind_blob(1, hash)?
+    .bind_blob(2, key)?
+    .bind_blob(3, data)?
+    .execute()
+}
+
+#[allow(clippy::type_complexity)]
+pub fn object_lookup(
+    txn: &Transaction,
+    hash: &[u8],
+) -> Result<Option<(Vec<u8>, Vec<u8>)>, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT key, data FROM objects
+        WHERE hash = ?1;",
+    )?;
+
+    stmt.bind_blob(1, hash)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    let key = stmt.column_blob(0)?.expect("key was null");
+    let data = stmt.column_blob(1)?.expect("data was null");
+
+    Ok(Some((key, data)))
+}
+
 pub fn group_create(
     txn: &Transaction,
     group_address: &[u8],
@@ -1533,6 +1575,34 @@ mod tests {
             .transaction(|txn| {
                 let result = query::outbox_next(txn)?;
                 assert!(result.is_none());
+                Ok(())
+            })
+            .expect("transaction failed");
+    }
+
+    #[test]
+    fn query_object_store() {
+        let connection = Connection::new(":memory:").expect("connection failed");
+
+        let hash: &[u8] = &[0; 32];
+        let key: &[u8] = &[1; 32];
+        let data: &[u8] = &[2; 4096];
+
+        // store an object
+        connection
+            .transaction(|txn| query::object_create(txn, hash, key, data))
+            .expect("transaction failed");
+
+        // retrieve an object
+        connection
+            .transaction(|txn| {
+                let (stored_key, stored_data) = query::object_lookup(txn, hash)
+                    .expect("failed to execute transaction")
+                    .expect("object not found");
+
+                assert_eq!(stored_key, key);
+                assert_eq!(stored_data, data);
+
                 Ok(())
             })
             .expect("transaction failed");
