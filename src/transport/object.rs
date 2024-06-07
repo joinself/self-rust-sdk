@@ -34,8 +34,9 @@ impl ObjectStore {
     ) -> Result<(), SelfError> {
         let endpoint = self
             .endpoint
-            .join("/object/")
+            .join("/objects/")
             .expect("failed to build object url");
+
         let mut request = Request::new(Method::POST, endpoint);
 
         let data = match object.data() {
@@ -55,7 +56,7 @@ impl ObjectStore {
 
     pub fn download(&self, object: &mut object::Object) -> Result<(), SelfError> {
         // TODO proof of work over request path...
-        let stub = format!("/object/{}", object.id().encode_hex::<String>());
+        let stub = format!("/objects/{}", object.id().encode_hex::<String>());
         let endpoint = self
             .endpoint
             .join(&stub)

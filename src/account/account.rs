@@ -671,8 +671,6 @@ fn on_key_package_cb(
     Arc::new(move |package| {
         let storage = storage.load(Ordering::SeqCst);
 
-        println!("GOT KEY PACKAGE: {:?}", &package.package);
-
         unsafe {
             let result = (*storage).transaction(|txn| {
                 query::address_create(txn, package.sender.address())?;

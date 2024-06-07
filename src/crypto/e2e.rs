@@ -78,8 +78,6 @@ pub fn mls_key_package_create(
         .tls_serialize_detached()
         .expect("failed to encode key package");
 
-    println!("CREATED KEY PACKAGE: {:?}", &key_package_encoded);
-
     Ok(key_package_encoded)
 }
 
@@ -176,7 +174,6 @@ pub fn mls_group_create_with_members(
         .use_ratchet_tree_extension(true)
         .build();
 
-    println!("create group with id!");
     let mut group = MlsGroup::new_with_group_id(
         backend,
         signature_key,
@@ -194,17 +191,11 @@ pub fn mls_group_create_with_members(
 
     let mut key_packages_decoded = Vec::new();
 
-    println!("decode and validate key packages!");
     for kp in key_packages {
-        println!("decode key package in!");
-        println!("key package... {:?}", *kp);
-
         let key_package_in = KeyPackageIn::tls_deserialize_bytes(kp).map_err(|err| {
             println!("mls error: {}", err);
             SelfError::StorageUnknown
         })?;
-
-        println!("validate key package in!");
 
         let key_package = key_package_in
             .validate(backend.crypto(), ProtocolVersion::default())
@@ -216,8 +207,6 @@ pub fn mls_group_create_with_members(
         key_packages_decoded.push(key_package);
     }
 
-    println!("create commit and welcome!");
-
     let (commit_out, welcome_out, _) = group
         .add_members(backend, signature_key, &key_packages_decoded)
         .map_err(|err| {
@@ -225,35 +214,25 @@ pub fn mls_group_create_with_members(
             SelfError::StorageUnknown
         })?;
 
-    println!("merge pending commit!");
-
     group.merge_pending_commit(backend).map_err(|err| {
         println!("mls error: {}", err);
         SelfError::StorageUnknown
     })?;
-
-    println!("group save!");
 
     group.save(backend).map_err(|err| {
         println!("mls error: {}", err);
         SelfError::StorageUnknown
     })?;
 
-    println!("serialize commit!");
-
     let commit = commit_out.tls_serialize_detached().map_err(|err| {
         println!("mls error: {}", err);
         SelfError::StorageUnknown
     })?;
 
-    println!("serialize welcome!");
-
     let welcome = welcome_out.tls_serialize_detached().map_err(|err| {
         println!("mls error: {}", err);
         SelfError::StorageUnknown
     })?;
-
-    println!("OK!");
 
     Ok((commit, welcome))
 }

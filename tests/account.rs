@@ -23,7 +23,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_millis(100);
 pub fn test_server() {
     unsafe {
         INIT.call_once(|| {
-            SERVER = Some(Server::new(3000, 3001));
+            SERVER = Some(Server::new(3000, 3001, 3002));
         });
     }
 }
@@ -32,9 +32,9 @@ pub fn test_server() {
 fn register_identity() {
     test_server();
 
-    let ws_url = "ws://127.0.0.1:3001/";
-    let obj_url = "http://127.0.0.1:3002/";
     let rpc_url = "http://127.0.0.1:3000/";
+    let obj_url = "http://127.0.0.1:3001/";
+    let ws_url = "ws://127.0.0.1:3002/";
 
     let mut alice = Account::new();
     let alice_callbacks = MessagingCallbacks {
@@ -190,9 +190,9 @@ fn register_identity() {
 fn encrypted_messaging() {
     test_server();
 
-    let ws_url = "ws://127.0.0.1:3001/";
-    let obj_url = "http://127.0.0.1:3002/";
     let rpc_url = "http://127.0.0.1:3000/";
+    let obj_url = "http://127.0.0.1:3001/";
+    let ws_url = "ws://127.0.0.1:3002/";
 
     let (alice_welcome_tx, alice_welcome_rx) = crossbeam::channel::bounded::<bool>(1);
     let (alice_message_tx, alice_message_rx) = crossbeam::channel::bounded::<message::Content>(1);
@@ -318,9 +318,9 @@ fn encrypted_messaging() {
 fn credentials_and_presentations() {
     test_server();
 
-    let ws_url = "ws://127.0.0.1:3001/";
     let rpc_url = "http://127.0.0.1:3000/";
-    let obj_url = "http://127.0.0.1:3002/";
+    let obj_url = "http://127.0.0.1:3001/";
+    let ws_url = "ws://127.0.0.1:3002/";
 
     let mut alice = Account::new();
     let alice_callbacks = MessagingCallbacks {
@@ -490,9 +490,9 @@ fn credentials_and_presentations() {
 fn object_upload_and_download() {
     test_server();
 
-    let ws_url = "ws://127.0.0.1:3001/";
     let rpc_url = "http://127.0.0.1:3000/";
-    let obj_url = "http://127.0.0.1:3002/";
+    let obj_url = "http://127.0.0.1:3001/";
+    let ws_url = "ws://127.0.0.1:3002/";
 
     let mut alice = Account::new();
     let alice_callbacks = MessagingCallbacks {

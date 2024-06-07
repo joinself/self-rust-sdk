@@ -15,7 +15,7 @@ pub fn aes_gcm_encrypt(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
     // prepend the nonce to the ciphertext for convenience
     let mut combined = vec![0; nonce.len() + ciphertext.len()];
-    combined.copy_from_slice(&nonce);
+    combined[..nonce.len()].copy_from_slice(&nonce);
     combined[nonce.len()..].copy_from_slice(&ciphertext);
 
     (key.to_vec(), combined)
