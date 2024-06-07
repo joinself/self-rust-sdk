@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn proof_of_work() {
-        let p = ProofOfWork::new(23);
+        let p = ProofOfWork::new(12);
 
         let data = vec![8; 128];
 

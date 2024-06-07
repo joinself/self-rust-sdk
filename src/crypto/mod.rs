@@ -1,3 +1,4 @@
+pub mod aead;
 pub mod e2e;
 pub mod hash;
 pub mod pow;

@@ -1,7 +1,9 @@
 mod chat;
+mod event;
 mod receipt;
 
 pub use self::chat::*;
+pub use self::event::*;
 pub use self::receipt::*;
 
 use crate::error::SelfError;
@@ -133,22 +135,22 @@ impl Into<i32> for ContentType {
     }
 }
 
-pub struct Message<'m> {
-    id: &'m [u8],
-    sender: &'m PublicKey,
-    recipient: &'m PublicKey,
-    content: &'m Content,
+pub struct Message {
+    id: Vec<u8>,
+    sender: PublicKey,
+    recipient: PublicKey,
+    content: Content,
     timestamp: i64,
 }
 
-impl<'m> Message<'m> {
+impl Message {
     pub fn new(
-        id: &'m [u8],
-        sender: &'m PublicKey,
-        recipient: &'m PublicKey,
-        content: &'m Content,
+        id: Vec<u8>,
+        sender: PublicKey,
+        recipient: PublicKey,
+        content: Content,
         timestamp: i64,
-    ) -> Message<'m> {
+    ) -> Message {
         Message {
             id,
             sender,
@@ -158,16 +160,16 @@ impl<'m> Message<'m> {
         }
     }
 
-    pub fn id(&self) -> &'m [u8] {
-        self.id
+    pub fn id(&self) -> &[u8] {
+        &self.id
     }
 
-    pub fn sender(&self) -> &'m PublicKey {
-        self.sender
+    pub fn sender(&self) -> &PublicKey {
+        &self.sender
     }
 
-    pub fn recipient(&self) -> &'m PublicKey {
-        self.recipient
+    pub fn recipient(&self) -> &PublicKey {
+        &self.recipient
     }
 
     pub fn content_type(&self) -> ContentType {
@@ -177,7 +179,7 @@ impl<'m> Message<'m> {
     }
 
     pub fn content(&self) -> &Content {
-        self.content
+        &self.content
     }
 
     pub fn timestamp(&self) -> i64 {
@@ -186,15 +188,15 @@ impl<'m> Message<'m> {
 }
 
 #[derive(Default)]
-pub struct MessageBuilder<'m> {
-    id: Option<&'m [u8]>,
-    sender: Option<&'m PublicKey>,
-    recipient: Option<&'m PublicKey>,
-    content: Option<&'m Content>,
+pub struct MessageBuilder {
+    id: Option<Vec<u8>>,
+    sender: Option<PublicKey>,
+    recipient: Option<PublicKey>,
+    content: Option<Content>,
 }
 
-impl<'m> MessageBuilder<'m> {
-    pub fn new() -> MessageBuilder<'m> {
+impl MessageBuilder {
+    pub fn new() -> MessageBuilder {
         MessageBuilder {
             id: None,
             sender: None,
@@ -203,27 +205,27 @@ impl<'m> MessageBuilder<'m> {
         }
     }
 
-    pub fn id(&mut self, id: &'m [u8]) -> &mut MessageBuilder<'m> {
+    pub fn id(&mut self, id: Vec<u8>) -> &mut MessageBuilder {
         self.id = Some(id);
         self
     }
 
-    pub fn sender(&mut self, address: &'m PublicKey) -> &mut MessageBuilder<'m> {
+    pub fn sender(&mut self, address: PublicKey) -> &mut MessageBuilder {
         self.sender = Some(address);
         self
     }
 
-    pub fn recipient(&mut self, address: &'m PublicKey) -> &mut MessageBuilder<'m> {
+    pub fn recipient(&mut self, address: PublicKey) -> &mut MessageBuilder {
         self.recipient = Some(address);
         self
     }
 
-    pub fn content(&mut self, content: &'m Content) -> &mut MessageBuilder<'m> {
+    pub fn content(&mut self, content: Content) -> &mut MessageBuilder {
         self.content = Some(content);
         self
     }
 
-    pub fn finish(self) -> Result<Message<'m>, SelfError> {
+    pub fn finish(self) -> Result<Message, SelfError> {
         let id = match self.id {
             Some(id) => id,
             None => return Err(SelfError::MessageContentMissing),

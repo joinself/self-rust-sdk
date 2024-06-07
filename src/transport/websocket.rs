@@ -53,10 +53,10 @@ pub struct Welcome {
 
 pub type OnConnectCB = Arc<dyn Fn() + Sync + Send>;
 pub type OnDisconnectCB = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
-pub type OnMessageCB = Arc<dyn Fn(&Message) + Sync + Send>;
-pub type OnCommitCB = Arc<dyn Fn(&Commit) + Sync + Send>;
-pub type OnKeyPackageCB = Arc<dyn Fn(&KeyPackage) + Sync + Send>;
-pub type OnWelcomeCB = Arc<dyn Fn(&Welcome) + Sync + Send>;
+pub type OnMessageCB = Arc<dyn Fn(Message) + Sync + Send>;
+pub type OnCommitCB = Arc<dyn Fn(Commit) + Sync + Send>;
+pub type OnKeyPackageCB = Arc<dyn Fn(KeyPackage) + Sync + Send>;
+pub type OnWelcomeCB = Arc<dyn Fn(Welcome) + Sync + Send>;
 
 #[derive(Clone)]
 pub struct Callbacks {
@@ -112,7 +112,7 @@ impl Websocket {
 
         let endpoint = match Url::parse(endpoint) {
             Ok(endpoint) => endpoint,
-            Err(_) => return Err(SelfError::RestRequestURLInvalid),
+            Err(_) => return Err(SelfError::HTTPRequestURLInvalid),
         };
 
         Ok(Websocket {
@@ -149,7 +149,7 @@ impl Websocket {
                 Ok((socket, _)) => Ok(socket),
                 Err(err) => {
                     println!("{}", err);
-                    Err(SelfError::RestRequestConnectionFailed)
+                    Err(SelfError::HTTPRequestConnectionFailed)
                 }
             };
 
@@ -158,7 +158,7 @@ impl Websocket {
 
         let (mut socket_tx, mut socket_rx) = rx
             .recv()
-            .map_err(|_| SelfError::RestRequestConnectionFailed)??
+            .map_err(|_| SelfError::HTTPRequestConnectionFailed)??
             .split();
 
         socket_runtime.spawn(async move {
@@ -200,7 +200,7 @@ impl Websocket {
             }
         });
 
-        // TODO replace RestRequestConnectionFailed with better errors
+        // TODO replace HTTPRequestConnectionFailed with better errors
         socket_runtime.spawn(async move {
             for m in write_rx.iter() {
                 match m {
@@ -258,7 +258,7 @@ impl Websocket {
 
         subs_rx
             .recv_deadline(deadline)
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
+            .map_err(|_| SelfError::HTTPRequestConnectionTimeout)?;
 
         let callback = Arc::new(move |result: Result<(), SelfError>| {
             send_tx
@@ -272,11 +272,11 @@ impl Websocket {
                 protocol::Message::Binary(event_subscribe),
                 Some(callback),
             ))
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
+            .map_err(|_| SelfError::HTTPRequestConnectionTimeout)?;
 
         send_rx
             .recv_deadline(deadline)
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+            .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
         Ok(())
     }
@@ -305,7 +305,7 @@ impl Websocket {
 
         if self.write_tx.send(event).is_err() {
             // TODO handle this error properly
-            callback(Err(SelfError::RestRequestConnectionTimeout));
+            callback(Err(SelfError::HTTPRequestConnectionTimeout));
         }
     }
 
@@ -326,10 +326,10 @@ impl Websocket {
                 protocol::Message::Binary(event_open),
                 Some(callback),
             ))
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)?;
+            .map_err(|_| SelfError::HTTPRequestConnectionTimeout)?;
 
         rx.recv_deadline(deadline)
-            .map_err(|_| SelfError::RestRequestConnectionTimeout)??;
+            .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
         Ok(())
     }
@@ -344,7 +344,7 @@ impl Websocket {
         (self.callbacks.on_disconnect)(Ok(()));
         self.write_tx
             .send(Event::Done)
-            .map_err(|_| SelfError::RestRequestConnectionFailed)
+            .map_err(|_| SelfError::HTTPRequestConnectionFailed)
     }
 }
 
@@ -565,7 +565,7 @@ async fn invoke_mls_commit_callback(
     let on_commit = on_commit.clone();
 
     runtime.spawn(async move {
-        on_commit(&Commit {
+        on_commit(Commit {
             sender,
             recipient,
             commit,
@@ -601,7 +601,7 @@ async fn invoke_mls_key_package_callback(
     let on_key_package = on_key_package.clone();
 
     runtime.spawn(async move {
-        on_key_package(&KeyPackage {
+        on_key_package(KeyPackage {
             sender,
             recipient,
             package,
@@ -652,7 +652,7 @@ async fn invoke_mls_message_callback(
     let on_message = on_message.clone();
 
     runtime.spawn(async move {
-        on_message(&Message {
+        on_message(Message {
             sender,
             recipient,
             message,
@@ -693,7 +693,7 @@ async fn invoke_mls_welcome_callback(
     let on_welcome = on_welcome.clone();
 
     runtime.spawn(async move {
-        on_welcome(&Welcome {
+        on_welcome(Welcome {
             sender,
             recipient,
             welcome,
