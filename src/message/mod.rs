@@ -1,8 +1,10 @@
 mod chat;
+mod credential;
 mod event;
 mod receipt;
 
 pub use self::chat::*;
+pub use self::credential::*;
 pub use self::event::*;
 pub use self::receipt::*;
 
@@ -14,6 +16,7 @@ use crate::time;
 #[derive(Clone)]
 pub enum Content {
     Chat(Chat),
+    CredentialVerificationRequest(CredentialVerificationRequest),
 }
 
 impl Content {
@@ -29,12 +32,14 @@ impl Content {
     pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
         match self {
             Content::Chat(chat) => Ok(chat.encode()),
+            Content::CredentialVerificationRequest(request) => Ok(request.encode()),
         }
     }
 
     pub fn content_type(&self) -> ContentType {
-        match self {
-            &Content::Chat(_) => ContentType::Chat,
+        match *self {
+            Content::Chat(_) => ContentType::Chat,
+            Content::CredentialVerificationRequest(_) => ContentType::CredentailVerificationRequest,
         }
     }
 }
@@ -44,8 +49,8 @@ pub enum ContentType {
     Custom,
     Chat,
     Receipt,
-    CredentailVerifyRequest,
-    CredentailVerifyResponse,
+    CredentailVerificationRequest,
+    CredentailVerificationResponse,
     CredentialPresentationRequest,
     CredentialPresentationResponse,
 }
@@ -56,8 +61,12 @@ impl From<p2p::ContentType> for ContentType {
             p2p::ContentType::TypeCustom => ContentType::Custom,
             p2p::ContentType::TypeChat => ContentType::Chat,
             p2p::ContentType::TypeReceipt => ContentType::Receipt,
-            p2p::ContentType::TypeCredentialVerifyRequest => ContentType::CredentailVerifyRequest,
-            p2p::ContentType::TypeCredentialVerifyResponse => ContentType::CredentailVerifyResponse,
+            p2p::ContentType::TypeCredentialVerificationRequest => {
+                ContentType::CredentailVerificationRequest
+            }
+            p2p::ContentType::TypeCredentialVerificationResponse => {
+                ContentType::CredentailVerificationResponse
+            }
             p2p::ContentType::TypeCredentialPresentationRequest => {
                 ContentType::CredentialPresentationRequest
             }
@@ -79,8 +88,12 @@ impl From<i32> for ContentType {
             p2p::ContentType::TypeCustom => ContentType::Custom,
             p2p::ContentType::TypeChat => ContentType::Chat,
             p2p::ContentType::TypeReceipt => ContentType::Receipt,
-            p2p::ContentType::TypeCredentialVerifyRequest => ContentType::CredentailVerifyRequest,
-            p2p::ContentType::TypeCredentialVerifyResponse => ContentType::CredentailVerifyResponse,
+            p2p::ContentType::TypeCredentialVerificationRequest => {
+                ContentType::CredentailVerificationRequest
+            }
+            p2p::ContentType::TypeCredentialVerificationResponse => {
+                ContentType::CredentailVerificationResponse
+            }
             p2p::ContentType::TypeCredentialPresentationRequest => {
                 ContentType::CredentialPresentationRequest
             }
@@ -99,8 +112,12 @@ impl Into<p2p::ContentType> for ContentType {
             ContentType::Custom => p2p::ContentType::TypeCustom,
             ContentType::Chat => p2p::ContentType::TypeChat,
             ContentType::Receipt => p2p::ContentType::TypeReceipt,
-            ContentType::CredentailVerifyRequest => p2p::ContentType::TypeCredentialVerifyRequest,
-            ContentType::CredentailVerifyResponse => p2p::ContentType::TypeCredentialVerifyResponse,
+            ContentType::CredentailVerificationRequest => {
+                p2p::ContentType::TypeCredentialVerificationRequest
+            }
+            ContentType::CredentailVerificationResponse => {
+                p2p::ContentType::TypeCredentialVerificationResponse
+            }
             ContentType::CredentialPresentationRequest => {
                 p2p::ContentType::TypeCredentialPresentationRequest
             }
@@ -119,11 +136,11 @@ impl Into<i32> for ContentType {
             ContentType::Custom => p2p::ContentType::TypeCustom as i32,
             ContentType::Chat => p2p::ContentType::TypeChat as i32,
             ContentType::Receipt => p2p::ContentType::TypeReceipt as i32,
-            ContentType::CredentailVerifyRequest => {
-                p2p::ContentType::TypeCredentialVerifyRequest as i32
+            ContentType::CredentailVerificationRequest => {
+                p2p::ContentType::TypeCredentialVerificationRequest as i32
             }
-            ContentType::CredentailVerifyResponse => {
-                p2p::ContentType::TypeCredentialVerifyResponse as i32
+            ContentType::CredentailVerificationResponse => {
+                p2p::ContentType::TypeCredentialVerificationResponse as i32
             }
             ContentType::CredentialPresentationRequest => {
                 p2p::ContentType::TypeCredentialPresentationRequest as i32
@@ -175,6 +192,7 @@ impl Message {
     pub fn content_type(&self) -> ContentType {
         match self.content {
             Content::Chat(_) => ContentType::Chat,
+            Content::CredentialVerificationRequest(_) => ContentType::CredentailVerificationRequest,
         }
     }
 

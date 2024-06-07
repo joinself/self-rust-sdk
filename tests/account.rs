@@ -301,6 +301,7 @@ fn encrypted_messaging() {
         message::Content::Chat(chat) => {
             assert_eq!(chat.message(), "hey bobby");
         }
+        _ => unreachable!(),
     }
 
     let message_from_bobby = alice_message_rx
@@ -311,6 +312,7 @@ fn encrypted_messaging() {
         message::Content::Chat(chat) => {
             assert_eq!(chat.message(), "hey alice");
         }
+        _ => unreachable!(),
     }
 }
 
@@ -514,8 +516,8 @@ fn object_upload_and_download() {
 
     let data_a: Vec<u8> = vec![8; 1 << 16];
     let data_b: Vec<u8> = vec![16; 1 << 16];
-    let object_upload_a = Object::from_bytes(data_a.clone());
-    let object_upload_b = Object::from_bytes(data_b.clone());
+    let object_upload_a = Object::from_bytes("binary/octet-stream".to_string(), data_a.clone());
+    let object_upload_b = Object::from_bytes("binary/octet-stream".to_string(), data_b.clone());
 
     // upload a file and cache it locally
     alice
@@ -526,6 +528,7 @@ fn object_upload_and_download() {
     let mut object_download_a = Object::new(
         object_upload_a.id().to_vec(),
         object_upload_a.key().expect("key missing").to_vec(),
+        "binary/octet-stream".to_string(),
     );
 
     alice
@@ -542,6 +545,7 @@ fn object_upload_and_download() {
     let mut object_download_b = Object::new(
         object_upload_b.id().to_vec(),
         object_upload_b.key().expect("key missing").to_vec(),
+        "binary/octet-stream".to_string(),
     );
 
     alice
