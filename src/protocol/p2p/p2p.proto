@@ -86,8 +86,8 @@ message CredentialVerificationResponse {
 }
 
 message CredentialPresentationRequest {
-  RequestHeader header        = 1;
-  PresentationDetails details = 2;
+  RequestHeader header                 = 1;
+  repeated PresentationDetails details = 2;
 }
 
 message CredentialPresentationResponse {
