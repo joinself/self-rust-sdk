@@ -1,8 +1,10 @@
 mod chat;
+mod credential;
 mod event;
 mod receipt;
 
 pub use self::chat::*;
+pub use self::credential::*;
 pub use self::event::*;
 pub use self::receipt::*;
 
@@ -14,12 +16,28 @@ use crate::time;
 #[derive(Clone)]
 pub enum Content {
     Chat(Chat),
+    CredentialVerificationRequest(CredentialVerificationRequest),
+    CredentialVerificationResponse(CredentialVerificationResponse),
+    CredentialPresentationRequest(CredentialPresentationRequest),
+    CredentialPresentationResponse(CredentialPresentationResponse),
 }
 
 impl Content {
     pub fn decode(content_type: ContentType, content: &[u8]) -> Result<Content, SelfError> {
         let content = match content_type {
             ContentType::Chat => Content::Chat(Chat::decode(content)?),
+            ContentType::CredentialVerificationRequest => Content::CredentialVerificationRequest(
+                CredentialVerificationRequest::decode(content)?,
+            ),
+            ContentType::CredentialVerificationResponse => Content::CredentialVerificationResponse(
+                CredentialVerificationResponse::decode(content)?,
+            ),
+            ContentType::CredentialPresentationRequest => Content::CredentialPresentationRequest(
+                CredentialPresentationRequest::decode(content)?,
+            ),
+            ContentType::CredentialPresentationResponse => Content::CredentialPresentationResponse(
+                CredentialPresentationResponse::decode(content)?,
+            ),
             _ => return Err(SelfError::MessageContentUnknown),
         };
 
@@ -29,12 +47,24 @@ impl Content {
     pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
         match self {
             Content::Chat(chat) => Ok(chat.encode()),
+            Content::CredentialVerificationRequest(request) => Ok(request.encode()),
+            Content::CredentialVerificationResponse(response) => Ok(response.encode()),
+            Content::CredentialPresentationRequest(request) => Ok(request.encode()),
+            Content::CredentialPresentationResponse(response) => Ok(response.encode()),
         }
     }
 
     pub fn content_type(&self) -> ContentType {
-        match self {
-            &Content::Chat(_) => ContentType::Chat,
+        match *self {
+            Content::Chat(_) => ContentType::Chat,
+            Content::CredentialVerificationRequest(_) => ContentType::CredentialVerificationRequest,
+            Content::CredentialVerificationResponse(_) => {
+                ContentType::CredentialVerificationResponse
+            }
+            Content::CredentialPresentationRequest(_) => ContentType::CredentialPresentationRequest,
+            Content::CredentialPresentationResponse(_) => {
+                ContentType::CredentialPresentationResponse
+            }
         }
     }
 }
@@ -44,8 +74,8 @@ pub enum ContentType {
     Custom,
     Chat,
     Receipt,
-    CredentailVerifyRequest,
-    CredentailVerifyResponse,
+    CredentialVerificationRequest,
+    CredentialVerificationResponse,
     CredentialPresentationRequest,
     CredentialPresentationResponse,
 }
@@ -56,8 +86,12 @@ impl From<p2p::ContentType> for ContentType {
             p2p::ContentType::TypeCustom => ContentType::Custom,
             p2p::ContentType::TypeChat => ContentType::Chat,
             p2p::ContentType::TypeReceipt => ContentType::Receipt,
-            p2p::ContentType::TypeCredentialVerifyRequest => ContentType::CredentailVerifyRequest,
-            p2p::ContentType::TypeCredentialVerifyResponse => ContentType::CredentailVerifyResponse,
+            p2p::ContentType::TypeCredentialVerificationRequest => {
+                ContentType::CredentialVerificationRequest
+            }
+            p2p::ContentType::TypeCredentialVerificationResponse => {
+                ContentType::CredentialVerificationResponse
+            }
             p2p::ContentType::TypeCredentialPresentationRequest => {
                 ContentType::CredentialPresentationRequest
             }
@@ -79,8 +113,12 @@ impl From<i32> for ContentType {
             p2p::ContentType::TypeCustom => ContentType::Custom,
             p2p::ContentType::TypeChat => ContentType::Chat,
             p2p::ContentType::TypeReceipt => ContentType::Receipt,
-            p2p::ContentType::TypeCredentialVerifyRequest => ContentType::CredentailVerifyRequest,
-            p2p::ContentType::TypeCredentialVerifyResponse => ContentType::CredentailVerifyResponse,
+            p2p::ContentType::TypeCredentialVerificationRequest => {
+                ContentType::CredentialVerificationRequest
+            }
+            p2p::ContentType::TypeCredentialVerificationResponse => {
+                ContentType::CredentialVerificationResponse
+            }
             p2p::ContentType::TypeCredentialPresentationRequest => {
                 ContentType::CredentialPresentationRequest
             }
@@ -99,8 +137,12 @@ impl Into<p2p::ContentType> for ContentType {
             ContentType::Custom => p2p::ContentType::TypeCustom,
             ContentType::Chat => p2p::ContentType::TypeChat,
             ContentType::Receipt => p2p::ContentType::TypeReceipt,
-            ContentType::CredentailVerifyRequest => p2p::ContentType::TypeCredentialVerifyRequest,
-            ContentType::CredentailVerifyResponse => p2p::ContentType::TypeCredentialVerifyResponse,
+            ContentType::CredentialVerificationRequest => {
+                p2p::ContentType::TypeCredentialVerificationRequest
+            }
+            ContentType::CredentialVerificationResponse => {
+                p2p::ContentType::TypeCredentialVerificationResponse
+            }
             ContentType::CredentialPresentationRequest => {
                 p2p::ContentType::TypeCredentialPresentationRequest
             }
@@ -119,11 +161,11 @@ impl Into<i32> for ContentType {
             ContentType::Custom => p2p::ContentType::TypeCustom as i32,
             ContentType::Chat => p2p::ContentType::TypeChat as i32,
             ContentType::Receipt => p2p::ContentType::TypeReceipt as i32,
-            ContentType::CredentailVerifyRequest => {
-                p2p::ContentType::TypeCredentialVerifyRequest as i32
+            ContentType::CredentialVerificationRequest => {
+                p2p::ContentType::TypeCredentialVerificationRequest as i32
             }
-            ContentType::CredentailVerifyResponse => {
-                p2p::ContentType::TypeCredentialVerifyResponse as i32
+            ContentType::CredentialVerificationResponse => {
+                p2p::ContentType::TypeCredentialVerificationResponse as i32
             }
             ContentType::CredentialPresentationRequest => {
                 p2p::ContentType::TypeCredentialPresentationRequest as i32
@@ -131,6 +173,73 @@ impl Into<i32> for ContentType {
             ContentType::CredentialPresentationResponse => {
                 p2p::ContentType::TypeCredentialPresentationResponse as i32
             }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResponseStatus {
+    Unknown,
+    Ok,
+    Accepted,
+    Created,
+    BadRequest,
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    NotAcceptable,
+    Conflict,
+}
+
+#[allow(clippy::from_over_into)]
+impl From<p2p::Status> for ResponseStatus {
+    fn from(value: p2p::Status) -> ResponseStatus {
+        match value {
+            p2p::Status::Ok => ResponseStatus::Ok,
+            p2p::Status::Accepted => ResponseStatus::Accepted,
+            p2p::Status::Created => ResponseStatus::Created,
+            p2p::Status::BadRequest => ResponseStatus::BadRequest,
+            p2p::Status::Unauthorized => ResponseStatus::Unauthorized,
+            p2p::Status::Forbidden => ResponseStatus::Forbidden,
+            p2p::Status::NotFound => ResponseStatus::NotFound,
+            p2p::Status::NotAcceptable => ResponseStatus::NotAcceptable,
+            p2p::Status::Conflict => ResponseStatus::Conflict,
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<p2p::Status> for ResponseStatus {
+    fn into(self) -> p2p::Status {
+        match self {
+            ResponseStatus::Unknown => unreachable!("not a possible selection"),
+            ResponseStatus::Ok => p2p::Status::Ok,
+            ResponseStatus::Accepted => p2p::Status::Accepted,
+            ResponseStatus::Created => p2p::Status::Created,
+            ResponseStatus::BadRequest => p2p::Status::BadRequest,
+            ResponseStatus::Unauthorized => p2p::Status::Unauthorized,
+            ResponseStatus::Forbidden => p2p::Status::Forbidden,
+            ResponseStatus::NotFound => p2p::Status::NotFound,
+            ResponseStatus::NotAcceptable => p2p::Status::NotAcceptable,
+            ResponseStatus::Conflict => p2p::Status::Conflict,
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<i32> for ResponseStatus {
+    fn into(self) -> i32 {
+        match self {
+            ResponseStatus::Unknown => unreachable!("not a possible selection"),
+            ResponseStatus::Ok => p2p::Status::Ok as i32,
+            ResponseStatus::Accepted => p2p::Status::Accepted as i32,
+            ResponseStatus::Created => p2p::Status::Created as i32,
+            ResponseStatus::BadRequest => p2p::Status::BadRequest as i32,
+            ResponseStatus::Unauthorized => p2p::Status::Unauthorized as i32,
+            ResponseStatus::Forbidden => p2p::Status::Forbidden as i32,
+            ResponseStatus::NotFound => p2p::Status::NotFound as i32,
+            ResponseStatus::NotAcceptable => p2p::Status::NotAcceptable as i32,
+            ResponseStatus::Conflict => p2p::Status::Conflict as i32,
         }
     }
 }
@@ -175,6 +284,14 @@ impl Message {
     pub fn content_type(&self) -> ContentType {
         match self.content {
             Content::Chat(_) => ContentType::Chat,
+            Content::CredentialVerificationRequest(_) => ContentType::CredentialVerificationRequest,
+            Content::CredentialVerificationResponse(_) => {
+                ContentType::CredentialVerificationResponse
+            }
+            Content::CredentialPresentationRequest(_) => ContentType::CredentialPresentationRequest,
+            Content::CredentialPresentationResponse(_) => {
+                ContentType::CredentialPresentationResponse
+            }
         }
     }
 

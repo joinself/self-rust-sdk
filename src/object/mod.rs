@@ -3,25 +3,28 @@ use crate::error::SelfError;
 
 pub struct Object {
     id: Vec<u8>,
+    mime: String,
     key: Option<Vec<u8>>,
     data: Option<Vec<u8>>,
 }
 
 impl Object {
-    pub fn new(id: Vec<u8>, key: Vec<u8>) -> Object {
+    pub fn new(id: Vec<u8>, key: Vec<u8>, mime: String) -> Object {
         Object {
             id,
+            mime,
             key: Some(key),
             data: None,
         }
     }
 
-    pub fn from_bytes(data: Vec<u8>) -> Object {
+    pub fn from_bytes(mime: String, data: Vec<u8>) -> Object {
         let (key, data) = crypto::aead::aes_gcm_encrypt(&data);
         let id = crypto::hash::sha3(&data);
 
         Object {
             id,
+            mime,
             key: Some(key),
             data: Some(data),
         }
@@ -29,6 +32,10 @@ impl Object {
 
     pub fn id(&self) -> &[u8] {
         &self.id
+    }
+
+    pub fn mime(&self) -> &str {
+        &self.mime
     }
 
     pub fn key(&self) -> Option<&[u8]> {
