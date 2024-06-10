@@ -1,5 +1,7 @@
 use std::{
-    collections::HashMap, sync::{Arc, Once}, time::Duration
+    collections::HashMap,
+    sync::{Arc, Once},
+    time::Duration,
 };
 
 use self_sdk::{
@@ -857,9 +859,12 @@ fn message_credential_presentation() {
                         .holder(&Address::key(&as_address));
 
                     for detail in request.details().expect("failed to decode details") {
-                        let credential_type: Vec<&str> = detail.credential_type.iter().map(|t| t.as_ref()).collect();
-                        
-                        let credentials = bobby_ms_cb.credential_lookup_by_credential_type(&credential_type).expect("failed to find credentials");
+                        let credential_type: Vec<&str> =
+                            detail.credential_type.iter().map(|t| t.as_ref()).collect();
+
+                        let credentials = bobby_ms_cb
+                            .credential_lookup_by_credential_type(&credential_type)
+                            .expect("failed to find credentials");
 
                         for credential in credentials {
                             presentation_builder.credential_add(credential);
@@ -888,7 +893,7 @@ fn message_credential_presentation() {
                     bobby_message_tx
                         .send(msg.content().clone())
                         .expect("failed to send received message for bobby");
-                },
+                }
                 _ => unreachable!("not an option"),
             }
         }),
@@ -949,7 +954,7 @@ fn message_credential_presentation() {
 
     // request credential presentation from bobby
     let content = message::CredentialPresentationRequestBuilder::new()
-        .details(CredentialPresentationDetail{
+        .details(CredentialPresentationDetail {
             credential_type: default(CREDENTIAL_DEFAULT),
             subject: HashMap::new(),
         })
@@ -967,7 +972,7 @@ fn message_credential_presentation() {
     match request_from_alice {
         message::Content::CredentialPresentationRequest(request) => {
             assert_eq!(request.details().expect("fail").len(), 1);
-        },
+        }
         _ => unreachable!(),
     }
 
@@ -986,20 +991,23 @@ fn message_credential_presentation() {
 
             let presentation = &presentations[0];
 
-            let holder = presentation
-                .holder()
-                .expect("credential holder invalid");
+            let holder = presentation.holder().expect("credential holder invalid");
 
             assert_eq!(holder.address(), &bobby_inbox);
             assert_eq!(presentation.credentials().len(), 1);
             assert_eq!(presentation.presentation_type(), PRESENTATION_DEFAULT);
 
-            let credential = presentation.credentials().first().expect("empty credentials");
-            
+            let credential = presentation
+                .credentials()
+                .first()
+                .expect("empty credentials");
+
             let subject = credential.credential_subject().expect("invalid subject");
             assert_eq!(subject.address(), &bobby_link_key);
 
-            let subject_claim = credential.credential_subject_claim("firstName").expect("invalid subject claim");
+            let subject_claim = credential
+                .credential_subject_claim("firstName")
+                .expect("invalid subject claim");
             assert_eq!(subject_claim, "bobby");
 
             let mut signed_by_holder = false;

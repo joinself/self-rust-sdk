@@ -14,6 +14,18 @@ impl Chat {
         &self.chat.message
     }
 
+    pub fn referencing(&self) -> &[u8] {
+        &self.chat.referencing
+    }
+
+    pub fn attachments(&self) -> Vec<object::Object> {
+        self.chat
+            .attachments
+            .iter()
+            .map(|o| object::Object::new(o.id.clone(), o.key.clone(), o.mime.clone()))
+            .collect()
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         self.chat.encode_to_vec()
     }
@@ -51,6 +63,11 @@ impl ChatBuilder {
 
     pub fn reference(&mut self, reference: &[u8]) -> &mut ChatBuilder {
         self.referencing = Some(reference.to_vec());
+        self
+    }
+
+    pub fn attach(&mut self, attachment: object::Object) -> &mut ChatBuilder {
+        self.attachments.push(attachment);
         self
     }
 

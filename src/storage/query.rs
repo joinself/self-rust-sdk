@@ -592,10 +592,7 @@ pub fn group_with(
     stmt.column_blob(0)
 }
 
-pub fn group_as(
-    txn: &Transaction,
-    group_address: &[u8],
-) -> Result<Option<Vec<u8>>, SelfError> {
+pub fn group_as(txn: &Transaction, group_address: &[u8]) -> Result<Option<Vec<u8>>, SelfError> {
     // these two queries are suboptimal
     // as we could just return these in one
     // however, this is more composable
