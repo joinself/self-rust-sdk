@@ -595,6 +595,36 @@ pub fn group_with(
 pub fn group_as(
     txn: &Transaction,
     group_address: &[u8],
+) -> Result<Option<Vec<u8>>, SelfError> {
+    // these two queries are suboptimal
+    // as we could just return these in one
+    // however, this is more composable
+    // for other usecases
+    let stmt = txn.prepare(
+        "SELECT a2.address FROM groups
+        JOIN members m1 ON
+            m1.group_id = groups.id
+        JOIN keypairs k1 ON
+            k1.address = a2.id
+        JOIN addresses a1 ON
+            a1.id = groups.address
+        JOIN addresses a2 ON
+            a2.id = m1.member_address
+        WHERE a1.address = ?1;",
+    )?;
+
+    stmt.bind_blob(1, group_address)?;
+
+    if !stmt.step()? {
+        return Ok(None);
+    }
+
+    stmt.column_blob(0)
+}
+
+pub fn group_as_with_purpose(
+    txn: &Transaction,
+    group_address: &[u8],
     purpose: u64,
 ) -> Result<Option<Vec<u8>>, SelfError> {
     // these two queries are suboptimal

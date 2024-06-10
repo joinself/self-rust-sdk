@@ -476,6 +476,25 @@ pub fn group_create(
     Ok(group_pk)
 }
 
+pub fn group_member_as(
+    storage: &Connection,
+    group_address: &PublicKey,
+) -> Result<Option<PublicKey>, SelfError> {
+    let mut as_keypair: Option<PublicKey> = None;
+
+    storage.transaction(|txn| {
+        // TODO think about how what roles actually means here...
+        as_keypair = match query::group_as(txn, group_address.address())? {
+            Some(as_keypair) => Some(PublicKey::from_bytes(&as_keypair)?),
+            None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        Ok(())
+    })?;
+
+    Ok(as_keypair)
+}
+
 pub fn connection_negotiate(
     storage: &Connection,
     websocket: &Websocket,
@@ -836,7 +855,7 @@ pub fn message_send(
             None => return Err(SelfError::KeyPairNotFound),
         };
 
-        from_address = query::group_as(txn, group_address.address(), 1)?
+        from_address = query::group_as_with_purpose(txn, group_address.address(), 1)?
             .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
 
         let from_address = match &from_address {

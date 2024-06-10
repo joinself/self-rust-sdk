@@ -478,6 +478,16 @@ impl Account {
         Ok(Vec::new())
     }
 
+    /// finds the membership address for a group
+    pub fn group_member_as(&self, group_address: &PublicKey) -> Result<Option<PublicKey>, SelfError> {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        unsafe { operation::group_member_as(&(*storage), group_address) }
+    }
+
     pub fn shutdown(&self) -> Result<(), SelfError> {
         let storage = self.storage.load(Ordering::SeqCst);
         if storage.is_null() {
