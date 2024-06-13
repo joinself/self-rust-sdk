@@ -188,6 +188,167 @@ fn register_identity() {
 }
 
 #[test]
+fn messaging_subscriptions() {
+    test_server();
+
+    let rpc_url = "http://127.0.0.1:3000/";
+    let obj_url = "http://127.0.0.1:3001/";
+    let ws_url = "ws://127.0.0.1:3002/";
+
+    let (alice_welcome_tx, alice_welcome_rx) = crossbeam::channel::bounded::<bool>(1);
+    let (alice_message_tx, alice_message_rx) = crossbeam::channel::bounded::<message::Content>(1);
+    let (bobby_message_tx, _) = crossbeam::channel::bounded::<message::Content>(1);
+
+    // setup alices account
+    let mut alice = Account::new();
+    let alice_wm_cb = alice.clone();
+
+    let alice_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |_| {}),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |welcome| {
+            alice_wm_cb
+                .connection_accept(
+                    welcome.recipient(),
+                    welcome.welcome(),
+                    welcome.subscription_token(),
+                )
+                .expect("failed to connect using welcome mesage");
+
+            alice_welcome_tx
+                .send(true)
+                .expect("failed to channel send welcome");
+        }),
+    };
+
+    // configure alice's account storage path to be persistent
+    alice
+        .configure(
+            rpc_url,
+            obj_url,
+            ws_url,
+            "/tmp/alice.db",
+            b"",
+            alice_callbacks,
+        )
+        .expect("failed to configure account");
+
+    // setup bob's account
+    let mut bobby = Account::new();
+    let bobby_kp_cb = bobby.clone();
+    let bobby_ms_cb = bobby.clone();
+
+    let bobby_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |message| {
+            let chat_message = message::ChatBuilder::new()
+                .message("hey alice")
+                .finish()
+                .expect("failed to build chat message");
+
+            bobby_ms_cb
+                .message_send(message.sender(), &chat_message)
+                .expect("failed to send response message from bobby");
+            bobby_message_tx
+                .send(message.content().clone())
+                .expect("failed to send received message for bobby");
+        }),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |key_package| {
+            bobby_kp_cb
+                .connection_establish(
+                    key_package.recipient(),
+                    key_package.sender(),
+                    key_package.package(),
+                )
+                .expect("failed to connect using key package");
+        }),
+        on_welcome: Arc::new(|_| {}),
+    };
+
+    bobby
+        .configure(rpc_url, obj_url, ws_url, ":memory:", b"", bobby_callbacks)
+        .expect("failed to configure account");
+
+    // create an inbox for alice and bob
+    let alice_inbox = alice.inbox_open().expect("failed to open inbox");
+    let bobby_inbox = bobby.inbox_open().expect("failed to open inbox");
+
+    // initiate a connection from alice to bob
+    alice
+        .connection_negotiate(&alice_inbox, &bobby_inbox)
+        .expect("failed to send connection request");
+
+    // accept the connection from alice
+    alice_welcome_rx
+        .recv_timeout(DEFAULT_TIMEOUT)
+        .expect("welcome message timeout");
+    println!("connection established");
+
+    // shutdown alice's account
+    alice
+        .shutdown()
+        .expect("failed to shutdown alice's account");
+
+    // reload alice's account
+    let mut alice = Account::new();
+
+    let alice_callbacks = MessagingCallbacks {
+        on_connect: Arc::new(|| {}),
+        on_disconnect: Arc::new(|_| {}),
+        on_message: Arc::new(move |message| {
+            alice_message_tx
+                .send(message.content().clone())
+                .expect("failed to send received message for alice");
+        }),
+        on_commit: Arc::new(|_| {}),
+        on_key_package: Arc::new(move |_| {}),
+        on_welcome: Arc::new(move |_| {}),
+    };
+
+    // configure alice's account storage path to be persistent
+    alice
+        .configure(
+            rpc_url,
+            obj_url,
+            ws_url,
+            "/tmp/alice.db",
+            b"",
+            alice_callbacks,
+        )
+        .expect("failed to configure account");
+
+    // implement metrics tracking to remove processing of duplicate messages
+    // track last received message time for subscriptions
+    // schedule task to update time offset for subscriptions (update based on inactivity vs timestamp of messages received)
+
+    let chat_message = message::ChatBuilder::new()
+        .message("hey alice")
+        .finish()
+        .expect("failed to build chat message");
+
+    // alice send an encrypted message to the group
+    bobby
+        .message_send(&bobby_inbox, &chat_message)
+        .expect("failed to send message");
+
+    let message_from_bobby = alice_message_rx
+        .recv_timeout(DEFAULT_TIMEOUT)
+        .expect("failed to receive message");
+
+    match message_from_bobby {
+        message::Content::Chat(chat) => {
+            assert_eq!(chat.message(), "hey alice");
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
 fn object_upload_and_download() {
     test_server();
 

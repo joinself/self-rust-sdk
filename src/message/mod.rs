@@ -11,7 +11,6 @@ pub use self::receipt::*;
 use crate::error::SelfError;
 use crate::keypair::signing::PublicKey;
 use crate::protocol::p2p;
-use crate::time;
 
 #[derive(Clone)]
 pub enum Content {
@@ -249,6 +248,7 @@ pub struct Message {
     sender: PublicKey,
     recipient: PublicKey,
     content: Content,
+    sequence: u64,
     timestamp: i64,
 }
 
@@ -258,6 +258,7 @@ impl Message {
         sender: PublicKey,
         recipient: PublicKey,
         content: Content,
+        sequence: u64,
         timestamp: i64,
     ) -> Message {
         Message {
@@ -265,6 +266,7 @@ impl Message {
             sender,
             recipient,
             content,
+            sequence,
             timestamp,
         }
     }
@@ -301,76 +303,5 @@ impl Message {
 
     pub fn timestamp(&self) -> i64 {
         self.timestamp
-    }
-}
-
-#[derive(Default)]
-pub struct MessageBuilder {
-    id: Option<Vec<u8>>,
-    sender: Option<PublicKey>,
-    recipient: Option<PublicKey>,
-    content: Option<Content>,
-}
-
-impl MessageBuilder {
-    pub fn new() -> MessageBuilder {
-        MessageBuilder {
-            id: None,
-            sender: None,
-            recipient: None,
-            content: None,
-        }
-    }
-
-    pub fn id(&mut self, id: Vec<u8>) -> &mut MessageBuilder {
-        self.id = Some(id);
-        self
-    }
-
-    pub fn sender(&mut self, address: PublicKey) -> &mut MessageBuilder {
-        self.sender = Some(address);
-        self
-    }
-
-    pub fn recipient(&mut self, address: PublicKey) -> &mut MessageBuilder {
-        self.recipient = Some(address);
-        self
-    }
-
-    pub fn content(&mut self, content: Content) -> &mut MessageBuilder {
-        self.content = Some(content);
-        self
-    }
-
-    pub fn finish(self) -> Result<Message, SelfError> {
-        let id = match self.id {
-            Some(id) => id,
-            None => return Err(SelfError::MessageContentMissing),
-        };
-
-        let sender = match self.sender {
-            Some(sender) => sender,
-            None => return Err(SelfError::MessageSenderMissing),
-        };
-
-        let recipient = match self.recipient {
-            Some(recipient) => recipient,
-            None => return Err(SelfError::MessageRecipientMissing),
-        };
-
-        let content = match self.content {
-            Some(content) => content,
-            None => return Err(SelfError::MessageContentMissing),
-        };
-
-        let timestamp = time::unix();
-
-        Ok(Message {
-            id,
-            sender,
-            recipient,
-            content,
-            timestamp,
-        })
     }
 }

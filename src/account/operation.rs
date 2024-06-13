@@ -370,18 +370,16 @@ pub fn object_download(
 
 pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicKey, SelfError> {
     let signing_kp = KeyPair::new();
-    let mut subscription_token: Option<token::Subscription> = None;
     let mut key_packages: Vec<Vec<u8>> = Vec::new();
+    let now = time::unix();
+
+    let subscription_token =
+        token::Subscription::new(&signing_kp, signing_kp.public(), now, i64::MAX);
 
     storage.transaction(|txn| {
-        query::keypair_create(txn, signing_kp.clone(), 0, time::unix())?;
-        // TODO not sure this is actually needed
-        subscription_token = Some(token::Subscription::new(
-            &signing_kp,
-            signing_kp.public(),
-            time::unix(),
-            i64::MAX,
-        ));
+        query::keypair_create(txn, signing_kp.clone(), 0, now)?;
+
+        query::subscription_create(txn, signing_kp.address(), signing_kp.address(), now)?;
 
         query::token_create(
             txn,
@@ -389,26 +387,16 @@ pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicK
             signing_kp.address(),
             signing_kp.address(),
             signing_kp.address(),
-            subscription_token.as_ref().unwrap().as_bytes(),
+            subscription_token.as_bytes(),
         )?;
 
         // setup the mls credentials and generate some key packages
         key_packages = e2e::mls_inbox_setup(txn, &signing_kp, 4)?;
 
         // TODO mark this keypair as used as a messaging inbox
-        // TODO validate this keypair is not:
-        // 1. already used as an inbox
-        // 2. if attached to an did, it must have an authentication role
-
-        // TODO update metrics on inbox subscription time
 
         Ok(())
     })?;
-
-    let subscription_token = match subscription_token {
-        Some(subscription_token) => subscription_token,
-        None => return Err(SelfError::KeyPairNotFound),
-    };
 
     // open & subscribe...
     websocket.open(&signing_kp)?;
@@ -420,6 +408,29 @@ pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicK
     }])?;
 
     Ok(signing_kp.public().to_owned())
+}
+
+pub fn subscription_load(storage: &Connection, websocket: &Websocket) -> Result<(), SelfError> {
+    let mut subscription_list = Vec::new();
+
+    storage.transaction(|txn| {
+        subscription_list = query::subscription_list(txn)?;
+        Ok(())
+    })?;
+
+    let mut subscriptions = Vec::new();
+
+    for (to_address, as_address, token, from) in subscription_list {
+        println!("subscribing to: {:?}", to_address);
+        subscriptions.push(Subscription {
+            to_address: PublicKey::from_bytes(&to_address)?,
+            as_address: KeyPair::decode(&as_address)?,
+            token: token.map(|t| token::Token::decode(&t).expect("invalid token")),
+            from,
+        });
+    }
+
+    websocket.subscribe(&subscriptions)
 }
 
 pub fn group_create(
@@ -843,10 +854,11 @@ pub fn message_send(
     let mut from_address: Option<PublicKey> = None;
     let mut group_address: Option<PublicKey> = None;
     let mut ciphertext = Vec::new();
-    let sequence: u64 = 0;
+    let mut sequence_tx = 0;
+    let timestamp = time::unix();
 
     storage.transaction(|txn| {
-        // TODO determine is this is a group, did or inbox address
+        // TODO determine is this is a group, did or inbox address?
         group_address = query::group_with(txn, to_address.address(), 1)?
             .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
 
@@ -871,27 +883,42 @@ pub fn message_send(
         };
 
         as_address = query::keypair_lookup(txn, from_address.address())?;
-        if let Some(as_address) = &as_address {
-            ciphertext = e2e::mls_group_encrypt(
-                txn,
-                group_address.address(),
-                as_address,
-                &message.encode_to_vec(),
-            )?;
+        let as_address = match &as_address {
+            Some(as_address) => as_address,
+            None => return Err(SelfError::KeyPairNotFound),
+        };
 
-            // TODO load sequence...
+        ciphertext = e2e::mls_group_encrypt(
+            txn,
+            group_address.address(),
+            as_address,
+            &message.encode_to_vec(),
+        )?;
 
-            query::outbox_queue(
-                txn,
-                query::Event::Message,
-                as_address.address(),
-                group_address.address(),
-                &ciphertext,
-                sequence,
-            )?;
-        }
+        sequence_tx = match query::metrics_load(txn, as_address.address(), group_address.address())?
+        {
+            Some((sequence_tx, _)) => sequence_tx + 1,
+            None => {
+                query::metrics_create(txn, as_address.address(), group_address.address(), 0, 0)?;
+                1
+            }
+        };
 
-        Ok(())
+        query::outbox_queue(
+            txn,
+            query::Event::Message,
+            as_address.address(),
+            group_address.address(),
+            &ciphertext,
+            sequence_tx,
+        )?;
+
+        query::metrics_update_sequence_tx(
+            txn,
+            group_address.address(),
+            as_address.address(),
+            sequence_tx,
+        )
     })?;
 
     let as_address = match &as_address {
@@ -922,6 +949,11 @@ pub fn message_send(
         .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
     storage.transaction(|txn| {
-        query::outbox_dequeue(txn, as_address.address(), group_address.address(), sequence)
+        query::outbox_dequeue(
+            txn,
+            as_address.address(),
+            group_address.address(),
+            sequence_tx,
+        )
     })
 }

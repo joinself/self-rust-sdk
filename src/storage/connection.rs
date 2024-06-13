@@ -7,15 +7,7 @@ use std::ffi::CString;
 use std::ptr;
 
 use crate::error::SelfError;
-use crate::storage::schema::{
-    schema_create_addresses, schema_create_credential_types, schema_create_credentials,
-    schema_create_groups, schema_create_identities, schema_create_identity_operations,
-    schema_create_inbox, schema_create_keypair_associations, schema_create_keypairs,
-    schema_create_members, schema_create_mls_encryption_key_pairs, schema_create_mls_group_states,
-    schema_create_mls_hpke_private_keys, schema_create_mls_key_packages,
-    schema_create_mls_psk_bundles, schema_create_mls_signature_key_pairs, schema_create_objects,
-    schema_create_outbox, schema_create_tokens,
-};
+use crate::storage::schema::*;
 use crate::storage::statement::Statement;
 use crate::storage::transaction::Transaction;
 
@@ -46,17 +38,19 @@ impl Connection {
         // schema migrations
         connection.transaction(|txn| {
             schema_create_addresses(txn);
-            schema_create_credentials(txn);
             schema_create_credential_types(txn);
+            schema_create_credentials(txn);
             schema_create_groups(txn);
             schema_create_identities(txn);
             schema_create_identity_operations(txn);
             schema_create_inbox(txn);
-            schema_create_keypairs(txn);
             schema_create_keypair_associations(txn);
+            schema_create_keypairs(txn);
             schema_create_members(txn);
+            schema_create_metrics(txn);
             schema_create_objects(txn);
             schema_create_outbox(txn);
+            schema_create_subscriptions(txn);
             schema_create_tokens(txn);
             schema_create_mls_signature_key_pairs(txn);
             schema_create_mls_hpke_private_keys(txn);
@@ -129,14 +123,13 @@ pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(),
             println!("sqlite status: {}", result);
 
             unsafe {
-                let msg = CStr::from_ptr(sqlite3_errmsg(conn));
+                let msg = std::ffi::CStr::from_ptr(libsqlite3_sys::sqlite3_errmsg(conn));
                 println!(
                     "sqlite error: {}",
                     msg.to_str().expect("failed to convert sqlite error")
                 );
             }
             */
-
             Err(SelfError::StorageUnknown)
         }
     }
