@@ -1,6 +1,6 @@
 use prost::Message as ProstMessage;
 
-use crate::account::operation;
+use crate::account::{inbox, operation};
 use crate::credential::{Credential, Presentation, VerifiableCredential, VerifiablePresentation};
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Operation, RoleSet};
@@ -10,7 +10,6 @@ use crate::message::{self, Commit, Content, ContentType, KeyPackage, Message, We
 use crate::object;
 use crate::protocol::messaging;
 use crate::protocol::p2p::p2p;
-use crate::storage::query::QueuedMessage;
 use crate::storage::{query, Connection};
 use crate::transport::object::ObjectStore;
 use crate::transport::rpc::Rpc;
@@ -555,80 +554,83 @@ fn on_event_cb(
 ) -> websocket::OnEventCB {
     let storage = storage.clone();
 
-    Arc::new(move |event| {
+    // here we process incoming events and store them durably to our local inbox.
+    // any out of order messages will not be immediately processed until we have
+    // a complete in order sequence of messages. when we have an in order sequence
+    // of messages, we process them all until there are no more messages available.
+
+    Arc::new(move |mut event| {
         let storage = storage.load(Ordering::SeqCst);
-        let mut next: Option<QueuedMessage> = None;
-        let mut sequence_rx: Option<u64> = None;
 
         unsafe {
-            let result = (*storage).transaction(|txn| {
-                // load the metrics for this to_address and from_address
-                // determine if this message is in order or a duplicate
-                sequence_rx = query::metrics_load_sequence_rx(
-                    txn,
-                    event.from_address.address(),
-                    event.to_address.address(),
-                )?;
-
-                if let Some(sequence_rx) = sequence_rx {
-                    if event.sequence <= sequence_rx {
-                        // we've seen this event before, skip it
-                        return Ok(());
-                    }
-                } else {
-                    query::metrics_create(
-                        txn,
-                        event.from_address.address(),
-                        event.to_address.address(),
-                        0,
-                        0,
-                    )?;
-                }
-
-                let event_type = match event.content_type {
-                    messaging::ContentType::MLS_COMMIT => query::Event::Commit,
-                    messaging::ContentType::MLS_KEY_PACKAGE => query::Event::KeyPackage,
-                    messaging::ContentType::MLS_MESSAGE => query::Event::Message,
-                    messaging::ContentType::MLS_PROPOSAL => query::Event::Proposal,
-                    messaging::ContentType::MLS_WELCOME => query::Event::Welcome,
-                    _ => return Ok(()),
-                };
-
-                // store the event to our inbox
-                query::address_create(txn, event.from_address.address())?;
-                query::inbox_queue(
-                    txn,
-                    event_type,
-                    event.from_address.address(),
-                    event.to_address.address(),
-                    &event.content,
-                    event.timestamp,
-                    event.sequence,
-                )?;
-
-                // attempt to get the next valid message sequence
-                next = query::inbox_next(txn)?;
-
-                Ok(())
-            });
-
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
+            if let Err(err) = inbox::inbox_queue(&(*storage), &mut event) {
+                println!("inbox queue message failed: {}", err);
                 return;
             }
         }
 
+        // TODO doing this in two (technically 3!) transactions is really suboptimal,
+        // but it simplifies the implementation. try to address this later.
+        // fast path in sequence messages?
+
+        let mut iterator = inbox::InboxIterator::new(storage);
+
         // iterate through all messages we have available
-        while let Some(next) = &next {
+        while let Some(next) = iterator.next() {
             let from_address =
                 PublicKey::from_bytes(&next.from_address).expect("invalid address loaded");
             let to_address =
                 PublicKey::from_bytes(&next.to_address).expect("invalid address loaded");
 
             match next.event {
-                query::Event::Commit => {}
-                query::Event::KeyPackage => {}
-                query::Event::Message => {
+                query::Event::Commit => {
+                    let content = match flatbuffers::root::<messaging::MlsCommit>(&next.message) {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("messaging event error: {}", err);
+                            return;
+                        }
+                    };
+
+                    let commit = match content.commit() {
+                        Some(commit) => Vec::from(commit.bytes()),
+                        None => return,
+                    };
+
+                    on_commit(Commit::new(
+                        from_address,
+                        to_address,
+                        commit,
+                        next.sequence,
+                        next.timestamp,
+                    ));
+                }
+                query::Event::KeyPackage => {
+                    let content = match flatbuffers::root::<messaging::MlsKeyPackage>(&next.message)
+                    {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("messaging event error: {}", err);
+                            return;
+                        }
+                    };
+
+                    let package = match content.package() {
+                        Some(package) => Vec::from(package.bytes()),
+                        None => return,
+                    };
+
+                    // TODO correctly pass through authorization info
+                    on_key_package(KeyPackage::new(
+                        from_address,
+                        to_address,
+                        package,
+                        next.sequence,
+                        next.timestamp,
+                        true,
+                    ));
+                }
+                query::Event::EncryptedMessage | query::Event::DecryptedMessage => {
                     let decoded_message = match p2p::Message::decode(next.message.as_ref()) {
                         Ok(decoded_message) => decoded_message,
                         Err(err) => {
@@ -656,18 +658,37 @@ fn on_event_cb(
                     ));
                 }
                 query::Event::Proposal => {}
-                query::Event::Welcome => {}
-                query::Event::Invalid => return,
-            }
+                query::Event::Welcome => {
+                    let content = match flatbuffers::root::<messaging::MlsWelcome>(&next.message) {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("messaging event error: {}", err);
+                            return;
+                        }
+                    };
 
-            unsafe {
-                let result = (*storage).transaction(|txn| {
-                    query::inbox_dequeue(txn, &next.from_address, &next.to_address, next.sequence)
-                });
+                    let package = match content.welcome() {
+                        Some(package) => Vec::from(package.bytes()),
+                        None => return,
+                    };
 
-                if let Err(err) = result {
-                    println!("transaction failed: {}", err);
+                    let subscription = match content.subscription() {
+                        Some(subscription) => Vec::from(subscription.bytes()),
+                        None => return,
+                    };
+
+                    // TODO correctly pass through authorization info
+                    on_welcome(Welcome::new(
+                        from_address,
+                        to_address,
+                        package,
+                        subscription,
+                        next.sequence,
+                        next.timestamp,
+                        true,
+                    ));
                 }
+                query::Event::Invalid => return,
             }
         }
     })

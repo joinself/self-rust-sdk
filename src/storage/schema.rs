@@ -270,6 +270,7 @@ pub fn schema_create_inbox(txn: &Transaction) {
                 from_address INTEGER NOT NULL,
                 to_address INTEGER NOT NULL,
                 message INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
             );",
         )
@@ -291,6 +292,7 @@ pub fn schema_create_outbox(txn: &Transaction) {
                 from_address INTEGER NOT NULL,
                 to_address INTEGER NOT NULL,
                 message INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
             );",
         )

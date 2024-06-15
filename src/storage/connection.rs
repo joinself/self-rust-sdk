@@ -115,11 +115,10 @@ pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
     }
 }
 
-pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
+pub fn sqlite_check_result_debug(conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
     match result {
         SQLITE_OK => Ok(()),
         _ => {
-            /*
             println!("sqlite status: {}", result);
 
             unsafe {
@@ -129,7 +128,7 @@ pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(),
                     msg.to_str().expect("failed to convert sqlite error")
                 );
             }
-            */
+
             Err(SelfError::StorageUnknown)
         }
     }

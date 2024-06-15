@@ -7,24 +7,27 @@ pub trait KeyPair {
     fn decode(d: &[u8]) -> Self;
 }
 
+#[derive(Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum Event {
     Commit,
     KeyPackage,
-    Message,
+    EncryptedMessage,
+    DecryptedMessage,
     Proposal,
     Welcome,
     Invalid,
 }
 
 impl Event {
-    fn to_u8(&self) -> u8 {
+    fn to_u8(self) -> u8 {
         match self {
             Event::Commit => 0,
             Event::KeyPackage => 1,
-            Event::Message => 2,
-            Event::Proposal => 3,
-            Event::Welcome => 4,
+            Event::EncryptedMessage => 2,
+            Event::DecryptedMessage => 3,
+            Event::Proposal => 4,
+            Event::Welcome => 5,
             Event::Invalid => 255,
         }
     }
@@ -33,9 +36,10 @@ impl Event {
         match event {
             0 => Event::Commit,
             1 => Event::KeyPackage,
-            2 => Event::Message,
-            3 => Event::Proposal,
-            4 => Event::Welcome,
+            2 => Event::EncryptedMessage,
+            3 => Event::DecryptedMessage,
+            4 => Event::Proposal,
+            5 => Event::Welcome,
             _ => Event::Invalid,
         }
     }
@@ -956,6 +960,30 @@ pub fn inbox_dequeue(
     .execute()
 }
 
+pub fn inbox_update(
+    txn: &Transaction,
+    event: Event,
+    from_address: &[u8],
+    to_address: &[u8],
+    message: &[u8],
+    sequence: u64,
+) -> Result<(), SelfError> {
+    txn.prepare(
+        "UPDATE inbox SET event = ?1 AND message = ?2
+        WHERE from_address = (
+            SELECT id FROM addresses WHERE address=?3
+        ) AND to_address = (
+            SELECT id FROM addresses WHERE address=?4
+        ) AND sequence = ?5;",
+    )?
+    .bind_integer(1, event.to_u8() as i64)?
+    .bind_blob(2, message)?
+    .bind_blob(3, from_address)?
+    .bind_blob(4, to_address)?
+    .bind_integer(5, sequence as i64)?
+    .execute()
+}
+
 pub fn inbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError> {
     let stmt = txn.prepare(
         "SELECT a1.address, a2.address, event, message, timestamp, sequence FROM inbox
@@ -1378,7 +1406,7 @@ mod tests {
             .transaction(|txn| {
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1398,7 +1426,7 @@ mod tests {
             .transaction(|txn| {
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1418,7 +1446,7 @@ mod tests {
             .transaction(|txn| {
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1435,7 +1463,7 @@ mod tests {
             .transaction(|txn| {
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1451,7 +1479,7 @@ mod tests {
                 for i in 2..100 {
                     query::inbox_queue(
                         txn,
-                        Event::Message,
+                        Event::DecryptedMessage,
                         &from_address,
                         &to_address,
                         &crypto::random::vec(256),
@@ -1485,7 +1513,7 @@ mod tests {
 
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1528,7 +1556,7 @@ mod tests {
 
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1582,7 +1610,7 @@ mod tests {
                 .transaction(|txn| {
                     query::inbox_queue(
                         txn,
-                        Event::Message,
+                        Event::DecryptedMessage,
                         &from_address,
                         &to_address,
                         &content,
@@ -1613,7 +1641,7 @@ mod tests {
                 for i in 100..200 {
                     query::inbox_queue(
                         txn,
-                        Event::Message,
+                        Event::DecryptedMessage,
                         &from_address,
                         &to_address,
                         &crypto::random::vec(256),
@@ -1658,7 +1686,7 @@ mod tests {
                 for i in (202..300).rev() {
                     query::inbox_queue(
                         txn,
-                        Event::Message,
+                        Event::DecryptedMessage,
                         &from_address,
                         &to_address,
                         &crypto::random::vec(256),
@@ -1684,7 +1712,7 @@ mod tests {
             .transaction(|txn| {
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1708,7 +1736,7 @@ mod tests {
             .transaction(|txn| {
                 query::inbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1749,7 +1777,7 @@ mod tests {
             .transaction(|txn| {
                 query::outbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1769,7 +1797,7 @@ mod tests {
             .transaction(|txn| {
                 query::outbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1789,7 +1817,7 @@ mod tests {
             .transaction(|txn| {
                 query::outbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1806,7 +1834,7 @@ mod tests {
             .transaction(|txn| {
                 query::outbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1822,7 +1850,7 @@ mod tests {
                 for i in 2..100 {
                     query::outbox_queue(
                         txn,
-                        Event::Message,
+                        Event::DecryptedMessage,
                         &from_address,
                         &to_address,
                         &crypto::random::vec(256),
@@ -1856,7 +1884,7 @@ mod tests {
 
                 query::outbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1896,7 +1924,7 @@ mod tests {
 
                 query::outbox_queue(
                     txn,
-                    Event::Message,
+                    Event::DecryptedMessage,
                     &from_address,
                     &to_address,
                     &crypto::random::vec(256),
@@ -1949,7 +1977,7 @@ mod tests {
                 .transaction(|txn| {
                     query::outbox_queue(
                         txn,
-                        Event::Message,
+                        Event::DecryptedMessage,
                         &from_address,
                         &to_address,
                         &content,
@@ -1979,7 +2007,7 @@ mod tests {
                 for i in 100..200 {
                     query::outbox_queue(
                         txn,
-                        Event::Message,
+                        Event::DecryptedMessage,
                         &from_address,
                         &to_address,
                         &crypto::random::vec(256),

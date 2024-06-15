@@ -1,28 +1,36 @@
 use crate::keypair::signing::PublicKey;
 
 pub struct Commit {
-    sender: PublicKey,
-    recipient: PublicKey,
+    from_address: PublicKey,
+    to_address: PublicKey,
     commit: Vec<u8>,
     sequence: u64,
+    timestamp: i64,
 }
 
 impl Commit {
-    pub fn new(sender: PublicKey, recipient: PublicKey, commit: Vec<u8>, sequence: u64) -> Commit {
+    pub fn new(
+        from_address: PublicKey,
+        to_address: PublicKey,
+        commit: Vec<u8>,
+        sequence: u64,
+        timestamp: i64,
+    ) -> Commit {
         Commit {
-            sender,
-            recipient,
+            from_address,
+            to_address,
             commit,
             sequence,
+            timestamp,
         }
     }
 
-    pub fn sender(&self) -> &PublicKey {
-        &self.sender
+    pub fn from_address(&self) -> &PublicKey {
+        &self.from_address
     }
 
-    pub fn recipient(&self) -> &PublicKey {
-        &self.recipient
+    pub fn to_address(&self) -> &PublicKey {
+        &self.to_address
     }
 
     pub fn commit(&self) -> &[u8] {
@@ -32,39 +40,46 @@ impl Commit {
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
+
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
 }
 
 pub struct KeyPackage {
-    sender: PublicKey,
-    recipient: PublicKey,
+    from_address: PublicKey,
+    to_address: PublicKey,
     package: Vec<u8>,
     sequence: u64,
+    timestamp: i64,
     authorized: bool,
 }
 
 impl KeyPackage {
     pub fn new(
-        sender: PublicKey,
-        recipient: PublicKey,
+        from_address: PublicKey,
+        to_address: PublicKey,
         package: Vec<u8>,
         sequence: u64,
+        timestamp: i64,
         authorized: bool,
     ) -> KeyPackage {
         KeyPackage {
-            sender,
-            recipient,
+            from_address,
+            to_address,
             package,
             sequence,
+            timestamp,
             authorized,
         }
     }
 
-    pub fn sender(&self) -> &PublicKey {
-        &self.sender
+    pub fn from_address(&self) -> &PublicKey {
+        &self.from_address
     }
 
-    pub fn recipient(&self) -> &PublicKey {
-        &self.recipient
+    pub fn to_address(&self) -> &PublicKey {
+        &self.to_address
     }
 
     pub fn package(&self) -> &[u8] {
@@ -75,39 +90,46 @@ impl KeyPackage {
         self.sequence
     }
 
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+
     pub fn is_authorized(&self) -> bool {
         self.authorized
     }
 }
 
 pub struct Proposal {
-    sender: PublicKey,
-    recipient: PublicKey,
+    from_address: PublicKey,
+    to_address: PublicKey,
     proposal: Vec<u8>,
     sequence: u64,
+    timestamp: i64,
 }
 
 impl Proposal {
     pub fn new(
-        sender: PublicKey,
-        recipient: PublicKey,
+        from_address: PublicKey,
+        to_address: PublicKey,
         proposal: Vec<u8>,
         sequence: u64,
+        timestamp: i64,
     ) -> Proposal {
         Proposal {
-            sender,
-            recipient,
+            from_address,
+            to_address,
             proposal,
             sequence,
+            timestamp,
         }
     }
 
-    pub fn sender(&self) -> &PublicKey {
-        &self.sender
+    pub fn from_address(&self) -> &PublicKey {
+        &self.from_address
     }
 
-    pub fn recipient(&self) -> &PublicKey {
-        &self.recipient
+    pub fn to_address(&self) -> &PublicKey {
+        &self.to_address
     }
 
     pub fn proposal(&self) -> &[u8] {
@@ -117,42 +139,49 @@ impl Proposal {
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
+
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
 }
 
 pub struct Welcome {
-    sender: PublicKey,
-    recipient: PublicKey,
+    from_address: PublicKey,
+    to_address: PublicKey,
     welcome: Vec<u8>,
-    sequence: u64,
     subscription: Vec<u8>,
+    sequence: u64,
+    timestamp: i64,
     authorized: bool,
 }
 
 impl Welcome {
     pub fn new(
-        sender: PublicKey,
-        recipient: PublicKey,
+        from_address: PublicKey,
+        to_address: PublicKey,
         welcome: Vec<u8>,
-        sequence: u64,
         subscription: Vec<u8>,
+        sequence: u64,
+        timestamp: i64,
         authorized: bool,
     ) -> Welcome {
         Welcome {
-            sender,
-            recipient,
+            from_address,
+            to_address,
             welcome,
             sequence,
+            timestamp,
             subscription,
             authorized,
         }
     }
 
-    pub fn sender(&self) -> &PublicKey {
-        &self.sender
+    pub fn from_address(&self) -> &PublicKey {
+        &self.from_address
     }
 
-    pub fn recipient(&self) -> &PublicKey {
-        &self.recipient
+    pub fn to_address(&self) -> &PublicKey {
+        &self.to_address
     }
 
     pub fn welcome(&self) -> &[u8] {
@@ -161,6 +190,10 @@ impl Welcome {
 
     pub fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
     }
 
     pub fn subscription_token(&self) -> &[u8] {

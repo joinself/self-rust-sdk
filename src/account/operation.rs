@@ -514,6 +514,8 @@ pub fn connection_negotiate(
 ) -> Result<(), SelfError> {
     let mut key_package_payload: Option<Vec<u8>> = None;
     let mut as_keypair: Option<KeyPair> = None;
+    let mut sequence_tx = 0;
+    let timestamp = time::unix();
 
     storage.transaction(|txn| {
         as_keypair = query::keypair_lookup(txn, as_address.address())?;
@@ -521,6 +523,16 @@ pub fn connection_negotiate(
         let as_address = match &as_keypair {
             Some(as_address) => as_address,
             None => return Err(SelfError::KeyPairNotFound),
+        };
+
+        query::address_create(txn, with_address.address())?;
+        sequence_tx = match query::metrics_load(txn, as_address.address(), with_address.address())?
+        {
+            Some((sequence_tx, _)) => sequence_tx + 1,
+            None => {
+                query::metrics_create(txn, as_address.address(), with_address.address(), 0, 0)?;
+                1
+            }
         };
 
         // generate a key package
@@ -536,21 +548,27 @@ pub fn connection_negotiate(
         let key_package_encoded = websocket::assemble_payload_key_package(
             as_address,
             with_address,
-            0,
+            sequence_tx,
             &key_package,
             None,
             None,
         )?;
 
         // queue message in inbox
-        query::address_create(txn, with_address.address())?;
         query::outbox_queue(
             txn,
             query::Event::KeyPackage,
             as_address.address(),
             with_address.address(),
             &key_package_encoded,
-            0,
+            timestamp,
+            sequence_tx,
+        )?;
+        query::metrics_update_sequence_tx(
+            txn,
+            as_address.address(),
+            with_address.address(),
+            sequence_tx,
         )?;
 
         key_package_payload = Some(key_package_encoded);
@@ -588,9 +606,14 @@ pub fn connection_negotiate(
 
     // notify...
 
-    // deqeue sent...
-
-    Ok(())
+    storage.transaction(|txn| {
+        query::outbox_dequeue(
+            txn,
+            as_address.address(),
+            with_address.address(),
+            sequence_tx,
+        )
+    })
 }
 
 pub fn connection_establish(
@@ -605,6 +628,8 @@ pub fn connection_establish(
     let mut welcome_payload: Option<Vec<u8>> = None;
     let mut commit_payload: Option<Vec<u8>> = None;
     let mut as_keypair: Option<KeyPair> = None;
+    let mut sequence_tx = 0;
+    let timestamp = time::unix();
 
     // generate tokens for ourself and our counterparty
     let as_send_token = token::Send::new(&group_kp, Some(as_address), time::unix(), i64::MAX);
@@ -636,6 +661,7 @@ pub fn connection_establish(
         query::group_create(txn, group_kp.address(), 1)?;
         query::group_member_add(txn, group_kp.address(), as_address.address())?;
         query::group_member_add(txn, group_kp.address(), with_address.address())?;
+        query::metrics_create(txn, as_address.address(), group_kp.address(), 0, 0)?;
 
         let (commit_message, welcome_message) = e2e::mls_group_create_with_members(
             txn,
@@ -662,23 +688,30 @@ pub fn connection_establish(
             as_subscription_token.as_bytes(),
         )?;
 
-        welcome_payload = Some(websocket::assemble_payload_welcome(
-            as_address,
-            with_address,
-            0,
-            &welcome_message,
-            Some(with_send_token.as_bytes()),
-            Some(with_subscription_token.as_bytes()),
-        )?);
+        sequence_tx = match query::metrics_load(txn, as_address.address(), with_address.address())?
+        {
+            Some((sequence_tx, _)) => sequence_tx + 1,
+            None => {
+                query::metrics_create(txn, as_address.address(), with_address.address(), 0, 0)?;
+                1
+            }
+        };
 
         commit_payload = Some(websocket::assemble_payload_commit(
             as_address,
             group_kp.public(),
-            0,
+            1,
             &commit_message,
         )?);
 
-        // TODO setup/load metrics
+        welcome_payload = Some(websocket::assemble_payload_welcome(
+            as_address,
+            with_address,
+            sequence_tx,
+            &welcome_message,
+            Some(with_send_token.as_bytes()),
+            Some(with_subscription_token.as_bytes()),
+        )?);
 
         // queue commit and welcome message
         query::outbox_queue(
@@ -687,7 +720,8 @@ pub fn connection_establish(
             as_address.address(),
             group_kp.address(),
             commit_payload.as_ref().unwrap(),
-            0,
+            timestamp,
+            1,
         )?;
 
         query::outbox_queue(
@@ -696,12 +730,16 @@ pub fn connection_establish(
             as_address.address(),
             with_address.address(),
             welcome_payload.as_ref().unwrap(),
-            0,
+            timestamp,
+            sequence_tx,
         )?;
 
-        // queue notification message
-
-        Ok(())
+        query::metrics_update_sequence_tx(
+            txn,
+            as_address.address(),
+            with_address.address(),
+            sequence_tx,
+        )
     })?;
 
     let as_keypair = match &as_keypair {
@@ -744,7 +782,9 @@ pub fn connection_establish(
         .recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
 
-    // TODO deque send
+    storage.transaction(|txn| {
+        query::outbox_dequeue(txn, as_address.address(), group_kp.address(), 1)
+    })?;
 
     // TODO send with any tokens we may have...
 
@@ -766,9 +806,14 @@ pub fn connection_establish(
 
     // TODO notify...
 
-    // TODO deqeue sent...
-
-    Ok(())
+    storage.transaction(|txn| {
+        query::outbox_dequeue(
+            txn,
+            as_address.address(),
+            with_address.address(),
+            sequence_tx,
+        )
+    })
 }
 
 pub fn connection_accept(
@@ -809,12 +854,6 @@ pub fn connection_accept(
             group_address.as_ref().unwrap().address(),
             subscription_token.as_bytes(),
         )?;
-
-        // generate send token
-
-        // generate push token
-
-        // queue notification message
 
         Ok(())
     })?;
@@ -906,17 +945,18 @@ pub fn message_send(
 
         query::outbox_queue(
             txn,
-            query::Event::Message,
+            query::Event::EncryptedMessage,
             as_address.address(),
             group_address.address(),
             &ciphertext,
+            timestamp,
             sequence_tx,
         )?;
 
         query::metrics_update_sequence_tx(
             txn,
-            group_address.address(),
             as_address.address(),
+            group_address.address(),
             sequence_tx,
         )
     })?;
@@ -931,7 +971,8 @@ pub fn message_send(
         None => return Err(SelfError::KeyPairNotFound),
     };
 
-    let payload = websocket::assemble_payload_message(as_address, group_address, 0, &ciphertext)?;
+    let payload =
+        websocket::assemble_payload_message(as_address, group_address, sequence_tx, &ciphertext)?;
 
     let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
 

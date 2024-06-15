@@ -10,6 +10,7 @@ pub struct RoleEntry {
     pub from: i64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Node {
     pub roles: Vec<RoleEntry>,
