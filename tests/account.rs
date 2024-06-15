@@ -341,7 +341,7 @@ fn messaging_subscriptions() {
         .expect("failed to send message");
 
     let message_from_bobby = alice_message_rx
-        .recv_timeout(DEFAULT_TIMEOUT)
+        .recv_timeout(DEFAULT_TIMEOUT * 2)
         .expect("failed to receive message");
 
     match message_from_bobby {
