@@ -371,15 +371,15 @@ pub fn object_download(
 pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicKey, SelfError> {
     let signing_kp = KeyPair::new();
     let mut key_packages: Vec<Vec<u8>> = Vec::new();
-    let now = time::unix();
+    let timestamp = time::unix();
 
     let subscription_token =
-        token::Subscription::new(&signing_kp, signing_kp.public(), now, i64::MAX);
+        token::Subscription::new(&signing_kp, signing_kp.public(), timestamp, i64::MAX);
 
     storage.transaction(|txn| {
-        query::keypair_create(txn, signing_kp.clone(), 0, now)?;
+        query::keypair_create(txn, signing_kp.clone(), 0, timestamp)?;
 
-        query::subscription_create(txn, signing_kp.address(), signing_kp.address(), now)?;
+        query::subscription_create(txn, signing_kp.address(), signing_kp.address(), timestamp)?;
 
         query::token_create(
             txn,
@@ -403,8 +403,9 @@ pub fn inbox_open(storage: &Connection, websocket: &Websocket) -> Result<PublicK
     websocket.subscribe(&[Subscription {
         to_address: signing_kp.public().to_owned(),
         as_address: signing_kp.to_owned(),
-        from: time::unix(),
         token: Some(token::Token::Subscription(subscription_token)),
+        last_active: timestamp,
+        last_message: timestamp,
     }])?;
 
     Ok(signing_kp.public().to_owned())
@@ -419,13 +420,15 @@ pub fn subscription_load(storage: &Connection, websocket: &Websocket) -> Result<
     })?;
 
     let mut subscriptions = Vec::new();
+    let timestamp = crate::time::unix();
 
     for (to_address, as_address, token, from) in subscription_list {
         subscriptions.push(Subscription {
             to_address: PublicKey::from_bytes(&to_address)?,
             as_address: KeyPair::decode(&as_address)?,
             token: token.map(|t| token::Token::decode(&t).expect("invalid token")),
-            from,
+            last_message: from,
+            last_active: timestamp,
         });
     }
 
@@ -503,6 +506,7 @@ pub fn group_create(
     let group_kp = KeyPair::new();
     let group_pk = group_kp.public().to_owned();
     let mut as_keypair: Option<KeyPair> = None;
+    let now = time::unix();
 
     let subscription_token =
         token::Subscription::new(&group_kp, as_address, time::unix(), i64::MAX);
@@ -542,8 +546,9 @@ pub fn group_create(
     websocket.subscribe(&[Subscription {
         to_address: group_kp.public().to_owned(),
         as_address: as_keypair,
-        from: time::unix(),
         token: Some(token::Token::Subscription(subscription_token)),
+        last_message: now,
+        last_active: now,
     }])?;
 
     Ok(group_pk)
@@ -824,8 +829,9 @@ pub fn connection_establish(
     websocket.subscribe(&[Subscription {
         to_address: group_kp.public().to_owned(),
         as_address: as_keypair.to_owned(),
-        from: time::unix(),
         token: Some(token::Token::Subscription(as_subscription_token)),
+        last_message: timestamp,
+        last_active: timestamp,
     }])?;
 
     let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
@@ -887,6 +893,7 @@ pub fn connection_accept(
 ) -> Result<(), SelfError> {
     let mut group_address: Option<PublicKey> = None;
     let mut as_keypair: Option<KeyPair> = None;
+    let timestamp = time::unix();
 
     let subscription_token = match token::Token::decode(subscription_token)? {
         token::Token::Subscription(subscription) => subscription,
@@ -936,8 +943,9 @@ pub fn connection_accept(
     websocket.subscribe(&[Subscription {
         to_address: group_address.to_owned(),
         as_address: as_keypair.to_owned(),
-        from: time::unix(),
         token: Some(token::Token::Subscription(subscription_token)),
+        last_message: timestamp,
+        last_active: timestamp,
     }])?;
 
     // TODO notify...

@@ -89,6 +89,14 @@ impl Connection {
         }
     }
 
+    pub fn close(&self) {
+        unsafe {
+            sqlite3_mutex_enter(sqlite3_db_mutex(self.conn));
+            sqlite3_close_v2(self.conn);
+            sqlite3_mutex_leave(sqlite3_db_mutex(self.conn));
+        }
+    }
+
     fn pragma(&self, pragma: &str) -> Result<(), SelfError> {
         Statement::new(self.conn, pragma)?.execute()
     }

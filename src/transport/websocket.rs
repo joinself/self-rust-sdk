@@ -16,6 +16,7 @@ use crate::crypto::pow;
 use crate::error::SelfError;
 use crate::keypair::signing::{KeyPair, PublicKey};
 use crate::protocol::messaging::{self, ContentType, EventType};
+use crate::time;
 use crate::token::Token;
 
 pub struct Event {
@@ -50,8 +51,9 @@ pub type ResponseCallback = Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>;
 pub struct Subscription {
     pub to_address: PublicKey,
     pub as_address: KeyPair,
-    pub from: i64,
     pub token: Option<Token>,
+    pub last_active: i64,
+    pub last_message: i64,
 }
 
 pub type RequestCache = Arc<Mutex<HashMap<Vec<u8>, ResponseCallback>>>;
@@ -106,7 +108,7 @@ impl Websocket {
         let write_rx = self.write_rx.clone();
         let callbacks = self.callbacks.clone();
         let on_connect = self.callbacks.on_connect.clone();
-        let subscriptions = self.subscriptions.clone();
+        let mut subscriptions = self.subscriptions.clone();
 
         // TODO cleanup old sockets!
         let (tx, rx) = channel::bounded(1);
@@ -158,7 +160,7 @@ impl Websocket {
                     let result = handle_event_binary(
                         &callback_runtime,
                         &requests_rx,
-                        &subscriptions,
+                        &mut subscriptions,
                         &callbacks,
                         &event.into_data(),
                     )
@@ -251,6 +253,30 @@ impl Websocket {
         Ok(())
     }
 
+    /// get metrics for each subscription
+    pub fn metrics(&self) -> HashMap<(PublicKey, PublicKey), i64> {
+        let mut metrics = HashMap::new();
+        let timestamp = time::unix();
+
+        for (_, subscription) in self.subscriptions.blocking_lock().iter() {
+            let metric = if timestamp - subscription.last_active > 5 {
+                timestamp
+            } else {
+                subscription.last_message
+            };
+
+            metrics.insert(
+                (
+                    subscription.to_address.to_owned(),
+                    subscription.as_address.public().to_owned(),
+                ),
+                metric,
+            );
+        }
+
+        metrics
+    }
+
     /// send a message
     pub fn send(
         &self,
@@ -321,7 +347,7 @@ impl Websocket {
 async fn handle_event_binary(
     runtime: &Arc<Runtime>,
     requests: &RequestCache,
-    subscriptions: &SubscriptionCache,
+    subscriptions: &mut SubscriptionCache,
     callbacks: &Callbacks,
     data: &[u8],
 ) -> Result<(), SelfError> {
@@ -404,7 +430,7 @@ async fn invoke_error_callback(
 
 async fn invoke_event_callback(
     runtime: &Arc<Runtime>,
-    subscriptions: &SubscriptionCache,
+    subscriptions: &mut SubscriptionCache,
     on_event: &OnEventCB,
     content: Option<&[u8]>,
 ) -> Result<(), SelfError> {
@@ -432,8 +458,14 @@ async fn invoke_event_callback(
 
     // TODO authenticate message signatures!!!!
 
+    let now = time::unix();
     let sequence = payload.sequence();
     let timestamp = payload.timestamp();
+
+    // check this message is not from the future, allow for 5 seconds of drift
+    if timestamp > now + 5 {
+        return Err(SelfError::WebsocketEventTimestampInvalid);
+    }
 
     let from_address = match payload.sender() {
         Some(from_address) => from_address,
@@ -451,15 +483,20 @@ async fn invoke_event_callback(
     let to_address = PublicKey::from_bytes(to_address.bytes())?;
 
     // validate the message we have received is for a valid subscription we have
-    let active_subs = subscriptions.lock().await;
+    let mut active_subs = subscriptions.clone().lock_owned().await;
 
-    if !active_subs.contains_key(to_address.address()) {
+    if let Some(subscription) = active_subs.get_mut(to_address.address()) {
+        if timestamp > subscription.last_message {
+            subscription.last_message = timestamp
+        }
+        subscription.last_active = now;
+    } else {
         println!(
             "message received for an unknown recipient: {}",
             to_address.to_hex(),
         );
         return Ok(());
-    };
+    }
 
     drop(active_subs);
 
@@ -783,7 +820,7 @@ fn assemble_subscription(subscriptions: &[Subscription]) -> Result<(Vec<u8>, Vec
             &messaging::SubscriptionDetailsArgs {
                 inbox: Some(inbox),
                 issued: now,
-                from: subscription.from,
+                from: subscription.last_message,
             },
         );
 
@@ -1371,8 +1408,9 @@ mod tests {
         let subs = vec![Subscription {
             to_address: alice_id.clone(),
             as_address: alice_kp.clone(),
-            from: crate::time::unix(),
             token: None,
+            last_message: crate::time::unix(),
+            last_active: crate::time::unix(),
         }];
 
         let bob_kp = crate::keypair::signing::KeyPair::new();

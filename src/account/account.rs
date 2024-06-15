@@ -1,4 +1,5 @@
 use prost::Message as ProstMessage;
+use tokio::runtime::Runtime;
 
 use crate::account::{inbox, operation};
 use crate::credential::{Credential, Presentation, VerifiableCredential, VerifiablePresentation};
@@ -35,12 +36,12 @@ pub struct MessagingCallbacks {
     pub on_welcome: OnWelcomeCB,
 }
 
-#[derive(Default)]
 pub struct Account {
     rpc: Arc<AtomicPtr<Rpc>>,
     object: Arc<AtomicPtr<ObjectStore>>,
     storage: Arc<AtomicPtr<Connection>>,
     websocket: Arc<AtomicPtr<Websocket>>,
+    runtime: Arc<Runtime>,
 }
 
 impl Account {
@@ -50,6 +51,7 @@ impl Account {
             object: Arc::new(AtomicPtr::new(ptr::null_mut())),
             storage: Arc::new(AtomicPtr::new(ptr::null_mut())),
             websocket: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            runtime: Arc::new(Runtime::new().unwrap()),
         }
     }
 
@@ -109,6 +111,47 @@ impl Account {
             operation::outbox_process(&(*storage), &(*websocket))?;
             operation::inbox_process(&(*storage), callbacks.on_message)?;
         }
+
+        let storage = self.storage.clone();
+        let websocket = self.websocket.clone();
+
+        // schedule updates to our subscription metrics
+        self.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+                let storage = storage.load(Ordering::SeqCst);
+                if storage.is_null() {
+                    continue;
+                }
+
+                let websocket = websocket.load(Ordering::SeqCst);
+                if websocket.is_null() {
+                    continue;
+                }
+
+                unsafe {
+                    let metrics = (*websocket).metrics();
+
+                    let result = (*storage).transaction(|txn| {
+                        for ((to_address, as_address), offset) in metrics.iter() {
+                            query::subscription_update(
+                                txn,
+                                to_address.address(),
+                                as_address.address(),
+                                *offset,
+                            )?;
+                        }
+
+                        Ok(())
+                    });
+
+                    if result.is_err() {
+                        println!("metrics transaction failed!");
+                    }
+                }
+            }
+        });
 
         Ok(())
     }
@@ -522,6 +565,12 @@ impl Account {
     }
 }
 
+impl Default for Account {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Clone for Account {
     fn clone(&self) -> Self {
         Account {
@@ -529,6 +578,25 @@ impl Clone for Account {
             object: self.object.clone(),
             storage: self.storage.clone(),
             websocket: self.websocket.clone(),
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+
+impl Drop for Account {
+    fn drop(&mut self) {
+        unsafe {
+            let websocket = self.websocket.load(Ordering::SeqCst);
+            if !websocket.is_null() {
+                if let Err(err) = (*websocket).disconnect() {
+                    println!("websocket shutdown: {}", err);
+                };
+            }
+
+            let storage = self.storage.load(Ordering::SeqCst);
+            if !storage.is_null() {
+                (*storage).close();
+            }
         }
     }
 }

@@ -727,6 +727,27 @@ pub fn subscription_create(
         .execute()
 }
 
+pub fn subscription_update(
+    txn: &Transaction,
+    to_address: &[u8],
+    as_address: &[u8],
+    offset: i64,
+) -> Result<(), SelfError> {
+    let stmt = txn.prepare(
+        "UPDATE subscriptions offset = ?1
+        WHERE to_address = (
+            SELECT id FROM addresses WHERE address=?2
+        ) AND as_address = (
+            SELECT id FROM addresses WHERE address=?3
+        );",
+    )?;
+
+    stmt.bind_integer(1, offset)?
+        .bind_blob(2, to_address)?
+        .bind_blob(3, as_address)?
+        .execute()
+}
+
 #[allow(clippy::type_complexity)]
 pub fn subscription_list(
     txn: &Transaction,
