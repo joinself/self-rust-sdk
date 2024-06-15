@@ -4,12 +4,14 @@ use std::{
     time::Duration,
 };
 
+use hex::ToHex;
 use self_sdk::{
     account::{Account, MessagingCallbacks},
     credential::{
         default, Address, CredentialBuilder, PresentationBuilder, CONTEXT_DEFAULT,
         CREDENTIAL_DEFAULT, PRESENTATION_DEFAULT,
     },
+    crypto::random_id,
     hashgraph::{Hashgraph, Role},
     message::{self, CredentialPresentationDetail, ResponseStatus},
     object::{self, Object},
@@ -189,8 +191,7 @@ fn register_identity() {
 
 #[test]
 fn messaging_subscriptions() {
-    print!("skipping...");
-    return test_server();
+    test_server();
 
     let rpc_url = "http://127.0.0.1:3000/";
     let obj_url = "http://127.0.0.1:3001/";
@@ -203,6 +204,9 @@ fn messaging_subscriptions() {
     // setup alices account
     let mut alice = Account::new();
     let alice_wm_cb = alice.clone();
+    let alice_db_path = format!("/tmp/{}.db", &random_id().encode_hex::<String>());
+
+    //println!(">>> db path: {}", &alice_db_path);
 
     let alice_callbacks = MessagingCallbacks {
         on_connect: Arc::new(|| {}),
@@ -231,7 +235,7 @@ fn messaging_subscriptions() {
             rpc_url,
             obj_url,
             ws_url,
-            "/tmp/alice.db",
+            &alice_db_path,
             b"",
             alice_callbacks,
         )
@@ -288,7 +292,6 @@ fn messaging_subscriptions() {
     alice_welcome_rx
         .recv_timeout(DEFAULT_TIMEOUT)
         .expect("welcome message timeout");
-    println!("connection established");
 
     // shutdown alice's account
     alice
@@ -317,7 +320,7 @@ fn messaging_subscriptions() {
             rpc_url,
             obj_url,
             ws_url,
-            "/tmp/alice.db",
+            &alice_db_path,
             b"",
             alice_callbacks,
         )
