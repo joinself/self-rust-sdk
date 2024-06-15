@@ -1,5 +1,7 @@
 use crate::protocol::hashgraph::Role;
 
+// TODO don't define these based on hashgraph Role schema
+
 #[allow(dead_code)]
 #[repr(u64)]
 pub enum KeyPurpose {

@@ -21,7 +21,6 @@ pub fn schema_create_addresses(txn: &Transaction) {
 
 pub fn schema_create_credentials(txn: &Transaction) {
     if table_exists(txn, "credentials") {
-        print!("credentials exists!");
         return;
     }
 
@@ -46,7 +45,6 @@ pub fn schema_create_credentials(txn: &Transaction) {
 
 pub fn schema_create_credential_types(txn: &Transaction) {
     if table_exists(txn, "credential_types") {
-        print!("credential_types exists!");
         return;
     }
 
@@ -66,7 +64,6 @@ pub fn schema_create_credential_types(txn: &Transaction) {
 
 pub fn schema_create_keypairs(txn: &Transaction) {
     if table_exists(txn, "keypairs") {
-        print!("keypairs exists!");
         return;
     }
 
@@ -90,7 +87,6 @@ pub fn schema_create_keypairs(txn: &Transaction) {
 
 pub fn schema_create_keypair_associations(txn: &Transaction) {
     if table_exists(txn, "keypair_associations") {
-        print!("keypair_associations exists!");
         return;
     }
 
@@ -114,7 +110,6 @@ pub fn schema_create_keypair_associations(txn: &Transaction) {
 
 pub fn schema_create_identities(txn: &Transaction) {
     if table_exists(txn, "identities") {
-        print!("identities exists!");
         return;
     }
 
@@ -137,7 +132,6 @@ pub fn schema_create_identities(txn: &Transaction) {
 
 pub fn schema_create_identity_operations(txn: &Transaction) {
     if table_exists(txn, "identity_operations") {
-        print!("identity_operations exists!");
         return;
     }
 
@@ -159,7 +153,6 @@ pub fn schema_create_identity_operations(txn: &Transaction) {
 
 pub fn schema_create_groups(txn: &Transaction) {
     if table_exists(txn, "groups") {
-        print!("groups exists!");
         return;
     }
 
@@ -180,7 +173,6 @@ pub fn schema_create_groups(txn: &Transaction) {
 
 pub fn schema_create_members(txn: &Transaction) {
     if table_exists(txn, "members") {
-        print!("members exists!");
         return;
     }
 
@@ -201,7 +193,6 @@ pub fn schema_create_members(txn: &Transaction) {
 
 pub fn schema_create_tokens(txn: &Transaction) {
     if table_exists(txn, "tokens") {
-        print!("tokens exists!");
         return;
     }
 
@@ -223,6 +214,49 @@ pub fn schema_create_tokens(txn: &Transaction) {
     stmt.execute().expect("failed to execute statement");
 }
 
+pub fn schema_create_subscriptions(txn: &Transaction) {
+    if table_exists(txn, "subscriptions") {
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                to_address INTEGER NOT NULL,
+                as_address INTEGER NOT NULL,
+                offset INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_subscriptions_address
+            ON subscriptions (to_address, as_address);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
+pub fn schema_create_metrics(txn: &Transaction) {
+    if table_exists(txn, "metrics") {
+        return;
+    }
+
+    let stmt = txn
+        .prepare(
+            "CREATE TABLE metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_address INTEGER NOT NULL,
+                to_address INTEGER NOT NULL,
+                sequence_tx INTEGER NOT NULL,
+                sequence_rx INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_metrics_address
+            ON metrics (to_address, from_address);",
+        )
+        .expect("failed to prepare statement");
+
+    stmt.execute().expect("failed to execute statement");
+}
+
 pub fn schema_create_inbox(txn: &Transaction) {
     if table_exists(txn, "inbox") {
         return;
@@ -233,9 +267,10 @@ pub fn schema_create_inbox(txn: &Transaction) {
             "CREATE TABLE inbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event INTEGER NOT NULL,
-                sender INTEGER NOT NULL,
-                recipient INTEGER NOT NULL,
+                from_address INTEGER NOT NULL,
+                to_address INTEGER NOT NULL,
                 message INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
             );",
         )
@@ -254,9 +289,10 @@ pub fn schema_create_outbox(txn: &Transaction) {
             "CREATE TABLE outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event INTEGER NOT NULL,
-                sender INTEGER NOT NULL,
-                recipient INTEGER NOT NULL,
+                from_address INTEGER NOT NULL,
+                to_address INTEGER NOT NULL,
                 message INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
             );",
         )

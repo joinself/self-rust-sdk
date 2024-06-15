@@ -11,7 +11,6 @@ pub use self::receipt::*;
 use crate::error::SelfError;
 use crate::keypair::signing::PublicKey;
 use crate::protocol::p2p;
-use crate::time;
 
 #[derive(Clone)]
 pub enum Content {
@@ -246,25 +245,28 @@ impl Into<i32> for ResponseStatus {
 
 pub struct Message {
     id: Vec<u8>,
-    sender: PublicKey,
-    recipient: PublicKey,
+    from_address: PublicKey,
+    to_address: PublicKey,
     content: Content,
+    sequence: u64,
     timestamp: i64,
 }
 
 impl Message {
     pub fn new(
         id: Vec<u8>,
-        sender: PublicKey,
-        recipient: PublicKey,
+        from_address: PublicKey,
+        to_address: PublicKey,
         content: Content,
+        sequence: u64,
         timestamp: i64,
     ) -> Message {
         Message {
             id,
-            sender,
-            recipient,
+            from_address,
+            to_address,
             content,
+            sequence,
             timestamp,
         }
     }
@@ -273,12 +275,12 @@ impl Message {
         &self.id
     }
 
-    pub fn sender(&self) -> &PublicKey {
-        &self.sender
+    pub fn from_address(&self) -> &PublicKey {
+        &self.from_address
     }
 
-    pub fn recipient(&self) -> &PublicKey {
-        &self.recipient
+    pub fn to_address(&self) -> &PublicKey {
+        &self.to_address
     }
 
     pub fn content_type(&self) -> ContentType {
@@ -299,78 +301,11 @@ impl Message {
         &self.content
     }
 
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
     pub fn timestamp(&self) -> i64 {
         self.timestamp
-    }
-}
-
-#[derive(Default)]
-pub struct MessageBuilder {
-    id: Option<Vec<u8>>,
-    sender: Option<PublicKey>,
-    recipient: Option<PublicKey>,
-    content: Option<Content>,
-}
-
-impl MessageBuilder {
-    pub fn new() -> MessageBuilder {
-        MessageBuilder {
-            id: None,
-            sender: None,
-            recipient: None,
-            content: None,
-        }
-    }
-
-    pub fn id(&mut self, id: Vec<u8>) -> &mut MessageBuilder {
-        self.id = Some(id);
-        self
-    }
-
-    pub fn sender(&mut self, address: PublicKey) -> &mut MessageBuilder {
-        self.sender = Some(address);
-        self
-    }
-
-    pub fn recipient(&mut self, address: PublicKey) -> &mut MessageBuilder {
-        self.recipient = Some(address);
-        self
-    }
-
-    pub fn content(&mut self, content: Content) -> &mut MessageBuilder {
-        self.content = Some(content);
-        self
-    }
-
-    pub fn finish(self) -> Result<Message, SelfError> {
-        let id = match self.id {
-            Some(id) => id,
-            None => return Err(SelfError::MessageContentMissing),
-        };
-
-        let sender = match self.sender {
-            Some(sender) => sender,
-            None => return Err(SelfError::MessageSenderMissing),
-        };
-
-        let recipient = match self.recipient {
-            Some(recipient) => recipient,
-            None => return Err(SelfError::MessageRecipientMissing),
-        };
-
-        let content = match self.content {
-            Some(content) => content,
-            None => return Err(SelfError::MessageContentMissing),
-        };
-
-        let timestamp = time::unix();
-
-        Ok(Message {
-            id,
-            sender,
-            recipient,
-            content,
-            timestamp,
-        })
     }
 }

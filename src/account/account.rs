@@ -1,14 +1,15 @@
 use prost::Message as ProstMessage;
+use tokio::runtime::Runtime;
 
-use crate::account::operation;
+use crate::account::{inbox, operation};
 use crate::credential::{Credential, Presentation, VerifiableCredential, VerifiablePresentation};
-use crate::crypto::e2e;
 use crate::error::SelfError;
 use crate::hashgraph::{Hashgraph, Operation, RoleSet};
 use crate::keypair::exchange;
 use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::message::{self, Commit, Content, ContentType, KeyPackage, Message, Welcome};
 use crate::object;
+use crate::protocol::messaging;
 use crate::protocol::p2p::p2p;
 use crate::storage::{query, Connection};
 use crate::transport::object::ObjectStore;
@@ -35,12 +36,12 @@ pub struct MessagingCallbacks {
     pub on_welcome: OnWelcomeCB,
 }
 
-#[derive(Default)]
 pub struct Account {
     rpc: Arc<AtomicPtr<Rpc>>,
     object: Arc<AtomicPtr<ObjectStore>>,
     storage: Arc<AtomicPtr<Connection>>,
     websocket: Arc<AtomicPtr<Websocket>>,
+    runtime: Arc<Runtime>,
 }
 
 impl Account {
@@ -50,6 +51,7 @@ impl Account {
             object: Arc::new(AtomicPtr::new(ptr::null_mut())),
             storage: Arc::new(AtomicPtr::new(ptr::null_mut())),
             websocket: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            runtime: Arc::new(Runtime::new().unwrap()),
         }
     }
 
@@ -87,10 +89,13 @@ impl Account {
             Callbacks {
                 on_connect: on_connect_cb(callbacks.on_connect),
                 on_disconnect: on_disconnect_cb(callbacks.on_disconnect),
-                on_message: on_message_cb(&self.storage, callbacks.on_message),
-                on_commit: on_commit_cb(&self.storage, callbacks.on_commit),
-                on_key_package: on_key_package_cb(&self.storage, callbacks.on_key_package),
-                on_welcome: on_welcome_cb(&self.storage, callbacks.on_welcome),
+                on_event: on_event_cb(
+                    &self.storage,
+                    callbacks.on_commit,
+                    callbacks.on_key_package,
+                    callbacks.on_message.clone(),
+                    callbacks.on_welcome,
+                ),
             },
         )?;
 
@@ -99,9 +104,54 @@ impl Account {
         let websocket = Box::into_raw(Box::new(websocket));
         self.websocket.swap(websocket, Ordering::SeqCst);
 
-        // TODO - resume subscriptions
-        // TODO - (re-)send messages in outbox
-        // TODO - (re-)handle messages in inbox
+        unsafe {
+            // load our existing subscriptions, send all outstanding messages
+            // in our outbox and then resume processing our inbox
+            operation::subscription_load(&(*storage), &(*websocket))?;
+            operation::outbox_process(&(*storage), &(*websocket))?;
+            operation::inbox_process(&(*storage), callbacks.on_message)?;
+        }
+
+        let storage = self.storage.clone();
+        let websocket = self.websocket.clone();
+
+        // schedule updates to our subscription metrics
+        self.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+                let storage = storage.load(Ordering::SeqCst);
+                if storage.is_null() {
+                    continue;
+                }
+
+                let websocket = websocket.load(Ordering::SeqCst);
+                if websocket.is_null() {
+                    continue;
+                }
+
+                unsafe {
+                    let metrics = (*websocket).metrics();
+
+                    let result = (*storage).transaction(|txn| {
+                        for ((to_address, as_address), offset) in metrics.iter() {
+                            query::subscription_update(
+                                txn,
+                                to_address.address(),
+                                as_address.address(),
+                                *offset,
+                            )?;
+                        }
+
+                        Ok(())
+                    });
+
+                    if result.is_err() {
+                        println!("metrics transaction failed!");
+                    }
+                }
+            }
+        });
 
         Ok(())
     }
@@ -515,6 +565,12 @@ impl Account {
     }
 }
 
+impl Default for Account {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Clone for Account {
     fn clone(&self) -> Self {
         Account {
@@ -522,6 +578,25 @@ impl Clone for Account {
             object: self.object.clone(),
             storage: self.storage.clone(),
             websocket: self.websocket.clone(),
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+
+impl Drop for Account {
+    fn drop(&mut self) {
+        unsafe {
+            let websocket = self.websocket.load(Ordering::SeqCst);
+            if !websocket.is_null() {
+                if let Err(err) = (*websocket).disconnect() {
+                    println!("websocket shutdown: {}", err);
+                };
+            }
+
+            let storage = self.storage.load(Ordering::SeqCst);
+            if !storage.is_null() {
+                (*storage).close();
+            }
         }
     }
 }
@@ -538,249 +613,150 @@ fn on_disconnect_cb(callback: OnDisconnectCB) -> websocket::OnDisconnectCB {
     })
 }
 
-fn on_message_cb(
+fn on_event_cb(
     storage: &Arc<AtomicPtr<Connection>>,
-    callback: OnMessageCB,
-) -> websocket::OnMessageCB {
+    on_commit: OnCommitCB,
+    on_key_package: OnKeyPackageCB,
+    on_message: OnMessageCB,
+    on_welcome: OnWelcomeCB,
+) -> websocket::OnEventCB {
     let storage = storage.clone();
 
-    Arc::new(move |message| {
-        let storage = storage.load(Ordering::SeqCst);
-        let mut plaintext: Option<Vec<u8>> = None;
+    // here we process incoming events and store them durably to our local inbox.
+    // any out of order messages will not be immediately processed until we have
+    // a complete in order sequence of messages. when we have an in order sequence
+    // of messages, we process them all until there are no more messages available.
 
-        unsafe {
-            let result = (*storage).transaction(|txn| {
-                let decrypted_message =
-                    e2e::mls_group_decrypt(txn, message.recipient.address(), &message.message)?;
-
-                query::address_create(txn, message.sender.address())?;
-                query::inbox_queue(
-                    txn,
-                    query::Event::Message,
-                    message.sender.address(),
-                    message.recipient.address(),
-                    &decrypted_message,
-                    message.sequence,
-                )?;
-
-                plaintext = Some(decrypted_message);
-
-                Ok(())
-            });
-
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
-                return;
-            }
-        }
-
-        let plaintext = match plaintext {
-            Some(plaintext) => plaintext,
-            None => return,
-        };
-
-        let encoded_messaage = match p2p::Message::decode(plaintext.as_slice()) {
-            Ok(encoded_messaage) => encoded_messaage,
-            Err(err) => {
-                println!("received invalid protobuf message: {}", err);
-                return;
-            }
-        };
-
-        let content_type = ContentType::from(encoded_messaage.r#type());
-        let content = match Content::decode(content_type, &encoded_messaage.content) {
-            Ok(content) => content,
-            Err(err) => {
-                println!("received invalid protobuf content: {}", err);
-                return;
-            }
-        };
-
-        callback(Message::new(
-            encoded_messaage.id,
-            message.sender.clone(),
-            message.recipient.clone(),
-            content,
-            message.timestamp,
-        ));
-
-        unsafe {
-            let result = (*storage).transaction(|txn| {
-                query::inbox_dequeue(
-                    txn,
-                    message.sender.address(),
-                    message.recipient.address(),
-                    message.sequence,
-                )
-            });
-
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
-            }
-        }
-    })
-}
-
-fn on_commit_cb(
-    storage: &Arc<AtomicPtr<Connection>>,
-    callback: OnCommitCB,
-) -> websocket::OnCommitCB {
-    let storage = storage.clone();
-
-    Arc::new(move |commit| {
+    Arc::new(move |mut event| {
         let storage = storage.load(Ordering::SeqCst);
 
         unsafe {
-            let result = (*storage).transaction(|txn| {
-                query::address_create(txn, commit.sender.address())?;
-                query::inbox_queue(
-                    txn,
-                    query::Event::Commit,
-                    commit.sender.address(),
-                    commit.recipient.address(),
-                    &commit.commit,
-                    commit.sequence,
-                )?;
-
-                Ok(())
-            });
-
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
+            if let Err(err) = inbox::inbox_queue(&(*storage), &mut event) {
+                println!("inbox queue message failed: {}", err);
                 return;
             }
         }
 
-        callback(Commit::new(
-            commit.sender.clone(),
-            commit.recipient.clone(),
-            commit.commit,
-            commit.sequence,
-        ));
+        // TODO doing this in two (technically 3!) transactions is really suboptimal,
+        // but it simplifies the implementation. try to address this later.
+        // fast path in sequence messages?
 
-        unsafe {
-            let result = (*storage).transaction(|txn| {
-                query::inbox_dequeue(
-                    txn,
-                    commit.sender.address(),
-                    commit.recipient.address(),
-                    commit.sequence,
-                )
-            });
+        let mut iterator = inbox::InboxIterator::new(unsafe { &mut (*storage) });
 
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
-            }
-        }
-    })
-}
+        // iterate through all messages we have available
+        while let Some(next) = iterator.next() {
+            let from_address =
+                PublicKey::from_bytes(&next.from_address).expect("invalid address loaded");
+            let to_address =
+                PublicKey::from_bytes(&next.to_address).expect("invalid address loaded");
 
-fn on_key_package_cb(
-    storage: &Arc<AtomicPtr<Connection>>,
-    callback: OnKeyPackageCB,
-) -> websocket::OnKeyPackageCB {
-    let storage = storage.clone();
+            match next.event {
+                query::Event::Commit => {
+                    let content = match flatbuffers::root::<messaging::MlsCommit>(&next.message) {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("messaging event error: {}", err);
+                            return;
+                        }
+                    };
 
-    Arc::new(move |package| {
-        let storage = storage.load(Ordering::SeqCst);
+                    let commit = match content.commit() {
+                        Some(commit) => Vec::from(commit.bytes()),
+                        None => return,
+                    };
 
-        unsafe {
-            let result = (*storage).transaction(|txn| {
-                query::address_create(txn, package.sender.address())?;
-                query::inbox_queue(
-                    txn,
-                    query::Event::KeyPackage,
-                    package.sender.address(),
-                    package.recipient.address(),
-                    &package.package,
-                    package.sequence,
-                )?;
+                    on_commit(Commit::new(
+                        from_address,
+                        to_address,
+                        commit,
+                        next.sequence,
+                        next.timestamp,
+                    ));
+                }
+                query::Event::KeyPackage => {
+                    let content = match flatbuffers::root::<messaging::MlsKeyPackage>(&next.message)
+                    {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("messaging event error: {}", err);
+                            return;
+                        }
+                    };
 
-                Ok(())
-            });
+                    let package = match content.package() {
+                        Some(package) => Vec::from(package.bytes()),
+                        None => return,
+                    };
 
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
-                return;
-            }
-        }
+                    // TODO correctly pass through authorization info
+                    on_key_package(KeyPackage::new(
+                        from_address,
+                        to_address,
+                        package,
+                        next.sequence,
+                        next.timestamp,
+                        true,
+                    ));
+                }
+                query::Event::EncryptedMessage | query::Event::DecryptedMessage => {
+                    let decoded_message = match p2p::Message::decode(next.message.as_ref()) {
+                        Ok(decoded_message) => decoded_message,
+                        Err(err) => {
+                            println!("received invalid protobuf message: {}", err);
+                            return;
+                        }
+                    };
 
-        callback(KeyPackage::new(
-            package.sender.clone(),
-            package.recipient.clone(),
-            package.package,
-            package.sequence,
-            true,
-        ));
+                    let content_type = ContentType::from(decoded_message.r#type());
+                    let content = match Content::decode(content_type, &decoded_message.content) {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("received invalid protobuf content: {}", err);
+                            return;
+                        }
+                    };
 
-        unsafe {
-            let result = (*storage).transaction(|txn| {
-                query::inbox_dequeue(
-                    txn,
-                    package.sender.address(),
-                    package.recipient.address(),
-                    package.sequence,
-                )
-            });
+                    on_message(Message::new(
+                        decoded_message.id,
+                        from_address,
+                        to_address,
+                        content,
+                        next.sequence,
+                        next.timestamp,
+                    ));
+                }
+                query::Event::Proposal => {}
+                query::Event::Welcome => {
+                    let content = match flatbuffers::root::<messaging::MlsWelcome>(&next.message) {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("messaging event error: {}", err);
+                            return;
+                        }
+                    };
 
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
-            }
-        }
-    })
-}
+                    let package = match content.welcome() {
+                        Some(package) => Vec::from(package.bytes()),
+                        None => return,
+                    };
 
-fn on_welcome_cb(
-    storage: &Arc<AtomicPtr<Connection>>,
-    callback: OnWelcomeCB,
-) -> websocket::OnWelcomeCB {
-    let storage = storage.clone();
+                    let subscription = match content.subscription() {
+                        Some(subscription) => Vec::from(subscription.bytes()),
+                        None => return,
+                    };
 
-    Arc::new(move |welcome| {
-        let storage = storage.load(Ordering::SeqCst);
-
-        unsafe {
-            let result = (*storage).transaction(|txn| {
-                query::address_create(txn, welcome.sender.address())?;
-                query::inbox_queue(
-                    txn,
-                    query::Event::KeyPackage,
-                    welcome.sender.address(),
-                    welcome.recipient.address(),
-                    &welcome.welcome,
-                    welcome.sequence,
-                )?;
-
-                Ok(())
-            });
-
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
-                return;
-            }
-        }
-
-        callback(Welcome::new(
-            welcome.sender.clone(),
-            welcome.recipient.clone(),
-            welcome.welcome,
-            welcome.sequence,
-            welcome.subscription,
-            true,
-        ));
-
-        unsafe {
-            let result = (*storage).transaction(|txn| {
-                query::inbox_dequeue(
-                    txn,
-                    welcome.sender.address(),
-                    welcome.recipient.address(),
-                    welcome.sequence,
-                )
-            });
-
-            if let Err(err) = result {
-                println!("transaction failed: {}", err);
+                    // TODO correctly pass through authorization info
+                    on_welcome(Welcome::new(
+                        from_address,
+                        to_address,
+                        package,
+                        subscription,
+                        next.sequence,
+                        next.timestamp,
+                        true,
+                    ));
+                }
+                query::Event::Invalid => return,
             }
         }
     })
