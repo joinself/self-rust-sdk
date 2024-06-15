@@ -91,7 +91,7 @@ impl Account {
                     &self.storage,
                     callbacks.on_commit,
                     callbacks.on_key_package,
-                    callbacks.on_message,
+                    callbacks.on_message.clone(),
                     callbacks.on_welcome,
                 ),
             },
@@ -103,12 +103,12 @@ impl Account {
         self.websocket.swap(websocket, Ordering::SeqCst);
 
         unsafe {
+            // load our existing subscriptions, send all outstanding messages
+            // in our outbox and then resume processing our inbox
             operation::subscription_load(&(*storage), &(*websocket))?;
+            operation::outbox_process(&(*storage), &(*websocket))?;
+            operation::inbox_process(&(*storage), callbacks.on_message)?;
         }
-
-        // TODO - resume subscriptions
-        // TODO - (re-)send messages in outbox
-        // TODO - (re-)handle messages in inbox
 
         Ok(())
     }
@@ -573,7 +573,7 @@ fn on_event_cb(
         // but it simplifies the implementation. try to address this later.
         // fast path in sequence messages?
 
-        let mut iterator = inbox::InboxIterator::new(storage);
+        let mut iterator = inbox::InboxIterator::new(unsafe { &mut (*storage) });
 
         // iterate through all messages we have available
         while let Some(next) = iterator.next() {

@@ -1,6 +1,6 @@
 use prost::Message;
 
-use crate::account::KeyPurpose;
+use crate::account::{self, inbox, outbox, KeyPurpose};
 use crate::credential::{
     Address, Credential, Presentation, VerifiableCredential, VerifiablePresentation,
 };
@@ -10,7 +10,7 @@ use crate::hashgraph::{Hashgraph, Method, Operation, Role};
 use crate::keypair::signing::{self, KeyPair, PublicKey};
 use crate::message;
 use crate::object;
-use crate::protocol::p2p::p2p;
+use crate::protocol::p2p;
 use crate::storage::{query, Connection};
 use crate::time;
 use crate::token;
@@ -421,7 +421,6 @@ pub fn subscription_load(storage: &Connection, websocket: &Websocket) -> Result<
     let mut subscriptions = Vec::new();
 
     for (to_address, as_address, token, from) in subscription_list {
-        println!("subscribing to: {:?}", to_address);
         subscriptions.push(Subscription {
             to_address: PublicKey::from_bytes(&to_address)?,
             as_address: KeyPair::decode(&as_address)?,
@@ -431,6 +430,69 @@ pub fn subscription_load(storage: &Connection, websocket: &Websocket) -> Result<
     }
 
     websocket.subscribe(&subscriptions)
+}
+
+pub fn outbox_process(storage: &Connection, websocket: &Websocket) -> Result<(), SelfError> {
+    let mut iterator = outbox::OutboxIterator::new(storage);
+
+    while let Some((as_address, next)) = iterator.next() {
+        let payload = websocket::assemble_payload_message(
+            as_address,
+            &PublicKey::from_bytes(&next.to_address)?,
+            next.sequence,
+            &next.message,
+        )?;
+
+        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+        websocket.send(
+            as_address,
+            &payload,
+            None,
+            Arc::new(move |resp| {
+                resp_tx.send(resp).unwrap();
+            }),
+        );
+
+        resp_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
+    }
+
+    Ok(())
+}
+
+pub fn inbox_process(
+    storage: &Connection,
+    on_message: account::OnMessageCB,
+) -> Result<(), SelfError> {
+    let mut iterator = inbox::InboxIterator::new(storage);
+
+    while let Some(next) = iterator.next() {
+        let decoded_message = match p2p::Message::decode(next.message.as_ref()) {
+            Ok(decoded_message) => decoded_message,
+            Err(err) => {
+                println!("received invalid protobuf message: {}", err);
+                return Err(SelfError::MessageEncodingInvalid);
+            }
+        };
+
+        let from_address = PublicKey::from_bytes(&next.from_address)?;
+        let to_address = PublicKey::from_bytes(&next.to_address)?;
+        let content_type = message::ContentType::from(decoded_message.r#type());
+        let content = message::Content::decode(content_type, &decoded_message.content)?;
+
+        on_message(message::Message::new(
+            decoded_message.id,
+            from_address,
+            to_address,
+            content,
+            next.sequence,
+            next.timestamp,
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn group_create(
@@ -844,16 +906,18 @@ pub fn connection_accept(
             query::group_member_add(txn, group.address(), member.address())?;
         }
 
-        group_address = Some(group);
-
         query::token_create(
             txn,
             query::Token::Subscription,
-            group_address.as_ref().unwrap().address(),
+            group.address(),
             as_address.address(),
-            group_address.as_ref().unwrap().address(),
+            group.address(),
             subscription_token.as_bytes(),
         )?;
+
+        query::subscription_create(txn, group.address(), as_address.address(), time::unix())?;
+
+        group_address = Some(group);
 
         Ok(())
     })?;

@@ -68,13 +68,13 @@ pub fn inbox_queue(storage: &Connection, event: &mut Event) -> Result<(), SelfEr
     })
 }
 
-pub struct InboxIterator {
-    storage: *mut Connection,
+pub struct InboxIterator<'c> {
+    storage: &'c Connection,
     current: Option<QueuedMessage>,
 }
 
-impl InboxIterator {
-    pub fn new(storage: *mut Connection) -> InboxIterator {
+impl<'c> InboxIterator<'c> {
+    pub fn new(storage: &'c Connection) -> InboxIterator<'c> {
         InboxIterator {
             storage,
             current: None,
@@ -82,62 +82,59 @@ impl InboxIterator {
     }
 
     pub fn next(&mut self) -> Option<&QueuedMessage> {
-        unsafe {
-            let result = (*self.storage).transaction(|txn| {
-                // if there's an existing message, dequeue it
-                if let Some(current) = &self.current {
-                    query::inbox_dequeue(
+        let result = (*self.storage).transaction(|txn| {
+            // if there's an existing message, dequeue it
+            if let Some(current) = &self.current {
+                query::inbox_dequeue(
+                    txn,
+                    &current.from_address,
+                    &current.to_address,
+                    current.sequence,
+                )?;
+            }
+
+            // queue up the next message
+            self.current = query::inbox_next(txn)?;
+
+            // if the message is encrypted, then encrypt it
+            if let Some(next) = &mut self.current {
+                if next.event.eq(&query::Event::EncryptedMessage) {
+                    let content = match flatbuffers::root::<messaging::MlsMessage>(&next.message) {
+                        Ok(content) => content,
+                        Err(err) => {
+                            println!("messaging event error: {}", err);
+                            return Err(SelfError::WebsocketProtocolEncodingInvalid);
+                        }
+                    };
+
+                    let message = match content.message() {
+                        Some(message) => Vec::from(message.bytes()),
+                        None => return Err(SelfError::WebsocketProtocolEncodingInvalid),
+                    };
+
+                    next.event = query::Event::DecryptedMessage;
+
+                    // if this is an encrypted message, decrypt it
+                    next.message = e2e::mls_group_decrypt(txn, &next.to_address, &message)?;
+
+                    // update the inbox message with the decrypted message
+                    query::inbox_update(
                         txn,
-                        &current.from_address,
-                        &current.to_address,
-                        current.sequence,
+                        next.event,
+                        &next.from_address,
+                        &next.to_address,
+                        &next.message,
+                        next.sequence,
                     )?;
                 }
-
-                // queue up the next message
-                self.current = query::inbox_next(txn)?;
-
-                // if the message is encrypted, then encrypt it
-                if let Some(next) = &mut self.current {
-                    if next.event.eq(&query::Event::EncryptedMessage) {
-                        let content =
-                            match flatbuffers::root::<messaging::MlsMessage>(&next.message) {
-                                Ok(content) => content,
-                                Err(err) => {
-                                    println!("messaging event error: {}", err);
-                                    return Err(SelfError::WebsocketProtocolEncodingInvalid);
-                                }
-                            };
-
-                        let message = match content.message() {
-                            Some(message) => Vec::from(message.bytes()),
-                            None => return Err(SelfError::WebsocketProtocolEncodingInvalid),
-                        };
-
-                        next.event = query::Event::DecryptedMessage;
-
-                        // if this is an encrypted message, decrypt it
-                        next.message = e2e::mls_group_decrypt(txn, &next.to_address, &message)?;
-
-                        // update the inbox message with the decrypted message
-                        query::inbox_update(
-                            txn,
-                            next.event,
-                            &next.from_address,
-                            &next.to_address,
-                            &next.message,
-                            next.sequence,
-                        )?;
-                    }
-                }
-
-                Ok(())
-            });
-
-            if let Err(err) = result {
-                println!("inbox next message error: {}", err);
-                return None;
             }
+
+            Ok(())
+        });
+
+        if let Err(err) = result {
+            println!("inbox next message error: {}", err);
+            return None;
         }
 
         self.current.as_ref()
@@ -164,27 +161,3 @@ fn to_event_type(
         _ => query::Event::Invalid,
     }
 }
-
-/*
-            unsafe {
-                let result = (*storage).transaction(|txn| {
-                    query::inbox_dequeue(txn, &next.from_address, &next.to_address, next.sequence)?;
-                    next_message = query::inbox_next(txn)?;
-
-                    if let Some(next) = &mut next_message{
-                        if next.event.eq(&query::Event::Message) {
-                            // if this is a message, decrypt it
-                            next.message =
-                                e2e::mls_group_decrypt(txn, &next.to_address, &next.message)?;
-                        }
-                    }
-
-                    Ok(())
-                });
-
-                if let Err(err) = result {
-                    println!("transaction failed: {}", err);
-                }
-            }
-
-*/
