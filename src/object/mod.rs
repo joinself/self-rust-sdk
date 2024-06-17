@@ -1,6 +1,7 @@
 use crate::crypto;
 use crate::error::SelfError;
 
+#[derive(Clone)]
 pub struct Object {
     id: Vec<u8>,
     mime: String,
