@@ -15,6 +15,7 @@ pub struct CredentialPresentationDetail {
     pub subject: HashMap<String, String>,
 }
 
+#[derive(Clone)]
 pub struct CredentialVerificationEvidence {
     pub evidence_type: String,
     pub object: object::Object,
