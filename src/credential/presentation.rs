@@ -294,7 +294,7 @@ impl VerifiablePresentation {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Proof {
     #[serde(rename = "type")]
     proof_type: String,
