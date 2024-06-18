@@ -54,11 +54,11 @@ impl ReceiptBuilder {
         self
     }
 
-    pub fn finish(self) -> Result<Content, SelfError> {
+    pub fn finish(&self) -> Result<Content, SelfError> {
         Ok(Content::Receipt(Receipt {
             receipt: p2p::Receipt {
-                read: self.read,
-                delivered: self.delivered,
+                read: self.read.clone(),
+                delivered: self.delivered.clone(),
             },
         }))
     }
