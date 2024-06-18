@@ -15,6 +15,7 @@ use crate::protocol::p2p;
 #[derive(Clone)]
 pub enum Content {
     Chat(Chat),
+    Receipt(Receipt),
     CredentialVerificationRequest(CredentialVerificationRequest),
     CredentialVerificationResponse(CredentialVerificationResponse),
     CredentialPresentationRequest(CredentialPresentationRequest),
@@ -46,6 +47,7 @@ impl Content {
     pub fn encode(&self) -> Result<Vec<u8>, SelfError> {
         match self {
             Content::Chat(chat) => Ok(chat.encode()),
+            Content::Receipt(receipt) => Ok(receipt.encode()),
             Content::CredentialVerificationRequest(request) => Ok(request.encode()),
             Content::CredentialVerificationResponse(response) => Ok(response.encode()),
             Content::CredentialPresentationRequest(request) => Ok(request.encode()),
@@ -56,6 +58,7 @@ impl Content {
     pub fn content_type(&self) -> ContentType {
         match *self {
             Content::Chat(_) => ContentType::Chat,
+            Content::Receipt(_) => ContentType::Receipt,
             Content::CredentialVerificationRequest(_) => ContentType::CredentialVerificationRequest,
             Content::CredentialVerificationResponse(_) => {
                 ContentType::CredentialVerificationResponse
@@ -286,6 +289,7 @@ impl Message {
     pub fn content_type(&self) -> ContentType {
         match self.content {
             Content::Chat(_) => ContentType::Chat,
+            Content::Receipt(_) => ContentType::Receipt,
             Content::CredentialVerificationRequest(_) => ContentType::CredentialVerificationRequest,
             Content::CredentialVerificationResponse(_) => {
                 ContentType::CredentialVerificationResponse

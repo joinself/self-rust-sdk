@@ -1,7 +1,8 @@
 use prost::Message;
 
-use crate::{error::SelfError, protocol::p2p};
+use crate::{error::SelfError, message::Content, protocol::p2p};
 
+#[derive(Clone)]
 pub struct Receipt {
     receipt: p2p::Receipt,
 }
@@ -53,12 +54,12 @@ impl ReceiptBuilder {
         self
     }
 
-    pub fn finish(self) -> Result<Receipt, SelfError> {
-        Ok(Receipt {
+    pub fn finish(self) -> Result<Content, SelfError> {
+        Ok(Content::Receipt(Receipt {
             receipt: p2p::Receipt {
                 read: self.read,
                 delivered: self.delivered,
             },
-        })
+        }))
     }
 }
