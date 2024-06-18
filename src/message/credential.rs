@@ -64,6 +64,14 @@ impl CredentialVerificationRequest {
         Ok(objects)
     }
 
+    pub fn expires(&self) -> i64 {
+        if let Some(header) = self.verification_request.header.as_ref() {
+            header.expires
+        } else {
+            0
+        }
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         self.verification_request.encode_to_vec()
     }
@@ -304,6 +312,14 @@ impl CredentialPresentationRequest {
         }
 
         Ok(details)
+    }
+
+    pub fn expires(&self) -> i64 {
+        if let Some(header) = self.presentation_request.header.as_ref() {
+            header.expires
+        } else {
+            0
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {
