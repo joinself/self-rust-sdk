@@ -10,6 +10,7 @@ use crate::{error::SelfError, protocol::p2p};
 
 use super::{Content, ResponseStatus};
 
+#[derive(Clone)]
 pub struct CredentialPresentationDetail {
     pub credential_type: Vec<String>,
     pub subject: HashMap<String, String>,
