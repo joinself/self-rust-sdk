@@ -94,7 +94,7 @@ impl PresentationBuilder {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Presentation {
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
