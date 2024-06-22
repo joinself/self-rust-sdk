@@ -482,7 +482,7 @@ pub fn inbox_process(
 
         let from_address = PublicKey::from_bytes(&next.from_address)?;
         let to_address = PublicKey::from_bytes(&next.to_address)?;
-        let content_type = message::ContentType::from(decoded_message.r#type());
+        let content_type = message::ContentType::from(decoded_message.content_type());
         let content = message::Content::decode(content_type, &decoded_message.content)?;
 
         on_message(message::Message::new(
@@ -988,7 +988,7 @@ pub fn message_send(
 
         let message = p2p::Message {
             version: p2p::Version::V1.into(),
-            r#type: content.content_type().into(),
+            content_type: content.content_type().into(),
             id: crypto::random_id(),
             content: content.encode()?,
         };

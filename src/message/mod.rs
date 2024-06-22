@@ -1,11 +1,13 @@
 mod chat;
 mod credential;
 mod event;
+mod presentation;
 mod receipt;
 
 pub use self::chat::*;
 pub use self::credential::*;
 pub use self::event::*;
+pub use self::presentation::*;
 pub use self::receipt::*;
 
 use crate::error::SelfError;

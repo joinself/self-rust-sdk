@@ -51,15 +51,15 @@ message Evidence {
 }
 
 message PresentationDetails {
-  repeated string type = 1;
-  bytes subject        = 2;
+  repeated string credential_type = 1;
+  bytes subject                   = 2;
 }
 
 message Message {
-  Version version  = 1;
-  ContentType type = 2;
-  bytes id         = 3;
-  bytes content    = 4;
+  Version version          = 1;
+  ContentType content_type = 2;
+  bytes id                 = 3;
+  bytes content            = 4;
 }
 
 message Chat {
@@ -74,10 +74,10 @@ message Receipt {
 }
 
 message CredentialVerificationRequest {
-  RequestHeader header       = 1;
-  repeated string type       = 2;
-  repeated Proof proof       = 3;
-  repeated Evidence evidence = 4;
+  RequestHeader header            = 1;
+  repeated string credential_type = 2;
+  repeated Proof proof            = 3;
+  repeated Evidence evidence      = 4;
 }
 
 message CredentialVerificationResponse {
@@ -87,7 +87,8 @@ message CredentialVerificationResponse {
 
 message CredentialPresentationRequest {
   RequestHeader header                 = 1;
-  repeated PresentationDetails details = 2;
+  repeated string presentation_type    = 2;
+  repeated PresentationDetails details = 3;
 }
 
 message CredentialPresentationResponse {

@@ -707,7 +707,7 @@ fn on_event_cb(
                         }
                     };
 
-                    let content_type = ContentType::from(decoded_message.r#type());
+                    let content_type = ContentType::from(decoded_message.content_type());
                     let content = match Content::decode(content_type, &decoded_message.content) {
                         Ok(content) => content,
                         Err(err) => {
