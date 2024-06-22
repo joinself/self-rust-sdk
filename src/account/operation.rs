@@ -419,6 +419,10 @@ pub fn subscription_load(storage: &Connection, websocket: &Websocket) -> Result<
         Ok(())
     })?;
 
+    if subscription_list.len() < 1 {
+        return Ok(())
+    }
+
     let mut subscriptions = Vec::new();
     let timestamp = crate::time::unix();
 
