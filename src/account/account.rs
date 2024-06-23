@@ -631,9 +631,16 @@ fn on_event_cb(
         let storage = storage.load(Ordering::SeqCst);
 
         unsafe {
-            if let Err(err) = inbox::inbox_queue(&(*storage), &mut event) {
-                println!("inbox queue message failed: {}", err);
-                return;
+            match inbox::inbox_queue(&(*storage), &mut event) {
+                Ok(process) => {
+                    if !process {
+                        return;
+                    }
+                }
+                Err(err) => {
+                    println!("inbox queue message failed: {}", err);
+                    return;
+                }
             }
         }
 

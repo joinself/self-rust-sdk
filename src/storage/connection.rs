@@ -1,6 +1,11 @@
 use libsqlite3_sys::{
     sqlite3, sqlite3_close_v2, sqlite3_db_mutex, sqlite3_mutex_enter, sqlite3_mutex_leave,
-    sqlite3_open_v2, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX, SQLITE_OPEN_READWRITE,
+    sqlite3_open_v2, SQLITE_ABORT, SQLITE_AUTH, SQLITE_BUSY, SQLITE_CANTOPEN, SQLITE_CONSTRAINT,
+    SQLITE_CORRUPT, SQLITE_DONE, SQLITE_ERROR, SQLITE_FULL, SQLITE_INTERNAL, SQLITE_INTERRUPT,
+    SQLITE_IOERR, SQLITE_LOCKED, SQLITE_MISMATCH, SQLITE_MISUSE, SQLITE_NOLFS, SQLITE_NOMEM,
+    SQLITE_NOTADB, SQLITE_NOTFOUND, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX,
+    SQLITE_OPEN_READWRITE, SQLITE_PERM, SQLITE_PROTOCOL, SQLITE_RANGE, SQLITE_READONLY, SQLITE_ROW,
+    SQLITE_SCHEMA, SQLITE_TOOBIG,
 };
 
 use std::ffi::CString;
@@ -119,29 +124,54 @@ unsafe impl Sync for Connection {}
 pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
     match result {
         SQLITE_OK => Ok(()),
+        SQLITE_ROW => Ok(()),
+        SQLITE_DONE => Ok(()),
+        SQLITE_ABORT => Err(SelfError::StorageAbort),
+        SQLITE_AUTH => Err(SelfError::StorageAuth),
+        SQLITE_BUSY => Err(SelfError::StorageBusy),
+        SQLITE_CANTOPEN => Err(SelfError::StorageCantOpen),
+        SQLITE_CONSTRAINT => Err(SelfError::StorageConstraint),
+        SQLITE_CORRUPT => Err(SelfError::StorageCorrupt),
+        SQLITE_ERROR => Err(SelfError::StorageUnknown),
+        SQLITE_FULL => Err(SelfError::StorageFull),
+        SQLITE_INTERNAL => Err(SelfError::StorageInternal),
+        SQLITE_INTERRUPT => Err(SelfError::StorageInterrupt),
+        SQLITE_IOERR => Err(SelfError::StorageIOError),
+        SQLITE_LOCKED => Err(SelfError::StorageLocked),
+        SQLITE_MISMATCH => Err(SelfError::StorageMismatch),
+        SQLITE_MISUSE => Err(SelfError::StorageMisuse),
+        SQLITE_NOLFS => Err(SelfError::StorageNoLFS),
+        SQLITE_NOMEM => Err(SelfError::StorageNoMem),
+        SQLITE_NOTADB => Err(SelfError::StorageNotADB),
+        SQLITE_NOTFOUND => Err(SelfError::StorageNotFound),
+        SQLITE_PERM => Err(SelfError::StoragePermissions),
+        SQLITE_PROTOCOL => Err(SelfError::StorageProtocol),
+        SQLITE_RANGE => Err(SelfError::StorageRange),
+        SQLITE_READONLY => Err(SelfError::StorageReadOnly),
+        SQLITE_SCHEMA => Err(SelfError::StorageSchema),
+        SQLITE_TOOBIG => Err(SelfError::StorageTooBig),
         _ => Err(SelfError::StorageUnknown),
     }
 }
 
 pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
-    match result {
-        SQLITE_OK => Ok(()),
-        _ => {
-            /*
-            println!("sqlite status: {}", result);
+    let result = sqlite_check_result(result);
 
-            unsafe {
-                let msg = std::ffi::CStr::from_ptr(libsqlite3_sys::sqlite3_errmsg(conn));
-                println!(
-                    "sqlite error: {}",
-                    msg.to_str().expect("failed to convert sqlite error")
-                );
-            }
-            */
+    if result.is_err() {
+        /*
+        println!("sqlite status: {}", result);
 
-            Err(SelfError::StorageUnknown)
+        unsafe {
+            let msg = std::ffi::CStr::from_ptr(libsqlite3_sys::sqlite3_errmsg(conn));
+            println!(
+                "sqlite error: {}",
+                msg.to_str().expect("failed to convert sqlite error")
+            );
         }
+        */
     }
+
+    result
 }
 
 #[cfg(test)]

@@ -272,7 +272,9 @@ pub fn schema_create_inbox(txn: &Transaction) {
                 message INTEGER NOT NULL,
                 timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
-            );",
+            );
+            CREATE UNIQUE INDEX idx_inbox_message
+            ON inbox (to_address, from_address, sequence);",
         )
         .expect("failed to prepare statement");
 
@@ -294,7 +296,9 @@ pub fn schema_create_outbox(txn: &Transaction) {
                 message INTEGER NOT NULL,
                 timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
-            );",
+            );
+            CREATE UNIQUE INDEX idx_outbox_message
+            ON outbox (to_address, from_address, sequence);",
         )
         .expect("failed to prepare statement");
 

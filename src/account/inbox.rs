@@ -4,8 +4,21 @@ use crate::protocol::messaging;
 use crate::storage::{query, query::QueuedMessage, Connection};
 use crate::transport::websocket::Event;
 
-pub fn inbox_queue(storage: &Connection, event: &mut Event) -> Result<(), SelfError> {
+pub fn inbox_queue(storage: &Connection, event: &mut Event) -> Result<bool, SelfError> {
+    let mut process = false;
+
     storage.transaction(|txn| {
+        // test to see if we have this message in our inbox already
+        if query::inbox_exists(
+            txn,
+            event.from_address.address(),
+            event.to_address.address(),
+            event.sequence,
+        )? {
+            println!("message duplicate, skipping");
+            return Ok(());
+        }
+
         // load the metrics for this to_address and from_address
         // determine if this message is in order or a duplicate
         let sequence_rx = match query::metrics_load_sequence_rx(
@@ -27,12 +40,18 @@ pub fn inbox_queue(storage: &Connection, event: &mut Event) -> Result<(), SelfEr
                     event.from_address.address(),
                     event.to_address.address(),
                     0,
-                    0,
+                    event.sequence - 1,
                 )?;
 
-                0
+                event.sequence - 1
             }
         };
+
+        if event.sequence == sequence_rx + 1 {
+            // if this is the next message in sequence
+            // this event can be processed immediately
+            process = true
+        }
 
         let event_type = to_event_type(event.content_type, event.sequence, sequence_rx + 1);
         if event_type == query::Event::DecryptedMessage {
@@ -56,7 +75,7 @@ pub fn inbox_queue(storage: &Connection, event: &mut Event) -> Result<(), SelfEr
 
         // store the event to our inbox
         query::address_create(txn, event.from_address.address())?;
-        query::inbox_queue(
+        match query::inbox_queue(
             txn,
             event_type,
             event.from_address.address(),
@@ -64,8 +83,21 @@ pub fn inbox_queue(storage: &Connection, event: &mut Event) -> Result<(), SelfEr
             &event.content,
             event.timestamp,
             event.sequence,
-        )
-    })
+        ) {
+            Ok(()) => Ok(()),
+            Err(err) => match err {
+                SelfError::StorageConstraint => {
+                    // if this message exists in our inbox its a duplicate
+                    // and we can skip processing it
+                    process = false;
+                    Ok(())
+                }
+                _ => Err(err),
+            },
+        }
+    })?;
+
+    Ok(process)
 }
 
 pub struct InboxIterator<'c> {
@@ -85,6 +117,13 @@ impl<'c> InboxIterator<'c> {
         let result = (*self.storage).transaction(|txn| {
             // if there's an existing message, dequeue it
             if let Some(current) = &self.current {
+                query::metrics_update_sequence_rx(
+                    txn,
+                    &current.from_address,
+                    &current.to_address,
+                    current.sequence,
+                )?;
+
                 query::inbox_dequeue(
                     txn,
                     &current.from_address,

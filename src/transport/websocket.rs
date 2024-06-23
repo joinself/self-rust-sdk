@@ -64,6 +64,9 @@ pub struct Websocket {
     callbacks: Callbacks,
     write_tx: Sender<Signal>,
     write_rx: Receiver<Signal>,
+    event_tx: Sender<Event>,
+    event_rx: Receiver<Event>,
+    event_runtime: Arc<Runtime>,
     socket_runtime: Arc<Runtime>,
     command_runtime: Arc<Runtime>,
     callback_runtime: Arc<Runtime>,
@@ -77,7 +80,9 @@ unsafe impl Sync for Websocket {}
 impl Websocket {
     pub fn new(endpoint: &str, callbacks: Callbacks) -> Result<Websocket, SelfError> {
         let (write_tx, write_rx) = channel::bounded(256);
+        let (event_tx, event_rx) = channel::unbounded();
 
+        let event_runtime = Arc::new(Runtime::new().unwrap());
         let socket_runtime = Arc::new(Runtime::new().unwrap());
         let command_runtime = Arc::new(Runtime::new().unwrap());
         let callback_runtime = Arc::new(Runtime::new().unwrap());
@@ -92,6 +97,9 @@ impl Websocket {
             callbacks,
             write_tx,
             write_rx,
+            event_tx,
+            event_rx,
+            event_runtime,
             socket_runtime,
             command_runtime,
             callback_runtime,
@@ -101,13 +109,16 @@ impl Websocket {
 
     /// connects to the websocket server
     pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
+        let event_runtime = self.event_runtime.clone();
         let socket_runtime = self.socket_runtime.clone();
         let callback_runtime = self.callback_runtime.clone();
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
-        let callbacks = self.callbacks.clone();
+        let event_tx = self.event_tx.clone();
+        let event_rx = self.event_rx.clone();
         let on_connect = self.callbacks.on_connect.clone();
+        let on_event = self.callbacks.on_event.clone();
         let mut subscriptions = self.subscriptions.clone();
 
         // TODO cleanup old sockets!
@@ -133,6 +144,14 @@ impl Websocket {
             .map_err(|_| SelfError::HTTPRequestConnectionFailed)??
             .split();
 
+        // use a specific runtime for events so that
+        // they can be processed sequentially
+        event_runtime.spawn(async move {
+            while let Ok(event) = event_rx.recv() {
+                on_event(event);
+            }
+        });
+
         socket_runtime.spawn(async move {
             while let Some(event) = socket_rx.next().await {
                 let event = match event {
@@ -157,14 +176,16 @@ impl Websocket {
                 }
 
                 if event.is_binary() {
+                    println!("received binary...");
                     let result = handle_event_binary(
                         &callback_runtime,
+                        &event_tx,
                         &requests_rx,
                         &mut subscriptions,
-                        &callbacks,
                         &event.into_data(),
                     )
                     .await;
+                    println!("processed binary...");
                     if result.is_err() {
                         return;
                     }
@@ -332,6 +353,7 @@ impl Websocket {
 
     /// close an inbox
     pub fn close(&self, _address: &KeyPair) -> Result<(), SelfError> {
+        // TODO assemble_close
         Ok(())
     }
 
@@ -346,9 +368,9 @@ impl Websocket {
 
 async fn handle_event_binary(
     runtime: &Arc<Runtime>,
+    event_tx: &Sender<Event>,
     requests: &RequestCache,
     subscriptions: &mut SubscriptionCache,
-    callbacks: &Callbacks,
     data: &[u8],
 ) -> Result<(), SelfError> {
     let event = match messaging::root_as_event(data) {
@@ -372,9 +394,8 @@ async fn handle_event_binary(
         }
         EventType::MESSAGE => {
             invoke_event_callback(
-                runtime,
+                event_tx,
                 subscriptions,
-                &callbacks.on_event,
                 event.content().map(|content| content.bytes()),
             )
             .await
@@ -429,13 +450,10 @@ async fn invoke_error_callback(
 }
 
 async fn invoke_event_callback(
-    runtime: &Arc<Runtime>,
+    event_tx: &Sender<Event>,
     subscriptions: &mut SubscriptionCache,
-    on_event: &OnEventCB,
     content: Option<&[u8]>,
 ) -> Result<(), SelfError> {
-    let on_event = on_event.clone();
-
     let content = match content {
         Some(content) => content,
         None => return Err(SelfError::WebsocketProtocolEmptyContent),
@@ -520,9 +538,9 @@ async fn invoke_event_callback(
         sequence,
     };
 
-    runtime.spawn(async move {
-        on_event(event);
-    });
+    event_tx
+        .send(event)
+        .expect("failed to write to event channel");
 
     Ok(())
 }
