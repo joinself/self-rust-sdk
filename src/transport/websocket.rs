@@ -239,11 +239,11 @@ impl Websocket {
     }
 
     /// get metrics for each subscription
-    pub fn metrics(&self) -> HashMap<(PublicKey, PublicKey), i64> {
+    pub async fn metrics(&self) -> HashMap<(PublicKey, PublicKey), i64> {
         let mut metrics = HashMap::new();
         let timestamp = time::unix();
 
-        for (_, subscription) in self.subscriptions.blocking_lock().iter() {
+        for (_, subscription) in self.subscriptions.lock().await.iter() {
             let metric = if timestamp - subscription.last_active > 5 {
                 timestamp
             } else {

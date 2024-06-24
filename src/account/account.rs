@@ -633,18 +633,18 @@ async fn handle_subscription_metrics(
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
-        let storage = storage.load(Ordering::SeqCst);
-        if storage.is_null() {
-            return Err(SelfError::AccountNotConfigured);
-        }
-
         let websocket = websocket.load(Ordering::SeqCst);
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         }
 
         unsafe {
-            let metrics = (*websocket).metrics();
+            let metrics = (*websocket).metrics().await;
+
+            let storage = storage.load(Ordering::SeqCst);
+            if storage.is_null() {
+                return Err(SelfError::AccountNotConfigured);
+            }
 
             (*storage).transaction(|txn| {
                 for ((to_address, as_address), offset) in metrics.iter() {
