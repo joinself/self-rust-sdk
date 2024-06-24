@@ -1,6 +1,11 @@
 use libsqlite3_sys::{
     sqlite3, sqlite3_close_v2, sqlite3_db_mutex, sqlite3_mutex_enter, sqlite3_mutex_leave,
-    sqlite3_open_v2, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX, SQLITE_OPEN_READWRITE,
+    sqlite3_open_v2, SQLITE_ABORT, SQLITE_AUTH, SQLITE_BUSY, SQLITE_CANTOPEN, SQLITE_CONSTRAINT,
+    SQLITE_CORRUPT, SQLITE_DONE, SQLITE_ERROR, SQLITE_FULL, SQLITE_INTERNAL, SQLITE_INTERRUPT,
+    SQLITE_IOERR, SQLITE_LOCKED, SQLITE_MISMATCH, SQLITE_MISUSE, SQLITE_NOLFS, SQLITE_NOMEM,
+    SQLITE_NOTADB, SQLITE_NOTFOUND, SQLITE_OK, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX,
+    SQLITE_OPEN_READWRITE, SQLITE_PERM, SQLITE_PROTOCOL, SQLITE_RANGE, SQLITE_READONLY, SQLITE_ROW,
+    SQLITE_SCHEMA, SQLITE_TOOBIG,
 };
 
 use std::ffi::CString;
@@ -24,7 +29,6 @@ impl Connection {
 
         unsafe {
             let result = sqlite3_open_v2(path.as_ptr(), &mut conn, flags, ptr::null());
-
             sqlite_check_result(result)?;
         }
 
@@ -119,15 +123,41 @@ unsafe impl Sync for Connection {}
 pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
     match result {
         SQLITE_OK => Ok(()),
+        SQLITE_ROW => Ok(()),
+        SQLITE_DONE => Ok(()),
+        SQLITE_ABORT => Err(SelfError::StorageAbort),
+        SQLITE_AUTH => Err(SelfError::StorageAuth),
+        SQLITE_BUSY => Err(SelfError::StorageBusy),
+        SQLITE_CANTOPEN => Err(SelfError::StorageCantOpen),
+        SQLITE_CONSTRAINT => Err(SelfError::StorageConstraint),
+        SQLITE_CORRUPT => Err(SelfError::StorageCorrupt),
+        SQLITE_ERROR => Err(SelfError::StorageUnknown),
+        SQLITE_FULL => Err(SelfError::StorageFull),
+        SQLITE_INTERNAL => Err(SelfError::StorageInternal),
+        SQLITE_INTERRUPT => Err(SelfError::StorageInterrupt),
+        SQLITE_IOERR => Err(SelfError::StorageIOError),
+        SQLITE_LOCKED => Err(SelfError::StorageLocked),
+        SQLITE_MISMATCH => Err(SelfError::StorageMismatch),
+        SQLITE_MISUSE => Err(SelfError::StorageMisuse),
+        SQLITE_NOLFS => Err(SelfError::StorageNoLFS),
+        SQLITE_NOMEM => Err(SelfError::StorageNoMem),
+        SQLITE_NOTADB => Err(SelfError::StorageNotADB),
+        SQLITE_NOTFOUND => Err(SelfError::StorageNotFound),
+        SQLITE_PERM => Err(SelfError::StoragePermissions),
+        SQLITE_PROTOCOL => Err(SelfError::StorageProtocol),
+        SQLITE_RANGE => Err(SelfError::StorageRange),
+        SQLITE_READONLY => Err(SelfError::StorageReadOnly),
+        SQLITE_SCHEMA => Err(SelfError::StorageSchema),
+        SQLITE_TOOBIG => Err(SelfError::StorageTooBig),
         _ => Err(SelfError::StorageUnknown),
     }
 }
 
 pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
-    match result {
-        SQLITE_OK => Ok(()),
-        _ => {
-            /*
+    let checked_result = sqlite_check_result(result);
+
+    /*
+        if checked_result.is_err() {
             println!("sqlite status: {}", result);
 
             unsafe {
@@ -137,11 +167,11 @@ pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(),
                     msg.to_str().expect("failed to convert sqlite error")
                 );
             }
-            */
-
-            Err(SelfError::StorageUnknown)
         }
-    }
+    */
+
+    #[allow(clippy::let_and_return)]
+    checked_result
 }
 
 #[cfg(test)]
@@ -196,30 +226,5 @@ mod tests {
             Ok(())
         })
         .expect("failed to execute transaction");
-
-        /*
-            let start = std::time::Instant::now();
-
-            let mut address: Vec<u8> = vec![1; 33];
-
-            conn.transaction(|txn| {
-                for i in 0..100000 {
-                    rand::thread_rng().fill(address.as_mut_slice());
-
-                    let statement = txn
-                        .prepare("INSERT OR IGNORE INTO addresses (address) VALUES (?1)")
-                        .expect("failed to create statement");
-
-                    statement
-                        .bind_blob(1, &address)
-                        .expect("failed to bind blob");
-                }
-
-                Ok(())
-            })
-            .expect("failed to run transaction");
-
-            println!("took: {} ms", start.elapsed().as_millis());
-        */
     }
 }

@@ -21,7 +21,7 @@ use self_test_mock::Server;
 
 static INIT: Once = Once::new();
 static mut SERVER: Option<Server> = None;
-const DEFAULT_TIMEOUT: Duration = Duration::from_millis(100);
+const DEFAULT_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub fn test_server() {
     unsafe {

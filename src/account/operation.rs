@@ -419,8 +419,8 @@ pub fn subscription_load(storage: &Connection, websocket: &Websocket) -> Result<
         Ok(())
     })?;
 
-    if subscription_list.len() < 1 {
-        return Ok(())
+    if subscription_list.is_empty() {
+        return Ok(());
     }
 
     let mut subscriptions = Vec::new();
@@ -599,9 +599,17 @@ pub fn connection_negotiate(
         query::address_create(txn, with_address.address())?;
         sequence_tx = match query::metrics_load(txn, as_address.address(), with_address.address())?
         {
-            Some((sequence_tx, _)) => sequence_tx + 1,
+            Some((sequence_tx, _)) => {
+                query::metrics_update_sequence_tx(
+                    txn,
+                    as_address.address(),
+                    with_address.address(),
+                    sequence_tx + 1,
+                )?;
+                sequence_tx + 1
+            }
             None => {
-                query::metrics_create(txn, as_address.address(), with_address.address(), 0, 0)?;
+                query::metrics_create(txn, as_address.address(), with_address.address(), 1, 0)?;
                 1
             }
         };
@@ -633,12 +641,6 @@ pub fn connection_negotiate(
             with_address.address(),
             &key_package_encoded,
             timestamp,
-            sequence_tx,
-        )?;
-        query::metrics_update_sequence_tx(
-            txn,
-            as_address.address(),
-            with_address.address(),
             sequence_tx,
         )?;
 
@@ -732,7 +734,7 @@ pub fn connection_establish(
         query::group_create(txn, group_kp.address(), 1)?;
         query::group_member_add(txn, group_kp.address(), as_address.address())?;
         query::group_member_add(txn, group_kp.address(), with_address.address())?;
-        query::metrics_create(txn, as_address.address(), group_kp.address(), 0, 0)?;
+        query::metrics_create(txn, as_address.address(), group_kp.address(), 1, 0)?;
 
         let (commit_message, welcome_message) = e2e::mls_group_create_with_members(
             txn,
@@ -761,9 +763,17 @@ pub fn connection_establish(
 
         sequence_tx = match query::metrics_load(txn, as_address.address(), with_address.address())?
         {
-            Some((sequence_tx, _)) => sequence_tx + 1,
+            Some((sequence_tx, _)) => {
+                query::metrics_update_sequence_tx(
+                    txn,
+                    as_address.address(),
+                    with_address.address(),
+                    sequence_tx + 1,
+                )?;
+                sequence_tx + 1
+            }
             None => {
-                query::metrics_create(txn, as_address.address(), with_address.address(), 0, 0)?;
+                query::metrics_create(txn, as_address.address(), with_address.address(), 1, 0)?;
                 1
             }
         };
@@ -802,13 +812,6 @@ pub fn connection_establish(
             with_address.address(),
             welcome_payload.as_ref().unwrap(),
             timestamp,
-            sequence_tx,
-        )?;
-
-        query::metrics_update_sequence_tx(
-            txn,
-            as_address.address(),
-            with_address.address(),
             sequence_tx,
         )
     })?;
@@ -1012,9 +1015,17 @@ pub fn message_send(
 
         sequence_tx = match query::metrics_load(txn, as_address.address(), group_address.address())?
         {
-            Some((sequence_tx, _)) => sequence_tx + 1,
+            Some((sequence_tx, _)) => {
+                query::metrics_update_sequence_tx(
+                    txn,
+                    as_address.address(),
+                    group_address.address(),
+                    sequence_tx + 1,
+                )?;
+                sequence_tx + 1
+            }
             None => {
-                query::metrics_create(txn, as_address.address(), group_address.address(), 0, 0)?;
+                query::metrics_create(txn, as_address.address(), group_address.address(), 1, 0)?;
                 1
             }
         };
@@ -1026,13 +1037,6 @@ pub fn message_send(
             group_address.address(),
             &ciphertext,
             timestamp,
-            sequence_tx,
-        )?;
-
-        query::metrics_update_sequence_tx(
-            txn,
-            as_address.address(),
-            group_address.address(),
             sequence_tx,
         )
     })?;

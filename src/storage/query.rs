@@ -7,7 +7,7 @@ pub trait KeyPair {
     fn decode(d: &[u8]) -> Self;
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(u8)]
 pub enum Event {
     Commit,
@@ -1005,6 +1005,36 @@ pub fn inbox_update(
     .execute()
 }
 
+pub fn inbox_exists(
+    txn: &Transaction,
+    from_address: &[u8],
+    to_address: &[u8],
+    sequence: u64,
+) -> Result<bool, SelfError> {
+    let stmt = txn.prepare(
+        "SELECT COUNT(id) FROM inbox WHERE from_address = (
+            SELECT id FROM addresses WHERE address=?1
+        ) AND to_address = (
+            SELECT id FROM addresses WHERE address=?2
+        ) AND sequence = ?3;",
+    )?;
+
+    stmt.bind_blob(1, from_address)?
+        .bind_blob(2, to_address)?
+        .bind_integer(3, sequence as i64)?;
+
+    if stmt.step()? {
+        match stmt.column_integer(0)? {
+            Some(count) => {
+                return Ok(count > 0);
+            }
+            None => return Ok(false),
+        }
+    }
+
+    Ok(false)
+}
+
 pub fn inbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError> {
     let stmt = txn.prepare(
         "SELECT a1.address, a2.address, event, message, timestamp, sequence FROM inbox
@@ -1013,9 +1043,7 @@ pub fn inbox_next(txn: &Transaction) -> Result<Option<QueuedMessage>, SelfError>
         JOIN addresses a2 ON
             a2.id = inbox.to_address
         JOIN metrics m1 ON
-            m1.from_address = inbox.from_address
-        JOIN metrics m2 ON 
-            m2.to_address = inbox.to_address
+            m1.from_address = inbox.from_address AND m1.to_address = inbox.to_address
         WHERE m1.sequence_rx + 1 = inbox.sequence
         ORDER BY inbox.id ASC LIMIT 1;",
     )?;
@@ -1462,7 +1490,7 @@ mod tests {
             .transaction(|txn| query::address_create(txn, &to_address))
             .expect("transaction failed");
 
-        // queue a message for an unknown from_address
+        // queue a message for an known from_address and to_address
         connection
             .transaction(|txn| {
                 query::inbox_queue(
