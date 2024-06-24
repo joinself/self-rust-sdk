@@ -29,7 +29,6 @@ impl Connection {
 
         unsafe {
             let result = sqlite3_open_v2(path.as_ptr(), &mut conn, flags, ptr::null());
-
             sqlite_check_result(result)?;
         }
 
@@ -155,23 +154,24 @@ pub fn sqlite_check_result(result: i32) -> Result<(), SelfError> {
 }
 
 pub fn sqlite_check_result_debug(_conn: *mut sqlite3, result: i32) -> Result<(), SelfError> {
-    let result = sqlite_check_result(result);
+    let checked_result = sqlite_check_result(result);
 
-    if result.is_err() {
-        /*
-        println!("sqlite status: {}", result);
+    /*
+        if checked_result.is_err() {
+            println!("sqlite status: {}", result);
 
-        unsafe {
-            let msg = std::ffi::CStr::from_ptr(libsqlite3_sys::sqlite3_errmsg(conn));
-            println!(
-                "sqlite error: {}",
-                msg.to_str().expect("failed to convert sqlite error")
-            );
+            unsafe {
+                let msg = std::ffi::CStr::from_ptr(libsqlite3_sys::sqlite3_errmsg(conn));
+                println!(
+                    "sqlite error: {}",
+                    msg.to_str().expect("failed to convert sqlite error")
+                );
+            }
         }
-        */
-    }
+    */
 
-    result
+    #[allow(clippy::let_and_return)]
+    checked_result
 }
 
 #[cfg(test)]
@@ -226,30 +226,5 @@ mod tests {
             Ok(())
         })
         .expect("failed to execute transaction");
-
-        /*
-            let start = std::time::Instant::now();
-
-            let mut address: Vec<u8> = vec![1; 33];
-
-            conn.transaction(|txn| {
-                for i in 0..100000 {
-                    rand::thread_rng().fill(address.as_mut_slice());
-
-                    let statement = txn
-                        .prepare("INSERT OR IGNORE INTO addresses (address) VALUES (?1)")
-                        .expect("failed to create statement");
-
-                    statement
-                        .bind_blob(1, &address)
-                        .expect("failed to bind blob");
-                }
-
-                Ok(())
-            })
-            .expect("failed to run transaction");
-
-            println!("took: {} ms", start.elapsed().as_millis());
-        */
     }
 }

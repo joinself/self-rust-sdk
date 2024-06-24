@@ -1,11 +1,13 @@
 use crossbeam::channel;
 use crossbeam::channel::{Receiver, Sender};
 use flatbuffers::{Vector, WIPOffset};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::protocol;
+use tokio::sync::{broadcast, Mutex};
+use tokio_tungstenite::tungstenite::{protocol, Message};
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
 use std::collections::HashMap;
@@ -108,18 +110,24 @@ impl Websocket {
     }
 
     /// connects to the websocket server
-    pub fn connect(&mut self) -> std::result::Result<(), SelfError> {
+    pub fn connect(
+        &mut self,
+        shutdown: &broadcast::Receiver<()>,
+    ) -> std::result::Result<(), SelfError> {
         let event_runtime = self.event_runtime.clone();
-        let socket_runtime = self.socket_runtime.clone();
         let callback_runtime = self.callback_runtime.clone();
+        let socket_runtime = self.socket_runtime.clone();
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
         let event_tx = self.event_tx.clone();
         let event_rx = self.event_rx.clone();
+        let mut event_shutdown_rx = shutdown.resubscribe();
+        let mut socket_tx_shutdown_rx = shutdown.resubscribe();
+        let mut socket_rx_shutdown_rx = shutdown.resubscribe();
         let on_connect = self.callbacks.on_connect.clone();
         let on_event = self.callbacks.on_event.clone();
-        let mut subscriptions = self.subscriptions.clone();
+        let subscriptions = self.subscriptions.clone();
 
         // TODO cleanup old sockets!
         let (tx, rx) = channel::bounded(1);
@@ -139,7 +147,7 @@ impl Websocket {
             tx.send(result).unwrap();
         });
 
-        let (mut socket_tx, mut socket_rx) = rx
+        let (socket_tx, socket_rx) = rx
             .recv()
             .map_err(|_| SelfError::HTTPRequestConnectionFailed)??
             .split();
@@ -147,77 +155,33 @@ impl Websocket {
         // use a specific runtime for events so that
         // they can be processed sequentially
         event_runtime.spawn(async move {
-            while let Ok(event) = event_rx.recv() {
-                on_event(event);
+            tokio::select! {
+                _ = handle_event_callback(&event_rx, &on_event) => {}
+                _ = event_shutdown_rx.recv() => {
+                    //println!("shutting down event");
+                }
             }
         });
 
         socket_runtime.spawn(async move {
-            while let Some(event) = socket_rx.next().await {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(err) => {
-                        println!("websocket failed with: {:?}", err);
-                        return;
-                    }
-                };
-
-                if event.is_close() {
-                    let _ = write_tx.send(Signal::Done);
-                    return;
+            tokio::select! {
+                _ = handle_socket_rx(socket_rx, write_tx, event_tx, requests_rx, subscriptions, callback_runtime) => {}
+                _ = socket_rx_shutdown_rx.recv() => {
+                    //println!("shutting down socket rx");
                 }
-
-                if event.is_ping() {
-                    continue;
-                }
-
-                if event.is_pong() {
-                    continue;
-                }
-
-                if event.is_binary() {
-                    println!("received binary...");
-                    let result = handle_event_binary(
-                        &callback_runtime,
-                        &event_tx,
-                        &requests_rx,
-                        &mut subscriptions,
-                        &event.into_data(),
-                    )
-                    .await;
-                    println!("processed binary...");
-                    if result.is_err() {
-                        return;
-                    }
-                };
             }
         });
 
         // TODO replace HTTPRequestConnectionFailed with better errors
         socket_runtime.spawn(async move {
-            for m in write_rx.iter() {
-                match m {
-                    Signal::Send(id, msg, callback) => {
-                        if let Some(cb) = callback {
-                            let mut lock = requests_tx.lock().await;
-                            lock.insert(id, cb);
-                            drop(lock);
-                        }
+            tokio::select! {
+                _ = handle_socket_tx(socket_tx, write_rx, requests_tx) => {
 
-                        // println!("sending message of size: {}", msg.len());
-
-                        match socket_tx.send(msg).await {
-                            Ok(_) => continue,
-                            Err(err) => {
-                                println!("socket send failed: {:?}", err);
-                                break;
-                            }
-                        }
-                    }
-                    Signal::Done => break,
+                },
+                _ = socket_tx_shutdown_rx.recv() => {
+                    //println!("shutting down socket tx")
                 }
             }
-            socket_tx.close().await.expect("Failed to close socket");
         });
 
         socket_runtime.spawn(async move {
@@ -363,6 +327,89 @@ impl Websocket {
         self.write_tx
             .send(Signal::Done)
             .map_err(|_| SelfError::HTTPRequestConnectionFailed)
+    }
+}
+
+async fn handle_socket_tx(
+    mut socket_tx: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    write_rx: Receiver<Signal>,
+    requests_tx: RequestCache,
+) {
+    for m in write_rx.iter() {
+        match m {
+            Signal::Send(id, msg, callback) => {
+                if let Some(cb) = callback {
+                    let mut lock = requests_tx.lock().await;
+                    lock.insert(id, cb);
+                    drop(lock);
+                }
+
+                // println!("sending message of size: {}", msg.len());
+
+                match socket_tx.send(msg).await {
+                    Ok(_) => continue,
+                    Err(err) => {
+                        println!("socket send failed: {:?}", err);
+                        break;
+                    }
+                }
+            }
+            Signal::Done => break,
+        }
+    }
+    socket_tx.close().await.expect("Failed to close socket");
+}
+
+async fn handle_socket_rx(
+    mut socket_rx: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    write_tx: Sender<Signal>,
+    event_tx: Sender<Event>,
+    requests: RequestCache,
+    mut subscriptions: SubscriptionCache,
+    callback_runtime: Arc<Runtime>,
+) {
+    while let Some(event) = socket_rx.next().await {
+        let event = match event {
+            Ok(event) => event,
+            Err(err) => {
+                println!("websocket failed with: {:?}", err);
+                return;
+            }
+        };
+
+        if event.is_close() {
+            let _ = write_tx.send(Signal::Done);
+            return;
+        }
+
+        if event.is_ping() {
+            continue;
+        }
+
+        if event.is_pong() {
+            continue;
+        }
+
+        if event.is_binary() {
+            let result = handle_event_binary(
+                &callback_runtime,
+                &event_tx,
+                &requests,
+                &mut subscriptions,
+                &event.into_data(),
+            )
+            .await;
+
+            if result.is_err() {
+                return;
+            }
+        };
+    }
+}
+
+async fn handle_event_callback(event_rx: &Receiver<Event>, on_event: &OnEventCB) {
+    while let Ok(event) = event_rx.recv() {
+        on_event(event);
     }
 }
 
@@ -1440,10 +1487,12 @@ mod tests {
             on_event: Arc::new(|_| {}),
         };
 
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(2);
+
         let mut ws =
             Websocket::new("ws://localhost:12345", callbacks).expect("failed to create websocket");
 
-        ws.connect().expect("failed to connect");
+        ws.connect(&shutdown_rx).expect("failed to connect");
         ws.subscribe(&subs).expect("failed to subscribe");
 
         let (response_tx, response_rx) = crossbeam::channel::bounded(1);
@@ -1482,11 +1531,13 @@ mod tests {
         assert_eq!(message.bytes(), Vec::from("test message"));
 
         /*
-        let (_, ciphertext) = ws.receive().expect("Failed to receive message");
+            let (_, ciphertext) = ws.receive().expect("Failed to receive message");
+            assert_eq!(ciphertext, Vec::from("test message"));
+        */
 
-        assert_eq!(ciphertext, Vec::from("test message"));
-         */
-
+        shutdown_tx
+            .send(())
+            .expect("failed to send shutdown signal");
         rt.shutdown_background();
     }
 }

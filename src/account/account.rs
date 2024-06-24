@@ -1,5 +1,6 @@
 use prost::Message as ProstMessage;
 use tokio::runtime::Runtime;
+use tokio::sync::broadcast;
 
 use crate::account::{inbox, operation};
 use crate::credential::{Credential, Presentation, VerifiableCredential, VerifiablePresentation};
@@ -41,6 +42,7 @@ pub struct Account {
     object: Arc<AtomicPtr<ObjectStore>>,
     storage: Arc<AtomicPtr<Connection>>,
     websocket: Arc<AtomicPtr<Websocket>>,
+    shutdown: Arc<AtomicPtr<broadcast::Sender<()>>>,
     runtime: Arc<Runtime>,
 }
 
@@ -51,6 +53,7 @@ impl Account {
             object: Arc::new(AtomicPtr::new(ptr::null_mut())),
             storage: Arc::new(AtomicPtr::new(ptr::null_mut())),
             websocket: Arc::new(AtomicPtr::new(ptr::null_mut())),
+            shutdown: Arc::new(AtomicPtr::new(ptr::null_mut())),
             runtime: Arc::new(Runtime::new().unwrap()),
         }
     }
@@ -84,6 +87,10 @@ impl Account {
         let storage = Box::into_raw(Box::new(storage));
         self.storage.swap(storage, Ordering::SeqCst);
 
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(8);
+        let shutdown = Box::into_raw(Box::new(shutdown_tx));
+        self.shutdown.swap(shutdown, Ordering::SeqCst);
+
         let mut websocket = Websocket::new(
             messaging_endpoint,
             Callbacks {
@@ -99,7 +106,7 @@ impl Account {
             },
         )?;
 
-        websocket.connect()?;
+        websocket.connect(&shutdown_rx)?;
 
         let websocket = Box::into_raw(Box::new(websocket));
         self.websocket.swap(websocket, Ordering::SeqCst);
@@ -107,9 +114,9 @@ impl Account {
         unsafe {
             // load our existing subscriptions, send all outstanding messages
             // in our outbox and then resume processing our inbox
-            operation::subscription_load(&(*storage), &(*websocket))?;
             operation::outbox_process(&(*storage), &(*websocket))?;
             operation::inbox_process(&(*storage), callbacks.on_message)?;
+            operation::subscription_load(&(*storage), &(*websocket))?;
         }
 
         let storage = self.storage.clone();
@@ -117,38 +124,10 @@ impl Account {
 
         // schedule updates to our subscription metrics
         self.runtime.spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-
-                let storage = storage.load(Ordering::SeqCst);
-                if storage.is_null() {
-                    continue;
-                }
-
-                let websocket = websocket.load(Ordering::SeqCst);
-                if websocket.is_null() {
-                    continue;
-                }
-
-                unsafe {
-                    let metrics = (*websocket).metrics();
-
-                    let result = (*storage).transaction(|txn| {
-                        for ((to_address, as_address), offset) in metrics.iter() {
-                            query::subscription_update(
-                                txn,
-                                to_address.address(),
-                                as_address.address(),
-                                *offset,
-                            )?;
-                        }
-
-                        Ok(())
-                    });
-
-                    if result.is_err() {
-                        println!("metrics transaction failed!");
-                    }
+            tokio::select! {
+                _ = handle_subscription_metrics(storage, websocket) => {},
+                _ = shutdown_rx.recv() => {
+                    // println!("shutting down metrics");
                 }
             }
         });
@@ -547,18 +526,69 @@ impl Account {
             return Err(SelfError::AccountNotConfigured);
         };
 
+        if self
+            .storage
+            .compare_exchange(storage, ptr::null_mut(), Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(SelfError::AccountNotConfigured);
+        }
+
         let websocket = self.websocket.load(Ordering::SeqCst);
         if websocket.is_null() {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        self.storage.store(ptr::null_mut(), Ordering::SeqCst);
-        self.websocket.store(ptr::null_mut(), Ordering::SeqCst);
+        if self
+            .websocket
+            .compare_exchange(
+                websocket,
+                ptr::null_mut(),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err(SelfError::AccountNotConfigured);
+        }
+
+        let shutdown = self.shutdown.load(Ordering::SeqCst);
+        if shutdown.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        };
+
+        if self
+            .shutdown
+            .compare_exchange(
+                shutdown,
+                ptr::null_mut(),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err(SelfError::AccountNotConfigured);
+        }
 
         unsafe {
-            drop(Box::from_raw(storage));
+            // disconnect
             (*websocket).disconnect()?;
             drop(Box::from_raw(websocket));
+
+            // send the shutdown signal
+            if (*shutdown).send(()).is_err() {
+                return Ok(());
+            }
+
+            // wait for subscribers to close
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                if (*shutdown).send(()).is_err() {
+                    break;
+                }
+            }
+
+            drop(Box::from_raw(storage));
         }
 
         Ok(())
@@ -579,24 +609,55 @@ impl Clone for Account {
             storage: self.storage.clone(),
             websocket: self.websocket.clone(),
             runtime: self.runtime.clone(),
+            shutdown: self.shutdown.clone(),
         }
     }
 }
 
 impl Drop for Account {
     fn drop(&mut self) {
-        unsafe {
-            let websocket = self.websocket.load(Ordering::SeqCst);
-            if !websocket.is_null() {
-                if let Err(err) = (*websocket).disconnect() {
-                    println!("websocket shutdown: {}", err);
-                };
-            }
+        /*
+            if let Err(err) = self.shutdown() {
+                println!("shutdown failed: {}", err);
+            };
+        */
 
-            let storage = self.storage.load(Ordering::SeqCst);
-            if !storage.is_null() {
-                (*storage).close();
-            }
+        _ = self.shutdown()
+    }
+}
+
+async fn handle_subscription_metrics(
+    storage: Arc<AtomicPtr<Connection>>,
+    websocket: Arc<AtomicPtr<Websocket>>,
+) -> Result<(), SelfError> {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+        let storage = storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        }
+
+        let websocket = websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            return Err(SelfError::AccountNotConfigured);
+        }
+
+        unsafe {
+            let metrics = (*websocket).metrics();
+
+            (*storage).transaction(|txn| {
+                for ((to_address, as_address), offset) in metrics.iter() {
+                    query::subscription_update(
+                        txn,
+                        to_address.address(),
+                        as_address.address(),
+                        *offset,
+                    )?;
+                }
+
+                Ok(())
+            })?;
         }
     }
 }
@@ -629,6 +690,9 @@ fn on_event_cb(
 
     Arc::new(move |mut event| {
         let storage = storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            return;
+        }
 
         unsafe {
             match inbox::inbox_queue(&(*storage), &mut event) {
