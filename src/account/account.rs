@@ -484,7 +484,53 @@ impl Account {
             return Err(SelfError::AccountNotConfigured);
         };
 
-        unsafe { operation::message_send(&(*storage), &(*websocket), to_address, content) }
+        let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+
+        unsafe {
+            operation::message_send(
+                self.storage.clone(),
+                &(*websocket),
+                to_address,
+                content,
+                Arc::new(move |resp| {
+                    resp_tx.send(resp).unwrap();
+                }),
+            );
+        }
+
+        resp_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| SelfError::HTTPRequestConnectionTimeout)?
+    }
+
+    /// send a message to an address and sychronously waits for the server response
+    pub fn message_send_async(
+        &self,
+        to_address: &PublicKey,
+        content: &message::Content,
+        callback: Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>,
+    ) {
+        let storage = self.storage.load(Ordering::SeqCst);
+        if storage.is_null() {
+            callback(Err(SelfError::AccountNotConfigured));
+            return;
+        };
+
+        let websocket = self.websocket.load(Ordering::SeqCst);
+        if websocket.is_null() {
+            callback(Err(SelfError::AccountNotConfigured));
+            return;
+        };
+
+        unsafe {
+            operation::message_send(
+                self.storage.clone(),
+                &(*websocket),
+                to_address,
+                content,
+                callback,
+            )
+        }
     }
 
     /// creates a new group

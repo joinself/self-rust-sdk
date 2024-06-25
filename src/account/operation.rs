@@ -18,6 +18,7 @@ use crate::transport::object::ObjectStore;
 use crate::transport::rpc::Rpc;
 use crate::transport::websocket::{self, Subscription, Websocket};
 
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -963,11 +964,12 @@ pub fn connection_accept(
 }
 
 pub fn message_send(
-    storage: &Connection,
+    storage: Arc<AtomicPtr<Connection>>,
     websocket: &Websocket,
     to_address: &PublicKey,
     content: &message::Content,
-) -> Result<(), SelfError> {
+    callback: Arc<dyn Fn(Result<(), SelfError>) + Sync + Send>,
+) {
     let mut as_address: Option<KeyPair> = None;
     let mut from_address: Option<PublicKey> = None;
     let mut group_address: Option<PublicKey> = None;
@@ -975,7 +977,15 @@ pub fn message_send(
     let mut sequence_tx = 0;
     let timestamp = time::unix();
 
-    storage.transaction(|txn| {
+    let loaded_storage = storage.load(Ordering::SeqCst);
+    if loaded_storage.is_null() {
+        callback(Err(SelfError::AccountNotConfigured));
+        return;
+    };
+
+    let loaded_storage = unsafe { &(*loaded_storage) };
+
+    if let Err(err) = loaded_storage.transaction(|txn| {
         // TODO determine is this is a group, did or inbox address?
         group_address = query::group_with(txn, to_address.address(), 1)?
             .map(|address| PublicKey::from_bytes(&address).expect("failed to load key"));
@@ -1039,42 +1049,74 @@ pub fn message_send(
             timestamp,
             sequence_tx,
         )
-    })?;
+    }) {
+        callback(Err(err));
+        return;
+    }
 
     let as_address = match &as_address {
         Some(as_address) => as_address,
-        None => return Err(SelfError::KeyPairNotFound),
+        None => {
+            callback(Err(SelfError::KeyPairNotFound));
+            return;
+        }
     };
 
     let group_address = match &group_address {
         Some(group_address) => group_address,
-        None => return Err(SelfError::KeyPairNotFound),
+        None => {
+            callback(Err(SelfError::KeyPairNotFound));
+            return;
+        }
     };
 
-    let payload =
-        websocket::assemble_payload_message(as_address, group_address, sequence_tx, &ciphertext)?;
+    let payload = match websocket::assemble_payload_message(
+        as_address,
+        group_address,
+        sequence_tx,
+        &ciphertext,
+    ) {
+        Ok(payload) => payload,
+        Err(err) => {
+            callback(Err(err));
+            return;
+        }
+    };
 
-    let (resp_tx, resp_rx) = crossbeam::channel::bounded(1);
+    let cb_as_address = as_address.clone();
+    let cb_group_address = group_address.clone();
 
     websocket.send(
         as_address,
         &payload,
         None,
-        Arc::new(move |resp| {
-            resp_tx.send(resp).unwrap();
+        Arc::new(move |response| {
+            if let Err(err) = response {
+                callback(Err(err));
+                return;
+            }
+
+            let loaded_storage = storage.load(Ordering::SeqCst);
+            if loaded_storage.is_null() {
+                callback(Err(SelfError::AccountNotConfigured));
+                return;
+            };
+
+            let loaded_storage = unsafe { &(*loaded_storage) };
+
+            if let Err(err) = loaded_storage.transaction(|txn| {
+                query::outbox_dequeue(
+                    txn,
+                    cb_as_address.address(),
+                    cb_group_address.address(),
+                    sequence_tx,
+                )
+            }) {
+                callback(Err(err));
+                return;
+            }
+
+            callback(Ok(()));
         }),
     );
-
-    resp_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| SelfError::HTTPRequestConnectionTimeout)??;
-
-    storage.transaction(|txn| {
-        query::outbox_dequeue(
-            txn,
-            as_address.address(),
-            group_address.address(),
-            sequence_tx,
-        )
-    })
 }
