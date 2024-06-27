@@ -314,6 +314,16 @@ fn messaging_subscriptions() {
         on_welcome: Arc::new(move |_| {}),
     };
 
+    let chat_message = message::ChatBuilder::new()
+        .message("hey alice")
+        .finish()
+        .expect("failed to build chat message");
+
+    // alice send an encrypted message to the group
+    bobby
+        .message_send(&bobby_inbox, &chat_message)
+        .expect("failed to send message");
+
     // configure alice's account storage path to be persistent
     alice
         .configure(
@@ -329,16 +339,6 @@ fn messaging_subscriptions() {
     // implement metrics tracking to remove processing of duplicate messages
     // track last received message time for subscriptions
     // schedule task to update time offset for subscriptions (update based on inactivity vs timestamp of messages received)
-
-    let chat_message = message::ChatBuilder::new()
-        .message("hey alice")
-        .finish()
-        .expect("failed to build chat message");
-
-    // alice send an encrypted message to the group
-    bobby
-        .message_send(&bobby_inbox, &chat_message)
-        .expect("failed to send message");
 
     let message_from_bobby = alice_message_rx
         .recv_timeout(DEFAULT_TIMEOUT * 2)

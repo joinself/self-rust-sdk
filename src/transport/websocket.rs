@@ -68,8 +68,9 @@ pub struct Websocket {
     write_rx: Receiver<Signal>,
     event_tx: Sender<Event>,
     event_rx: Receiver<Event>,
+    socket_tx_runtime: Arc<Runtime>,
+    socket_rx_runtime: Arc<Runtime>,
     event_runtime: Arc<Runtime>,
-    socket_runtime: Arc<Runtime>,
     command_runtime: Arc<Runtime>,
     callback_runtime: Arc<Runtime>,
     subscriptions: SubscriptionCache,
@@ -85,9 +86,10 @@ impl Websocket {
         let (event_tx, event_rx) = channel::unbounded();
 
         let event_runtime = Arc::new(Runtime::new().unwrap());
-        let socket_runtime = Arc::new(Runtime::new().unwrap());
         let command_runtime = Arc::new(Runtime::new().unwrap());
         let callback_runtime = Arc::new(Runtime::new().unwrap());
+        let socket_tx_runtime = Arc::new(Runtime::new().unwrap());
+        let socket_rx_runtime = Arc::new(Runtime::new().unwrap());
 
         let endpoint = match Url::parse(endpoint) {
             Ok(endpoint) => endpoint,
@@ -102,9 +104,10 @@ impl Websocket {
             event_tx,
             event_rx,
             event_runtime,
-            socket_runtime,
             command_runtime,
             callback_runtime,
+            socket_tx_runtime,
+            socket_rx_runtime,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -116,7 +119,8 @@ impl Websocket {
     ) -> std::result::Result<(), SelfError> {
         let event_runtime = self.event_runtime.clone();
         let callback_runtime = self.callback_runtime.clone();
-        let socket_runtime = self.socket_runtime.clone();
+        let socket_tx_runtime = self.socket_tx_runtime.clone();
+        let socket_rx_runtime = self.socket_rx_runtime.clone();
         let endpoint = self.endpoint.clone();
         let write_tx = self.write_tx.clone();
         let write_rx = self.write_rx.clone();
@@ -135,7 +139,7 @@ impl Websocket {
         let requests_rx = requests.clone();
         let requests_tx = requests.clone();
 
-        socket_runtime.spawn(async move {
+        socket_tx_runtime.spawn(async move {
             let result = match connect_async(&endpoint).await {
                 Ok((socket, _)) => Ok(socket),
                 Err(err) => {
@@ -163,7 +167,7 @@ impl Websocket {
             }
         });
 
-        socket_runtime.spawn(async move {
+        socket_rx_runtime.spawn(async move {
             tokio::select! {
                 _ = handle_socket_rx(socket_rx, write_tx, event_tx, requests_rx, subscriptions, callback_runtime) => {}
                 _ = socket_rx_shutdown_rx.recv() => {
@@ -173,7 +177,7 @@ impl Websocket {
         });
 
         // TODO replace HTTPRequestConnectionFailed with better errors
-        socket_runtime.spawn(async move {
+        socket_tx_runtime.spawn(async move {
             tokio::select! {
                 _ = handle_socket_tx(socket_tx, write_rx, requests_tx) => {
 
@@ -184,7 +188,7 @@ impl Websocket {
             }
         });
 
-        socket_runtime.spawn(async move {
+        event_runtime.spawn(async move {
             on_connect();
         });
 
@@ -371,8 +375,8 @@ async fn handle_socket_rx(
     while let Some(event) = socket_rx.next().await {
         let event = match event {
             Ok(event) => event,
-            Err(err) => {
-                println!("websocket failed with: {:?}", err);
+            Err(_) => {
+                // println!("websocket failed with: {:?}", err);
                 return;
             }
         };
