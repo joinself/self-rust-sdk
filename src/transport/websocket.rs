@@ -327,7 +327,6 @@ impl Websocket {
 
     /// disconnect the websocket
     pub fn disconnect(&mut self) -> Result<(), SelfError> {
-        (self.callbacks.on_disconnect)(Ok(()));
         self.write_tx
             .send(Signal::Done)
             .map_err(|_| SelfError::HTTPRequestConnectionFailed)
